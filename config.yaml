@@ -1,0 +1,26 @@
+app:
+  music_dir: "./music"
+  output_dir: "./output"
+
+audio:
+  crossfade_seconds: 8.0
+  loudness_target_lufs: -14.0
+
+cache:
+  enabled: true
+  dir: "./output/cache"
+
+llm:
+  provider: "openai_compatible"
+  api_key: ""
+  base_url: "https://openrouter.ai/api/v1"
+  model: "minimax/minimax-m2.5"
+  timeout_seconds: 60
+  max_retries: 2
+
+tts:
+  provider: "edge_tts"
+  api_key: ""
+  voice: "en-AU-NatashaNeural"
+  timeout_seconds: 60
+  max_retries: 2

@@ -1,0 +1,35 @@
+app:
+  # 本期节目候选音乐目录（用户按“目标歌单规划”准备好歌曲后放入此目录）
+  music_dir: "./music"
+
+  # 产出目录（规划文件、临时文件、最终音频与 show notes 等）
+  output_dir: "./output"
+
+audio:
+  # 过渡时长（秒）
+  crossfade_seconds: 8.0
+
+  # 母带响度目标（LUFS）
+  loudness_target_lufs: -14.0
+
+cache:
+  enabled: true
+  # 扫库缓存落盘位置（相对 output_dir 或绝对路径均可；后续任务会细化）
+  dir: "./output/cache"
+
+llm:
+  provider: "openai_compatible"
+  # 建议通过环境变量注入真实 key，不要写进配置文件
+  api_key: ""
+  base_url: ""
+  model: "gpt-4o-mini"
+  timeout_seconds: 60
+  max_retries: 2
+
+tts:
+  provider: "edge_tts"
+  api_key: ""
+  voice: ""
+  timeout_seconds: 60
+  max_retries: 2
+

@@ -1,0 +1,42 @@
+# ---- Must ignore (user requested) ----
+build/
+output/
+
+# ---- Python / packaging ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---- Virtual envs ----
+.venv/
+venv/
+ENV/
+env/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Local scratch / artifacts ----
+DEBUG*
+PODCAST_AI_LOG_FILE
+Episode_Plan_Music/
+
+# ---- Secrets (recommended) ----
+.env
