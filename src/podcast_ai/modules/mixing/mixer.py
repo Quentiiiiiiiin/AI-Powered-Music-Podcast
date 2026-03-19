@@ -1,5 +1,6 @@
 """
-混音与时间线渲染：按固定 crossfade 拼接曲目，将主持语音按策略叠入，输出中间混音文件。
+混音与时间线渲染：v1.1 时间线为 串词1 → 组1 → 串词2 → 组2 → … → 串词N → 组N；
+组内歌曲 crossfade，组与串词之间不 crossfade，主持期间无背景音乐。
 """
 from __future__ import annotations
 
@@ -30,10 +31,31 @@ class MixRenderSummary:
     voiceover_count: int
 
 
+def _split_tracks_into_groups(
+    tracks: list[SelectedTrack],
+    n_groups: int,
+) -> list[list[SelectedTrack]]:
+    """
+    将 selected_tracks 均分为 n_groups 组，尽量均匀；用于 v1.1 时间线对齐。
+    """
+    if n_groups <= 0 or not tracks:
+        return [list(tracks)] if tracks else []
+    total = len(tracks)
+    base_size = total // n_groups
+    remainder = total % n_groups
+    groups: list[list[SelectedTrack]] = []
+    idx = 0
+    for i in range(n_groups):
+        size = base_size + (1 if i < remainder else 0)
+        groups.append(tracks[idx : idx + size])
+        idx += size
+    return groups
+
+
 class Mixer:
     """
-    构建「歌曲 + 主持」的统一时间线；
-    按固定 crossfade 拼接曲目，将主持语音按 insert_time_in_episode 叠入。
+    v1.1：构建时间线 串词1 → 组1 → 串词2 → 组2 → … → 串词N → 组N。
+    组内歌曲 crossfade 转场，组与串词之间直接拼接（无 crossfade），主持期间无背景音乐。
     """
 
     def build_mix(
@@ -45,6 +67,8 @@ class Mixer:
     ) -> MixRenderSummary:
         """
         执行混音并输出中间文件。
+        - 有 voiceovers：按 v1.1 时间线 串词_i → 组_i 顺序拼接
+        - 无 voiceovers：向后兼容，所有曲目按 crossfade 拼接
         """
         cf = config.crossfade_seconds
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,39 +76,49 @@ class Mixer:
         if not selected_tracks:
             raise ValueError("selected_tracks 不能为空。")
 
-        # 1. 加载曲目音频并按 crossfade 拼接
-        track_audios: list[AudioSegment] = []
-        for st in selected_tracks:
-            seg = load_audio(st.track.file_path)
-            seg = simple_normalize(seg, target_dbfs=-20.0)
-            track_audios.append(seg)
+        n = len(voiceovers)
+        if n == 0:
+            # 向后兼容：无主持时，全部曲目 crossfade 拼接
+            track_audios = [
+                simple_normalize(load_audio(st.track.file_path), target_dbfs=-20.0)
+                for st in selected_tracks
+            ]
+            mix = crossfade_concat(track_audios, cf)
+        else:
+            # v1.1：串词1 → 组1 → 串词2 → 组2 → … → 串词N → 组N
+            track_groups = _split_tracks_into_groups(selected_tracks, n)
+            parts: list[AudioSegment] = []
 
-        music_mix = crossfade_concat(track_audios, cf)
-        total_ms = len(music_mix)
+            for i in range(n):
+                # 串词 i：主持期间无背景音乐，单独拼接
+                try:
+                    vo_audio = load_audio(voiceovers[i].audio_path)
+                    vo_audio = simple_normalize(vo_audio, target_dbfs=-16.0)
+                    parts.append(vo_audio)
+                    logger.debug("拼接主持: %s", voiceovers[i].segment_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("加载主持 %s 失败，使用占位: %s", voiceovers[i].segment_id, exc)
+                    parts.append(AudioSegment.silent(duration=0))
 
-        # 2. 将主持语音叠入
-        for v in sorted(voiceovers, key=lambda x: x.insert_time_in_episode):
-            try:
-                vo_audio = load_audio(v.audio_path)
-                vo_audio = simple_normalize(vo_audio, target_dbfs=-16.0)
-                pos_ms = int(v.insert_time_in_episode * 1000)
-                if pos_ms < 0:
-                    pos_ms = 0
-                if pos_ms + len(vo_audio) > total_ms:
-                    music_mix = music_mix.append(
-                        AudioSegment.silent(duration=pos_ms + len(vo_audio) - total_ms),
-                        crossfade=0,
-                    )
-                    total_ms = len(music_mix)
-                music_mix = music_mix.overlay(vo_audio, position=pos_ms)
-                logger.debug("叠入主持: %s @ %.1fs", v.segment_id, v.insert_time_in_episode)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("叠入主持失败 %s，跳过: %s", v.segment_id, exc)
+                # 组 i：组内 crossfade
+                group = track_groups[i]
+                if group:
+                    group_audios = [
+                        simple_normalize(load_audio(st.track.file_path), target_dbfs=-20.0)
+                        for st in group
+                    ]
+                    group_mix = crossfade_concat(group_audios, cf)
+                    parts.append(group_mix)
+                else:
+                    parts.append(AudioSegment.silent(duration=0))
 
-        # 3. 导出
-        export_audio(music_mix, output_path, format=output_path.suffix.lstrip(".") or "wav")
+            # 段与段之间不 crossfade（串词与组之间、组与串词之间）
+            mix = crossfade_concat(parts, crossfade_seconds=0.0)
 
-        duration_sec = len(music_mix) / 1000.0
+        # 导出
+        export_audio(mix, output_path, format=output_path.suffix.lstrip(".") or "wav")
+
+        duration_sec = len(mix) / 1000.0
         logger.info(
             "混音完成: %s，时长 %.1fs，曲目 %d 首，主持 %d 段",
             output_path,
