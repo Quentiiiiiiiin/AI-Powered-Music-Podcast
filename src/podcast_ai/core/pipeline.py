@@ -27,7 +27,7 @@ from podcast_ai.modules.exporter.exporter import Exporter
 from podcast_ai.modules.library.scanner import LibraryScanner
 from podcast_ai.modules.mastering.processor import MasteringService
 from podcast_ai.modules.mixing.mixer import Mixer
-from podcast_ai.modules.selection.selector import TrackSelector
+from podcast_ai.modules.selection.selector import select_tracks_by_plan
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
 
@@ -163,10 +163,10 @@ def create_episode(
             raise PodcastAIError(f"音乐目录为空或扫描失败：{music_dir}")
 
         with log_timing(logger, "select_tracks"):
-            selector = TrackSelector(crossfade_seconds=config.crossfade_seconds)
-            selected_tracks = selector.select_tracks(plan, library, config.crossfade_seconds)
+            # v1.2：严格按 plan 顺序映射，不做 BPM 过滤/排序/贪心；映射失败时 PlanMappingError 向上抛出
+            selected_tracks = select_tracks_by_plan(plan, library, config.crossfade_seconds)
         if not selected_tracks:
-            raise PodcastAIError("选曲结果为空，无法继续制作。")
+            raise PodcastAIError("选曲结果为空（plan 中无推荐曲目或无法映射），无法继续制作。")
 
         with log_timing(logger, "generate_voiceovers"):
             voiceover_svc = VoiceoverService(settings=effective_settings)

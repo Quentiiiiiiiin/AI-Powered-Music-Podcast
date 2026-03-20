@@ -20,3 +20,7 @@ class AIServiceError(PodcastAIError):
 class AudioProcessingError(PodcastAIError):
     """音频处理/渲染失败。"""
 
+
+class PlanMappingError(PodcastAIError):
+    """plan 指定曲目无法映射到本地候选库。"""
+
