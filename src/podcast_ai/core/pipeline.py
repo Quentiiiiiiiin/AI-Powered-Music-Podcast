@@ -27,7 +27,7 @@ from podcast_ai.modules.exporter.exporter import Exporter
 from podcast_ai.modules.library.scanner import LibraryScanner
 from podcast_ai.modules.mastering.processor import MasteringService
 from podcast_ai.modules.mixing.mixer import Mixer
-from podcast_ai.modules.selection.selector import select_tracks_by_plan
+from podcast_ai.modules.selection.selector import compute_segment_boundaries, select_tracks_by_plan
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
 
@@ -136,7 +136,8 @@ def create_episode(
     """
     阶段二：从 plan 文件继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
 
-    返回 EpisodeResult。
+    v1.3 流程：选曲（plan 驱动）→ 计算 segment 实际边界 → 主持（按边界插入）→ 混音（按 segment 分组）。
+    若任一 segment 映射失败或边界缺失，直接报错并阻断，不进入混音，避免错位输出。
     """
     effective_settings = settings or load_settings()
 
@@ -163,19 +164,32 @@ def create_episode(
             raise PodcastAIError(f"音乐目录为空或扫描失败：{music_dir}")
 
         with log_timing(logger, "select_tracks"):
-            # v1.2：严格按 plan 顺序映射，不做 BPM 过滤/排序/贪心；映射失败时 PlanMappingError 向上抛出
+            # v1.2：严格按 plan 顺序映射；映射失败时 PlanMappingError 向上抛出，阻断后续流程
             selected_tracks = select_tracks_by_plan(plan, library, config.crossfade_seconds)
         if not selected_tracks:
             raise PodcastAIError("选曲结果为空（plan 中无推荐曲目或无法映射），无法继续制作。")
 
+        # v1.3：基于已映射歌曲计算 segment 实际边界；边界缺失时 PlanMappingError 向上抛出
+        segment_boundaries = compute_segment_boundaries(
+            plan, selected_tracks, config.crossfade_seconds
+        )
+        if len(segment_boundaries) != len(plan.segments):
+            raise PodcastAIError(
+                f"segment 边界数量({len(segment_boundaries)})与 plan 段落数({len(plan.segments)})不一致，无法继续。"
+            )
+
         with log_timing(logger, "generate_voiceovers"):
             voiceover_svc = VoiceoverService(settings=effective_settings)
-            voiceovers = voiceover_svc.generate_voiceovers(plan, language=language)
+            voiceovers = voiceover_svc.generate_voiceovers(
+                plan, language=language, segment_boundaries=segment_boundaries
+            )
 
         mix_path = get_mix_output_path(episode_root, ext="wav")
         with log_timing(logger, "build_mix"):
             mixer = Mixer()
-            mix_summary = mixer.build_mix(selected_tracks, voiceovers, config, mix_path)
+            mix_summary = mixer.build_mix(
+                selected_tracks, voiceovers, config, mix_path, plan=plan
+            )
 
         final_path = get_final_audio_path(episode_root, episode_id)
         with log_timing(logger, "apply_mastering"):

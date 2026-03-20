@@ -2,6 +2,7 @@
 自动选曲与排序：结合 EpisodePlan 的段落目标与 BPM 区间，输出按 BPM 递增、相邻差值受控的 SelectedTrack 列表。
 
 v1.2：新增 select_tracks_by_plan，严格按 plan 顺序映射本地候选，不做 BPM 过滤/排序/贪心。
+v1.3：新增 compute_segment_boundaries，基于已映射歌曲计算各 segment 的实际音乐边界。
 """
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import logging
 from typing import Optional
 
 from podcast_ai.core.exceptions import PlanMappingError
-from podcast_ai.core.models import EpisodePlan, SelectedTrack, TrackWithMetadata
+from podcast_ai.core.models import EpisodePlan, SegmentBoundary, SelectedTrack, TrackWithMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,65 @@ def select_tracks_by_plan(
 
     logger.info("plan 驱动选曲完成: %d 首（严格按 plan 顺序）", len(result))
     return result
+
+
+def compute_segment_boundaries(
+    plan: EpisodePlan,
+    selected_tracks: list[SelectedTrack],
+    crossfade_seconds: float,  # noqa: ARG001
+) -> list[SegmentBoundary]:
+    """
+    v1.3：基于已映射歌曲的实际时间线，计算每个 segment 的音乐起止边界。
+    边界来源为 selected_tracks 的 start/end，不使用 target_duration_seconds。
+    调用前需确保 selected_tracks 由 select_tracks_by_plan 产出且与 plan 顺序一致。
+    """
+    boundaries: list[SegmentBoundary] = []
+    track_idx = 0
+    prev_end = 0.0
+
+    for seg in plan.segments:
+        n_tracks = sum(len(item.recommended_tracks) for item in seg.target_playlist)
+
+        if n_tracks == 0:
+            # 无歌曲的 segment：边界紧随上一 segment 结束
+            boundaries.append(SegmentBoundary(music_start=prev_end, music_end=prev_end))
+            continue
+
+        if track_idx + n_tracks > len(selected_tracks):
+            raise PlanMappingError(
+                f"segment「{seg.name}」规划了 {n_tracks} 首曲目，但 selected_tracks 不足（idx={track_idx}）。"
+            )
+
+        first = selected_tracks[track_idx]
+        last = selected_tracks[track_idx + n_tracks - 1]
+        music_start = first.start_time_in_episode
+        music_end = last.end_time_in_episode
+        boundaries.append(SegmentBoundary(music_start=music_start, music_end=music_end))
+        prev_end = music_end
+        track_idx += n_tracks
+
+    return boundaries
+
+
+def split_tracks_by_plan(
+    plan: EpisodePlan,
+    selected_tracks: list[SelectedTrack],
+) -> list[list[SelectedTrack]]:
+    """
+    v1.3：按 plan 的 segment 规划拆分 selected_tracks，用于混音层对齐 串词_i -> segment_i(歌曲组)。
+    每段曲目数量 = 该 segment 的 target_playlist 中 recommended_tracks 总数。
+    """
+    groups: list[list[SelectedTrack]] = []
+    track_idx = 0
+    for seg in plan.segments:
+        n_tracks = sum(len(item.recommended_tracks) for item in seg.target_playlist)
+        if track_idx + n_tracks > len(selected_tracks):
+            raise PlanMappingError(
+                f"segment「{seg.name}」需 {n_tracks} 首曲目，selected_tracks 不足（idx={track_idx}）。"
+            )
+        groups.append(selected_tracks[track_idx : track_idx + n_tracks])
+        track_idx += n_tracks
+    return groups
 
 
 class TrackSelector:

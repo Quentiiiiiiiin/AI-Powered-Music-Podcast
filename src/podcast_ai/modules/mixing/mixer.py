@@ -1,22 +1,26 @@
 """
 混音与时间线渲染：v1.1 时间线为 串词1 → 组1 → 串词2 → 组2 → … → 串词N → 组N；
 组内歌曲 crossfade，组与串词之间不 crossfade，主持期间无背景音乐。
+
+v1.3：有 plan 时按 plan 的 segment 拆分曲目组，确保 串词_i 与 segment_i 歌曲组严格对齐。
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from pydub import AudioSegment  # type: ignore[import-untyped]
 
-from podcast_ai.core.models import AudioRenderConfig, SelectedTrack, VoiceoverSegment
+from podcast_ai.core.models import AudioRenderConfig, EpisodePlan, SelectedTrack, VoiceoverSegment
 from podcast_ai.infra.audio_backend import (
     crossfade_concat,
     export_audio,
     load_audio,
     simple_normalize,
 )
+from podcast_ai.modules.selection.selector import split_tracks_by_plan
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +68,12 @@ class Mixer:
         voiceovers: list[VoiceoverSegment],
         config: AudioRenderConfig,
         output_path: Path,
+        plan: Optional[EpisodePlan] = None,
     ) -> MixRenderSummary:
         """
         执行混音并输出中间文件。
-        - 有 voiceovers：按 v1.1 时间线 串词_i → 组_i 顺序拼接
-        - 无 voiceovers：向后兼容，所有曲目按 crossfade 拼接
+        - 有 voiceovers：按 串词_i → 组_i 顺序拼接；有 plan 时（v1.3）按 plan 的 segment 拆分曲目
+        - 无 voiceovers：向后兼容，全部曲目 crossfade 拼接
         """
         cf = config.crossfade_seconds
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,8 +90,11 @@ class Mixer:
             ]
             mix = crossfade_concat(track_audios, cf)
         else:
-            # v1.1：串词1 → 组1 → 串词2 → 组2 → … → 串词N → 组N
-            track_groups = _split_tracks_into_groups(selected_tracks, n)
+            # 串词1 → 组1 → 串词2 → 组2 → …；v1.3 有 plan 时按 segment 拆分，否则均分
+            if plan is not None:
+                track_groups = split_tracks_by_plan(plan, selected_tracks)
+            else:
+                track_groups = _split_tracks_into_groups(selected_tracks, n)
             parts: list[AudioSegment] = []
 
             for i in range(n):
