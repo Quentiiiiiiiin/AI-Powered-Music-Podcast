@@ -84,6 +84,13 @@ class TrackWithMetadata(BaseModel):
     metadata: TrackMetadata
 
 
+class SegmentBoundary(BaseModel):
+    """v1.3：单个 segment 的音乐起止边界，基于已映射歌曲的实际时间线。"""
+
+    music_start: float = Field(..., ge=0, description="该 segment 第一首歌开始时间（秒）")
+    music_end: float = Field(..., ge=0, description="该 segment 最后一首歌结束时间（秒）")
+
+
 class SelectedTrack(BaseModel):
     """经过选曲与排布后，在节目时间线上的一首歌。"""
 
