@@ -1,97 +1,111 @@
-## 版本 v1.3（迭代三：主持串词严格按 plan 歌曲边界插入）
+## 版本 v1.4（迭代四：TTS 供应商切换到 ElevenLabs）
 
-基于 PRD 迭代记录：主持串词插入点不再基于 `segment.target_duration_seconds` 预估，而是基于“阶段二按 plan 映射后的实际歌曲时间线边界”计算；顺序保持 `串词1-segment1-串词2-segment2-...-串词N-segmentN`。
-
----
-
-### Task 01 - 产出 segment 实际边界（基于已映射歌曲）
-- **Task name**: 在选曲结果中显式计算每个 segment 的实际起止边界
-- **Description**: 在 plan 驱动选曲完成后，新增一个轻量边界计算函数（或结果结构），按实际映射歌曲时长+crossfade 计算每个 `segment_i` 的音乐起始时间（第一首歌开始）与结束边界，用于后续主持插入点计算。边界来源必须是“实际选中歌曲”，不能使用 `target_duration_seconds`。
-- **Input**:
-  - `EpisodePlan`（segment 顺序）
-  - 已按 plan 保序的 `selected_tracks`
-  - `crossfade_seconds`
-- **Output**:
-  - `segment_boundaries`（至少包含每个 segment 的 `music_start`）
-  - 缺失映射时直接失败，不返回边界
-- **Files involved**:
-  - `src/podcast_ai/modules/selection/selector.py`
-  - （如需要）`src/podcast_ai/core/models.py`（仅在必须新增轻量模型时）
-- **Dependencies**: 依赖 v1.2 的 plan 映射逻辑已可用
-- **Estimated complexity**: S（1-2 小时）
-- **Type**: backend
+基于 PRD/ARCHITECTURE 更新：主持语音默认 TTS 从 Edge 路径切换为 ElevenLabs；需打通可用调用链路（SDK 或 HTTP 任一），失败时清晰报错；并保持 v1.3 的串词时序与边界逻辑不回退。
 
 ---
 
-### Task 02 - Voiceover 插入点改为消费实际边界
-- **Task name**: `VoiceoverService` 基于 segment 实际边界生成插入时间
-- **Description**: 调整主持语音生成接口，不再按 segment 目标时长累加 `insert_time_in_episode`；改为接收 Task 01 的 `segment_boundaries` 并将 `串词_i` 的插入时间设置为 `segment_i.music_start` 之前的边界点。保持顺序严格一一对应：`voiceover_i -> segment_i`。
+### Task 01 - ElevenLabs 配置项落地与校验
+- **Task name**: 增加 ElevenLabs 配置模型与必填校验
+- **Description**: 在配置层新增/确认 ElevenLabs 所需配置（`api_key`、`voice_id`、`model`、`output_format`），并在启动/调用前进行最小校验，缺失配置时给出明确错误信息，避免运行期隐式失败。
 - **Input**:
-  - `EpisodePlan`
-  - `segment_boundaries`（来自 Task 01）
-  - `language/use_cache`
+  - 现有 `Settings` 配置结构
+  - `.env` / `config.yaml` 中的 TTS 配置
 - **Output**:
-  - `list[VoiceoverSegment]`，其中 `insert_time_in_episode` 严格对齐对应 segment 第一首歌边界
+  - 可被 `infra/tts_client.py` 直接消费的 ElevenLabs 配置对象
+  - 缺失配置时的清晰错误提示
 - **Files involved**:
-  - `src/podcast_ai/modules/voiceover/tts_service.py`
-  - `src/podcast_ai/core/pipeline.py`（传参与调用调整）
-- **Dependencies**: Task 01
-- **Estimated complexity**: S（1-2 小时）
-- **Type**: backend
-
----
-
-### Task 03 - 混音层按“边界插入”执行且不重叠
-- **Task name**: `Mixer` 对齐边界插入并保持无背景串词段
-- **Description**: 校正 `Mixer.build_mix(...)` 的边界映射逻辑，确保主持插入点以 Task 02 传入的实际边界为准；主持段与歌曲段不重叠、主持期间无背景音乐；crossfade 仅作用于相邻歌曲之间。
-- **Input**:
-  - `selected_tracks`（plan 顺序）
-  - `voiceovers`（边界对齐后的 `insert_time_in_episode`）
-  - `AudioRenderConfig`
-- **Output**:
-  - 最终 mix 时间线满足 `串词_i -> segment_i(歌曲组)` 顺序
-  - 保持既有 crossfade 行为不回退
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-- **Dependencies**: Task 02
-- **Estimated complexity**: S（1-2 小时）
-- **Type**: backend
-
----
-
-### Task 04 - 流水线集成与失败阻断
-- **Task name**: `create_episode` 串联“选曲边界 -> 主持 -> 混音”
-- **Description**: 在 `create_episode` 中串联新流程：先按 plan 选曲并得到 segment 实际边界，再生成主持插入点，再混音。若任一 segment 映射失败或边界缺失，直接报错并阻断，不进入后续混音，避免错位输出。
-- **Input**:
-  - `plan_path`
-  - `music_dir`
-  - runtime `settings`
-- **Output**:
-  - 正常路径：按 v1.3 规则输出
-  - 异常路径：缺失信息清晰报错并停止
-- **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/modules/selection/selector.py`
-  - `src/podcast_ai/modules/voiceover/tts_service.py`
-- **Dependencies**: Task 01, Task 02, Task 03
+  - `src/podcast_ai/infra/config.py`
+  - `.env.example` / `config.example.yaml`（若仓库中存在）
+- **Dependencies**: 无
 - **Estimated complexity**: S（1 小时）
 - **Type**: backend
 
 ---
 
-### Task 05 - 测试覆盖 v1.3 验收点 ✅
-- **Task name**: 新增/更新单测验证“按实际边界插入”
-- **Description**: 增加用例验证：1）`串词_i` 对齐 `segment_i` 第一首歌边界（非 target_duration 推导）；2）串词不与歌曲重叠；3）顺序严格为 `串词1-segment1-...`；4）segment 映射失败时流程阻断。
+### Task 02 - TTSClient 默认实现切换为 ElevenLabs
+- **Task name**: 在 `tts_client.py` 实现 ElevenLabs 主路径
+- **Description**: 在 `infra/tts_client.py` 实现 ElevenLabs 调用（SDK/HTTP 二选一即可），并将 `get_default_tts_client(...)` 默认返回 ElevenLabs 实现；保留统一接口 `synthesize(text, voice, use_cache)`，输出可供混音链路使用的音频文件。
 - **Input**:
-  - 可控的 plan/library 样本
-  - mock 或短音频文件
+  - Task 01 的配置对象
+  - `text/voice/use_cache` 调用参数
 - **Output**:
-  - `pytest` 通过，覆盖 v1.3 关键验收标准
+  - ElevenLabs 生成的本地音频文件路径
+  - 默认 TTS 路径已从 Edge 切换到 ElevenLabs
 - **Files involved**:
-  - `tests/test_mixing.py`
+  - `src/podcast_ai/infra/tts_client.py`
+- **Dependencies**: Task 01
+- **Estimated complexity**: M（2-3 小时）
+- **Type**: backend
+
+---
+
+### Task 03 - 失败处理与错误信息标准化
+- **Task name**: ElevenLabs 调用失败时提供清晰错误
+- **Description**: 对 ElevenLabs 的鉴权失败、配额不足、网络超时、返回格式异常等场景做统一错误包装，确保上层能得到“可定位原因”的信息（不静默、不吞错）。
+- **Input**:
+  - ElevenLabs 调用异常/错误码
+  - 现有异常体系（`AIServiceError` / `PodcastAIError`）
+- **Output**:
+  - 标准化错误消息（可直接在 CLI 展示）
+  - 失败时流程按预期中断
+- **Files involved**:
+  - `src/podcast_ai/infra/tts_client.py`
+  - `src/podcast_ai/core/exceptions.py`（如需补充错误类型）
+- **Dependencies**: Task 02
+- **Estimated complexity**: S（1 小时）
+- **Type**: backend
+
+---
+
+### Task 04 - Voiceover 兼容新 TTS 且不破坏时序
+- **Task name**: `VoiceoverService` 对接 ElevenLabs 默认客户端
+- **Description**: 校验并调整 `modules/voiceover/tts_service.py` 调用，确保仍通过统一 `TTSClient` 接口生成音频；不得改动 v1.3 的插入点计算与顺序规则（仅替换语音供应商，不改时序策略）。
+- **Input**:
+  - `EpisodePlan` + 现有边界/顺序策略
+  - Task 02 的默认 TTS 客户端
+- **Output**:
+  - 主持语音可通过 ElevenLabs 正常生成并进入后续混音
+  - 串词顺序与边界对齐逻辑保持 v1.3
+- **Files involved**:
+  - `src/podcast_ai/modules/voiceover/tts_service.py`
+  - `src/podcast_ai/core/pipeline.py`（仅在注入路径有调整时）
+- **Dependencies**: Task 02, Task 03
+- **Estimated complexity**: S（1 小时）
+- **Type**: backend
+
+---
+
+### Task 05 - 测试与验收（供应商切换回归）
+- **Task name**: 增加 ElevenLabs 路径测试与关键回归验证
+- **Description**: 增加/更新测试：1）默认客户端为 ElevenLabs；2）`synthesize` 产出文件可被后续链路消费；3）调用失败时抛出清晰错误；4）v1.3 时序相关测试继续通过（防回归）。
+- **Input**:
+  - mock 的 ElevenLabs 响应/错误
+  - 现有 voiceover/mixing/pipeline 测试用例
+- **Output**:
+  - 自动化测试覆盖 v1.4 验收点
+  - 回归结果可证明“供应商切换未破坏时序逻辑”
+- **Files involved**:
   - `tests/test_pipeline.py`
-  - （如需要）`tests/test_selection.py`
+  - `tests/test_mixing.py`
+  - `tests/test_voiceover.py`（若不存在则新增）
+  - `tests/conftest.py`（如需补 fixture）
 - **Dependencies**: Task 04
 - **Estimated complexity**: M（2-3 小时）
+- **Type**: backend
+
+---
+
+### Task 06 - 文档与运行指引更新
+- **Task name**: 更新 README/示例配置到 ElevenLabs 主路径
+- **Description**: 更新文档中的 TTS 说明、环境变量示例、常见错误排查（鉴权、voice_id、配额、网络），明确 ElevenLabs 为默认路径，Edge 不再作为主路径说明。
+- **Input**:
+  - 最终实现后的配置字段与错误信息
+- **Output**:
+  - 可直接照文档配置并跑通 ElevenLabs
+- **Files involved**:
+  - `README.md`
+  - `.env.example` / `config.example.yaml`
+- **Dependencies**: Task 01, Task 03
+- **Estimated complexity**: S（1 小时）
 - **Type**: backend
 

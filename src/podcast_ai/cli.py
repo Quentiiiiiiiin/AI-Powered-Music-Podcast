@@ -127,17 +127,26 @@ llm:
   max_retries: 2
 
 tts:
-  provider: "edge_tts"
+  provider: "elevenlabs"
   api_key: ""
-  voice: "en-AU-NatashaNeural"
+  voice: ""
+  # 通用超时/重试配置
   timeout_seconds: 60
   max_retries: 2
+  # v1.4+：当 provider 为 elevenlabs 时必填 api_key、voice_id
+  elevenlabs:
+    api_key: ""
+    voice_id: ""
+    model: "eleven_flash_v2_5"
+    output_format: "mp3_44100_128"
 """
 
 _INIT_ENV_EXAMPLE = """# LLM / TTS key 建议放环境变量
 PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 # PODCAST_AI_LLM__BASE_URL=https://openrouter.ai/api/v1
-# PODCAST_AI_TTS__VOICE=your_voice_here
+PODCAST_AI_TTS__PROVIDER=elevenlabs
+PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
+PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
 """
 
 

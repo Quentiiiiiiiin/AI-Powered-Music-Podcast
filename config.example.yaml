@@ -27,9 +27,16 @@ llm:
   max_retries: 2
 
 tts:
-  provider: "edge_tts"
+  # v1.4 默认 elevenlabs；可改为 edge_tts 使用 Edge TTS
+  provider: "elevenlabs"
   api_key: ""
   voice: ""
+  # v1.4+：当 provider 为 elevenlabs 时必填 api_key、voice_id（见 require_elevenlabs_tts_config）
+  elevenlabs:
+    api_key: ""
+    voice_id: ""
+    model: "eleven_flash_v2_5"
+    output_format: "mp3_44100_128"
   timeout_seconds: 60
   max_retries: 2
 

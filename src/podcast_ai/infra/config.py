@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+from podcast_ai.core.exceptions import ConfigError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -15,16 +17,34 @@ from pydantic_settings import (
 class LLMConfig(BaseModel):
     provider: str = "openai_compatible"
     api_key: str = ""
-    base_url: str = ""
-    model: str = "gpt-4o-mini"
+    base_url: str = "https://openrouter.ai/api/v1"
+    model: str = "minimax/minimax-m2.5"
     timeout_seconds: int = 60
     max_retries: int = 2
 
 
+class ElevenLabsConfig(BaseModel):
+    """
+    ElevenLabs TTS 专用字段（v1.4+），供 `infra/tts_client.py` 消费。
+
+    - 环境变量嵌套：`PODCAST_AI_TTS__ELEVENLABS__API_KEY` 等（与 pydantic-settings 约定一致）
+    - `model` / `output_format` 提供合理默认值；`api_key` / `voice_id` 须在 provider=elevenlabs 时由调用方校验为非空
+    """
+
+    api_key: str = ""
+    voice_id: str = ""
+    # 官方模型 id 示例：eleven_multilingual_v2、eleven_turbo_v2_5
+    model: str = "eleven_flash_v2_5"
+    # 输出格式示例：mp3_44100_128（与混音链路兼容的 MP3）；具体取值以 ElevenLabs API 为准
+    output_format: str = "mp3_44100_128"
+
+
 class TTSConfig(BaseModel):
-    provider: str = "edge_tts"
+    # v1.4 默认主路径为 ElevenLabs；仍可通过 provider=edge_tts 回退 Edge
+    provider: str = "elevenlabs"
     api_key: str = ""
     voice: str = ""
+    elevenlabs: ElevenLabsConfig = Field(default_factory=ElevenLabsConfig)
     timeout_seconds: int = 60
     max_retries: int = 2
 
@@ -132,4 +152,47 @@ def load_settings(config_file: str | Path | None = None) -> Settings:
     if config_file is None:
         return Settings()
     return Settings(config_file=str(config_file))
+
+
+def require_elevenlabs_tts_config(tts: TTSConfig) -> ElevenLabsConfig:
+    """
+    在调用 ElevenLabs TTS 前做最小必填校验，并返回可直接用于客户端的配置副本。
+
+    - 仅当 `tts.provider`（不区分大小写）为 `elevenlabs` 时生效；否则抛出 `ConfigError`。
+    - `api_key` 优先取 `tts.elevenlabs.api_key`，为空时回退到 `tts.api_key`（便于与既有 LLM 风格 key 共用）。
+    - `voice_id` 必须非空；`model` / `output_format` 若为空则使用 `ElevenLabsConfig` 默认值。
+    """
+    prov = (tts.provider or "").strip().lower()
+    if prov != "elevenlabs":
+        raise ConfigError(
+            f"当前 TTS provider 为 {tts.provider!r}，需要 elevenlabs 才能使用 ElevenLabs 配置。"
+            "请在 config.yaml 或环境变量 PODCAST_AI_TTS__PROVIDER 中设置 provider: elevenlabs。"
+        )
+
+    el = tts.elevenlabs.model_copy()
+    api_key = (el.api_key or tts.api_key or "").strip()
+    voice_id = (el.voice_id or "").strip()
+    _defaults = ElevenLabsConfig()
+    model = (el.model or "").strip() or _defaults.model
+    output_format = (el.output_format or "").strip() or _defaults.output_format
+
+    missing: list[str] = []
+    if not api_key:
+        missing.append(
+            "api_key 未设置：请配置 tts.elevenlabs.api_key 或环境变量 PODCAST_AI_TTS__ELEVENLABS__API_KEY 或 tts.api_key"
+        )
+    if not voice_id:
+        missing.append(
+            "voice_id 未设置：请配置 tts.elevenlabs.voice_id 或环境变量 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID"
+        )
+
+    if missing:
+        raise ConfigError("ElevenLabs TTS 配置不完整：\n" + "\n".join(f"  - {m}" for m in missing))
+
+    return ElevenLabsConfig(
+        api_key=api_key,
+        voice_id=voice_id,
+        model=model,
+        output_format=output_format,
+    )
 

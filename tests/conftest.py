@@ -13,6 +13,19 @@ from podcast_ai.core.models import (
     TrackMetadata,
     TrackWithMetadata,
 )
+from podcast_ai.infra.config import AppConfig, ElevenLabsConfig, Settings, TTSConfig
+
+
+@pytest.fixture
+def settings_elevenlabs_minimal(tmp_path: Path) -> Settings:
+    """v1.4 单测用：带合法 ElevenLabs 占位配置与独立 output_dir。"""
+    return Settings(
+        app=AppConfig(output_dir=str(tmp_path)),
+        tts=TTSConfig(
+            provider="elevenlabs",
+            elevenlabs=ElevenLabsConfig(api_key="test_key", voice_id="test_voice_id"),
+        ),
+    )
 
 
 @pytest.fixture
