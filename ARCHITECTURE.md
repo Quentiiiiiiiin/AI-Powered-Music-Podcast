@@ -17,9 +17,8 @@
     - 默认实现：接入 OpenAI / Claude / 其它兼容 LLM，模型名称与 API Key 通过环境变量或配置文件注入
   - **TTS**
     - 抽象接口：`TTSClient`
-    - 实现候选：
-      - OpenAI TTS
-      - `edge-tts`（微软 Edge 语音）
+    - 默认实现：`ElevenLabs`（v1.4 主路径）
+    - 备选实现（可选，非默认）：OpenAI TTS / Coqui
   - **配置与数据校验**
     - `pydantic` / `pydantic-settings`：用于配置加载、数据模型定义与校验
 - **工具与基础设施**
@@ -58,12 +57,12 @@
   - **基础设施层（Infrastructure Layer）**
     - 对外部世界的全部访问集中在此层，提供可替换实现：
       - `infra/llm_client.py`：封装 LLM 调用（统一重试与日志）
-      - `infra/tts_client.py`：封装 TTS 调用
+      - `infra/tts_client.py`：封装 TTS 调用（默认 ElevenLabs，支持 SDK/HTTP 两种接入路径二选一）
       - `infra/audio_backend.py`：封装 pydub / librosa / ffmpeg 的常用操作
       - `infra/storage/cache.py`：音乐库扫描结果缓存（JSON 或 SQLite）
       - `infra/config.py`：加载配置文件和环境变量
 - **主流程（两阶段时序）**
-  **阶段一：规划与歌单输出（用户可仅执行此阶段）**
+**阶段一：规划与歌单输出（用户可仅执行此阶段）**
   1. 用户通过 CLI 输入主题和时长 → 解析为 `EpisodeRequest`
   2. `Pipeline.plan_episode(request)`：
     - 调用 `ThemePlanner.generate_plan`：生成节目结构、段落、情绪、BPM 区间、串词草稿、**目标歌单规划** → `EpisodePlan`
@@ -178,6 +177,7 @@
     - `build_mix(selected_tracks: list[SelectedTrack], voiceovers: list[VoiceoverSegment], config: AudioRenderConfig) -> Path`
   - `VoiceoverService`（模块 5：主持语音）
     - `generate_voiceovers(plan: EpisodePlan) -> list[VoiceoverSegment]`
+    - 默认使用 ElevenLabs 生成主持语音；若调用失败，返回清晰错误信息（不静默失败）
   - `MasteringService`（模块 6：母带处理）
     - `apply_mastering(mix_path: Path, config: AudioRenderConfig) -> Path`
   - `Exporter`（模块 7：导出）
@@ -221,7 +221,7 @@ project-root/
       infra/
         config.py           # 配置加载（config.yaml + 环境变量）
         llm_client.py       # LLMClient 抽象 + 默认实现
-        tts_client.py       # TTSClient 抽象 + 默认实现
+        tts_client.py       # TTSClient 抽象 + 默认实现（ElevenLabs）
         audio_backend.py    # 对 pydub / librosa / ffmpeg 的统一封装
         storage/
           cache.py          # 音乐库扫描缓存（JSON/SQLite）
@@ -284,6 +284,23 @@ project-root/
     - 在 `LLMClient` / `TTSClient` 中内建重试、超时与基础日志机制。
     - 将模型名称、最大字数/时长、语言等参数配置化，方便按需调优成本与效果。
     - 通过 prompt 约束串词长度与风格，降低无效生成。
+
+---
+
+## 7. Architecture Decisions
+
+- **AD-2026-03-v1.4：TTS 供应商切换到 ElevenLabs（迭代四）**
+  - **状态**：Accepted
+  - **结论**：**不需要调整系统架构（否）**，仅需实现层最小改动
+  - **背景**：PRD v1.4 指出 Edge TTS 音质不满足发布要求，目标切换至 ElevenLabs
+  - **最小改动方案**：
+    - 保持现有分层与模块边界不变（`VoiceoverService` + `TTSClient` 抽象继续沿用）
+    - 将 `TTSClient` 默认实现从 Edge 路径切换为 ElevenLabs
+    - 在 `config.yaml` 增加/确认 ElevenLabs 配置项（`api_key`、`voice_id`、`model`、`output_format`）
+    - 明确失败策略：TTS 调用失败时返回可读错误并中断当前流程，不静默降级
+  - **影响面**：
+    - 主要影响 `infra/tts_client.py`、`modules/voiceover/tts_service.py` 与配置文件
+    - 对 Pipeline、数据模型、目录结构无结构性变更
 - **6）跨平台依赖安装（尤其是 FFmpeg）**
   - 难点：Windows 与 macOS 上 FFmpeg 安装方式与路径各异，易导致运行时错误。
   - 方案：

@@ -94,6 +94,18 @@ def _make_voiceover(path: Path, duration_ms: int) -> VoiceoverSegment:
     )
 
 
+def _make_voiceover_mp3(path: Path, duration_ms: int) -> VoiceoverSegment:
+    """生成 mp3 主持段（模拟 ElevenLabs 默认输出），供 v1.4 混音链路回归。"""
+    seg = AudioSegment.silent(duration=duration_ms)
+    seg.export(str(path), format="mp3")
+    return VoiceoverSegment(
+        segment_id=path.stem,
+        text="",
+        audio_path=path,
+        insert_time_in_episode=0.0,
+    )
+
+
 @_ffmpeg_required
 def test_v11_episode_starts_with_voiceover(tmp_path: Path) -> None:
     """v1.1：整期开头为串词1，顺序为 串词1→组1→串词2→组2。"""
@@ -219,3 +231,36 @@ def test_v11_duration_within_tolerance(tmp_path: Path) -> None:
     expected = 0.6 + 5.0 + 0.4 + 4.0  # 10.0s
     tolerance = 0.05 * expected
     assert abs(summary.actual_duration_seconds - expected) < tolerance
+
+
+# ---------- v1.4：ElevenLabs 产出 mp3 与混音链路兼容 ----------
+
+
+@_ffmpeg_required
+def test_v14_mixer_accepts_mp3_voiceover_elevenlabs_shape(tmp_path: Path) -> None:
+    """v1.4：mp3 串词路径可被 Mixer 加载，与 v1.1 wav 时序逻辑等价（防供应商切换回归）。"""
+    vo1 = tmp_path / "vo1.mp3"
+    vo2 = tmp_path / "vo2.mp3"
+    _make_silent_wav(tmp_path / "t1.wav", 2000)
+    _make_silent_wav(tmp_path / "t2.wav", 1500)
+    voiceovers = [
+        _make_voiceover_mp3(vo1, 500),
+        _make_voiceover_mp3(vo2, 300),
+    ]
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=2.0, bpm=100.0, genre=None),
+    )
+    twm2 = TrackWithMetadata(
+        track=Track(id="t2", file_path=tmp_path / "t2.wav", title="B", artist="Y"),
+        metadata=TrackMetadata(track_id="t2", duration_seconds=1.5, bpm=105.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0, end_time_in_episode=2.0, effective_duration=2.0)
+    st2 = SelectedTrack(track=twm2.track, start_time_in_episode=2.0, end_time_in_episode=3.5, effective_duration=1.5)
+    config = AudioRenderConfig(crossfade_seconds=0.0)
+    mixer = Mixer()
+    out = tmp_path / "mix.wav"
+    summary = mixer.build_mix([st1, st2], voiceovers, config, out)
+    expected = 0.5 + 2.0 + 0.3 + 1.5
+    assert abs(summary.actual_duration_seconds - expected) < 0.08
+    assert summary.voiceover_count == 2

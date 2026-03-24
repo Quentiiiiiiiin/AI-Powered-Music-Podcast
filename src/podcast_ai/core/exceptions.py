@@ -17,6 +17,14 @@ class AIServiceError(PodcastAIError):
     """LLM/TTS 等外部 AI 服务调用失败。"""
 
 
+class TTSServiceError(AIServiceError):
+    """
+    TTS 供应商调用失败（v1.4+ 用于 ElevenLabs 等）。
+
+    继承自 AIServiceError，便于既按「AI 服务」统一捕获，也可单独按 TTS 细分。
+    """
+
+
 class AudioProcessingError(PodcastAIError):
     """音频处理/渲染失败。"""
 

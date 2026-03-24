@@ -62,8 +62,10 @@ PODCAST_AI_LLM__API_KEY=sk-xxx
 PODCAST_AI_LLM__BASE_URL=https://api.openai.com/v1
 PODCAST_AI_LLM__MODEL=gpt-4o-mini
 
-# TTS 使用 edge-tts 时可留空；需指定 voice 时：
-PODCAST_AI_TTS__VOICE=zh-CN-XiaoxiaoNeural
+# v1.4：TTS 默认使用 ElevenLabs
+PODCAST_AI_TTS__PROVIDER=elevenlabs
+PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
+PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
 ```
 
 ---
@@ -126,7 +128,8 @@ podcast-ai plan-episode "主题" 30 -l en   # 英文规划
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS） | `-14.0` |
 | `llm.base_url` | LLM API 地址 | 需配置 |
 | `llm.api_key` | LLM API Key | 建议用环境变量 |
-| `tts.voice` | TTS 发音人 | `zh-CN-XiaoxiaoNeural` 等 |
+| `tts.provider` | TTS 供应商 | `elevenlabs` |
+| `tts.elevenlabs.voice_id` | ElevenLabs Voice ID | 需配置 |
 
 ---
 
@@ -236,7 +239,10 @@ podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx_plan_xxx.json D:\M
 |------|----------|------|
 | `未检测到可用的 FFmpeg/ffprobe` | FFmpeg 未安装或未加入 PATH | 安装 FFmpeg，将 `ffmpeg/bin` 加入 PATH |
 | `LLM base_url 未配置` | 未配置 `llm.base_url` 或 `PODCAST_AI_LLM__BASE_URL` | 在 `config.yaml` 或 `.env` 中配置 |
-| `TTS voice 未配置` | edge-tts 需要 voice | 在 `.env` 设置 `PODCAST_AI_TTS__VOICE=zh-CN-XiaoxiaoNeural` |
+| `ElevenLabs TTS 配置不完整` | 未配置 `tts.elevenlabs.api_key` 或 `voice_id` | 在 `.env` 设置 `PODCAST_AI_TTS__ELEVENLABS__API_KEY` 与 `PODCAST_AI_TTS__ELEVENLABS__VOICE_ID` |
+| `ElevenLabs TTS 调用失败：鉴权失败` | API Key 无效或过期 | 检查 ElevenLabs key 是否正确 |
+| `ElevenLabs TTS 调用失败：资源不存在` | `voice_id` 不正确 | 到 ElevenLabs 控制台复制正确 Voice ID |
+| `ElevenLabs TTS 调用失败：配额或频率受限` | 配额不足或触发限流 | 稍后重试或提升套餐 |
 | `音乐目录为空或扫描失败` | 目录不存在或无 mp3/wav | 检查路径，确保有音频文件 |
 | `选曲结果为空` | 曲库中无符合 BPM 区间的曲目 | 放宽规划中的 BPM 范围或准备更多曲目 |
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.logging_config import log_timing
@@ -13,6 +13,7 @@ from podcast_ai.core.models import (
     EpisodeResult,
 )
 from podcast_ai.infra.config import Settings, load_settings
+from podcast_ai.infra.tts_client import TTSClient
 from podcast_ai.infra.storage.paths import (
     generate_episode_id,
     generate_plan_id,
@@ -132,12 +133,15 @@ def create_episode(
     settings: Settings | None = None,
     topic: str | None = None,
     language: str = "zh",
+    tts_client: Optional[TTSClient] = None,
 ) -> EpisodeResult:
     """
     阶段二：从 plan 文件继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
 
     v1.3 流程：选曲（plan 驱动）→ 计算 segment 实际边界 → 主持（按边界插入）→ 混音（按 segment 分组）。
     若任一 segment 映射失败或边界缺失，直接报错并阻断，不进入混音，避免错位输出。
+
+    v1.4：可注入 `tts_client`（如单测 mock）；默认使用 `VoiceoverService` 内建的 `get_default_tts_client`（ElevenLabs）。
     """
     effective_settings = settings or load_settings()
 
@@ -179,7 +183,7 @@ def create_episode(
             )
 
         with log_timing(logger, "generate_voiceovers"):
-            voiceover_svc = VoiceoverService(settings=effective_settings)
+            voiceover_svc = VoiceoverService(settings=effective_settings, tts_client=tts_client)
             voiceovers = voiceover_svc.generate_voiceovers(
                 plan, language=language, segment_boundaries=segment_boundaries
             )

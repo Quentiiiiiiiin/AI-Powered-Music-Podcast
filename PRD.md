@@ -43,6 +43,19 @@
     4. episode 开头先串词1，再播放 segment1；episode 结尾最后一个串词在最后一个 segment 之前。
     5. 若 plan 中任一 segment 的歌曲无法映射到本地文件，流程应报告缺失/阻断生成，避免继续生成导致串词错位。
 
+- **v1.4（迭代四：TTS 供应商切换到 ElevenLabs）**：
+  - **问题**：当前使用 Edge TTS 生成主持语音，音质不满足节目发布要求。
+  - **变更目标**：将主持语音生成服务从 Edge TTS 切换为 ElevenLabs，以提升语音自然度与整体听感质量。
+  - **接入方式说明（待验证）**：当前尚未确定采用何种调用方式（官方 SDK / HTTP API / 直接 request 封装）；v1.4 目标是先打通 ElevenLabs 可用调用链路并完成替换。
+  - **User Story（用户视角）**：作为内容创作者，我希望主持串词由更高质量的 TTS 供应商生成，这样整期节目的人声更自然、更接近可发布质量。
+  - **功能归类**：优化（音频质量优化与供应商升级）。
+  - **Acceptance Criteria（验收标准）**：
+    1. 主持语音生成默认使用 ElevenLabs，不再依赖 Edge TTS 作为主路径。
+    2. 串词文本可成功通过 ElevenLabs 生成可插入流程的音频文件（格式与采样率满足现有混音链路）。
+    3. 若 ElevenLabs 调用失败，系统返回清晰错误信息（不静默失败）。
+    4. 现有“串词插入时序与 plan 对齐”逻辑不被破坏（顺序与边界规则保持 v1.3）。
+    5. 在同等输入下，主观听感较 v1.3 有可感知提升（以内部试听验收为准）。
+
 ## 1. 产品背景
 
 ### 1.1 行业背景
@@ -261,6 +274,7 @@
 | 项目 | 说明 |
 |------|------|
 | **流程** | AI 生成串词 → TTS 生成语音 → **按 plan 的 segment 所包含歌曲时间线计算插入点（串词在 segment 之前）** |
+| **TTS 供应商（v1.4）** | 默认使用 ElevenLabs（替代 Edge TTS）；具体调用路径可为官方 SDK 或 HTTP API（待最终实现验证）。 |
 | **要求** | 主持语音期间不播放背景歌曲；整期开头先串词再音乐，顺序为 串词1 - segment 1 - 串词2 - segment 2 - … - 串词N - segment N。 |
 | **定位策略（关键）** | 串词_i 的开始时间以 plan 中 segment_i 对应的**第一首歌播放开始边界**为准；不再使用 `target duration seconds` 预估插入位置。第一个串词在 episode 开头，最后一个串词在最后一个 segment 之前。 |
 | **优先级** | P0 |
@@ -397,7 +411,7 @@ Phase 4 (未来)    → 流媒体接入、多用户、高级情绪算法
 
 - **版权**：MVP 阶段不重点考虑，用户需确保音乐库中的音乐具有合法使用权
 - **技术栈**：以 Python 为主，音频处理可使用 librosa、pydub、essentia 等库
-- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 可选 OpenAI TTS、Edge TTS、Coqui 等
+- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 当前主路径为 ElevenLabs（替代 Edge TTS），可保留 OpenAI TTS/Coqui 作为后续备选
 
 ---
 

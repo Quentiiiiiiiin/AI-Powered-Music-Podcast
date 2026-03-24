@@ -1,6 +1,7 @@
-"""流水线单元测试：plan_episode 在 mock LLM 下可跑通、create_episode 结构、v1.3 验收点。"""
+"""流水线单元测试：plan_episode 在 mock LLM 下可跑通、create_episode 结构、v1.3/v1.4 验收点。"""
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -204,3 +205,12 @@ def test_v13_create_episode_mapping_failure_blocks(
         )
 
     assert not mix_path.exists()
+
+
+# ---------- v1.4：供应商切换与注入点 ----------
+
+
+def test_v14_create_episode_accepts_tts_client_parameter() -> None:
+    """create_episode 支持注入 tts_client，便于 mock ElevenLabs 或回归单测。"""
+    sig = inspect.signature(create_episode)
+    assert "tts_client" in sig.parameters

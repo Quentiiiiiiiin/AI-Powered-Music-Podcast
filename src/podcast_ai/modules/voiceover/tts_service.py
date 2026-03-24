@@ -5,6 +5,8 @@ v1.1：保证 voiceovers 与 plan.segments 一一对应（len(voiceovers) == len
 对无 host_script 的 segment 输出占位（零时长静音），使混音可按索引对齐「串词_i → 组_i」。
 v1.3：可选接收 segment_boundaries，将 insert_time_in_episode 设为 segment_i.music_start 之前的边界
 （即 串词_1=0，串词_i=boundaries[i-1].music_end）。
+v1.4：默认通过 `get_default_tts_client` 使用 ElevenLabs（统一 `TTSClient.synthesize`）；TTS 配置/鉴权/
+网络等失败抛出 `PodcastAIError` 子类并向上传递，不静默替换为占位，以免混音在「无串词」下继续。
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from typing import Optional
 
 from pydub import AudioSegment  # type: ignore[import-untyped]
 
+from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.models import EpisodePlan, SegmentBoundary, VoiceoverSegment
 from podcast_ai.infra.audio_backend import export_audio
 from podcast_ai.infra.config import Settings, load_settings
@@ -22,7 +25,7 @@ from podcast_ai.infra.tts_client import TTSClient, get_default_tts_client
 
 logger = logging.getLogger(__name__)
 
-# 语言 -> edge-tts 默认发音人（当 config 未指定 voice 时）
+# 语言 -> edge-tts 默认发音人（仅 provider=edge_tts 且未配置 tts.voice 时使用）
 _DEFAULT_VOICE_BY_LANG = {
     "zh": "zh-CN-XiaoxiaoNeural",
     "en": "en-US-JennyNeural",
@@ -94,6 +97,7 @@ class VoiceoverService:
                     audio_path = self._tts.synthesize(
                         seg.host_script,
                         voice=voice,
+                        language=language,
                         use_cache=use_cache,
                     )
                     results.append(
@@ -105,8 +109,12 @@ class VoiceoverService:
                         ),
                     )
                     logger.debug("已生成语音: %s @ %.1fs", segment_id, insert_time)
+                except PodcastAIError:
+                    # v1.4：TTS/配置类错误必须向上抛出，供 CLI 展示清晰原因并阻断后续混音
+                    raise
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("段 '%s' 语音生成失败，使用占位: %s", seg.name, exc)
+                    # 非预期异常仍降级占位并记录，避免进程直接崩溃；正常路径应少见
+                    logger.warning("段 '%s' 语音生成出现非预期错误，使用占位: %s", seg.name, exc)
                     results.append(
                         VoiceoverSegment(
                             segment_id=segment_id,
@@ -130,7 +138,16 @@ class VoiceoverService:
 
 
 def _get_voice_for_language(language: str, settings: Settings) -> str:
-    """根据 language 与配置返回 TTS voice；优先使用 config，否则按语言选择默认。"""
+    """
+    返回传给 TTSClient.synthesize 的 voice 参数。
+
+    - ElevenLabs：默认用配置中的 voice_id（在客户端内解析）；此处仅在用户显式设置
+      `tts.voice` 时作为 voice_id 覆盖，否则返回空串，避免把 Edge 发音人名传给 ElevenLabs。
+    - Edge：优先 `tts.voice`，否则按语言选 Edge 默认发音人。
+    """
     if settings.tts.voice and settings.tts.voice.strip():
         return settings.tts.voice.strip()
+    prov = (settings.tts.provider or "").strip().lower()
+    if prov == "elevenlabs":
+        return ""
     return _DEFAULT_VOICE_BY_LANG.get(language, "zh-CN-XiaoxiaoNeural")

@@ -19,8 +19,15 @@ llm:
   max_retries: 2
 
 tts:
-  provider: "edge_tts"
+  provider: "elevenlabs"
   api_key: ""
-  voice: "en-AU-NatashaNeural"
+  voice: ""
+  # 通用超时/重试配置
   timeout_seconds: 60
   max_retries: 2
+  # v1.4+：当 provider 为 elevenlabs 时必填 api_key、voice_id
+  elevenlabs:
+    api_key: ""
+    voice_id: ""
+    model: "eleven_flash_v2_5"
+    output_format: "mp3_44100_128"
