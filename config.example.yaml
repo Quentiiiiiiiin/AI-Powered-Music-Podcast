@@ -6,8 +6,11 @@ app:
   output_dir: "./output"
 
 audio:
-  # 过渡时长（秒）
+  # 相邻歌曲-歌曲转场（秒）
   crossfade_seconds: 8.0
+
+  # v2.0：串词与相邻歌曲边界的短时 crossfade（秒）；0 关闭试验过渡
+  voice_music_crossfade_seconds: 3.0
 
   # 母带响度目标（LUFS）
   loudness_target_lufs: -14.0
@@ -35,7 +38,7 @@ tts:
   elevenlabs:
     api_key: ""
     voice_id: ""
-    model: "eleven_flash_v2_5"
+    model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
   timeout_seconds: 60
   max_retries: 2

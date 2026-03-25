@@ -34,7 +34,7 @@ class ElevenLabsConfig(BaseModel):
     api_key: str = ""
     voice_id: str = ""
     # 官方模型 id 示例：eleven_multilingual_v2、eleven_turbo_v2_5
-    model: str = "eleven_flash_v2_5"
+    model: str = "eleven_multilingual_v2"
     # 输出格式示例：mp3_44100_128（与混音链路兼容的 MP3）；具体取值以 ElevenLabs API 为准
     output_format: str = "mp3_44100_128"
 
@@ -52,6 +52,8 @@ class TTSConfig(BaseModel):
 class AudioConfig(BaseModel):
     crossfade_seconds: float = 8.0
     loudness_target_lufs: float = -14.0
+    # v2.0：串词-歌曲边界 crossfade（默认约 2–4s 区间的中值；置 0 可回退为硬切）
+    voice_music_crossfade_seconds: float = 3.0
 
 
 class CacheConfig(BaseModel):

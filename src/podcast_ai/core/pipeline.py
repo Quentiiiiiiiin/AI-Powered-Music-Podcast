@@ -159,6 +159,7 @@ def create_episode(
             crossfade_seconds=effective_settings.audio.crossfade_seconds,
             loudness_target_lufs=effective_settings.audio.loudness_target_lufs,
             bitrate="192k",
+            voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
         )
 
         with log_timing(logger, "scan_library"):

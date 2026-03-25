@@ -1,12 +1,14 @@
-"""流水线单元测试：plan_episode 在 mock LLM 下可跑通、create_episode 结构、v1.3/v1.4 验收点。"""
+"""流水线单元测试：plan_episode 在 mock LLM 下可跑通、create_episode 结构、v1.3/v1.4/v2.0 验收点。"""
 from __future__ import annotations
 
 import inspect
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydub import AudioSegment  # type: ignore[import-untyped]
 
 from podcast_ai.core.exceptions import PlanMappingError, PodcastAIError
 from podcast_ai.core.models import (
@@ -17,7 +19,11 @@ from podcast_ai.core.models import (
     SegmentBoundary,
 )
 from podcast_ai.core.pipeline import create_episode, load_plan_from_disk, plan_episode, save_plan_to_disk
+from podcast_ai.infra.audio_backend import is_ffmpeg_available
 from podcast_ai.infra.storage.paths import get_mix_output_path
+from podcast_ai.modules.mastering.processor import MasteringService
+
+_ffmpeg_required = pytest.mark.skipif(not is_ffmpeg_available(), reason="FFmpeg required")
 
 
 def _mock_plan_json() -> str:
@@ -214,3 +220,202 @@ def test_v14_create_episode_accepts_tts_client_parameter() -> None:
     """create_episode 支持注入 tts_client，便于 mock ElevenLabs 或回归单测。"""
     sig = inspect.signature(create_episode)
     assert "tts_client" in sig.parameters
+
+
+# ---------- v2.0：pipeline 集成回归（边界 crossfade 不影响顺序与跑通） ----------
+
+
+def _export_short_wav(path: Path, duration_ms: int) -> None:
+    AudioSegment.silent(duration=duration_ms).export(str(path), format="wav")
+
+
+@_ffmpeg_required
+@patch.object(MasteringService, "apply_mastering")
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+def test_v20_create_episode_happy_path_preserves_order_and_outputs(
+    mock_scan: object,
+    mock_mastering: object,
+    tmp_path: Path,
+) -> None:
+    """
+    Task 04：在 v2.0 混音（voice_music_crossfade>0）下 create_episode 仍能跑通；
+    断言选曲顺序、产物路径与非中断；不对总时长做苛刻数值锁定（边界叠化会缩短若干秒）。
+    """
+    from podcast_ai.core.models import Track, TrackMetadata, TrackWithMetadata
+    from podcast_ai.infra.config import (
+        AppConfig,
+        AudioConfig,
+        CacheConfig,
+        ElevenLabsConfig,
+        Settings,
+        TTSConfig,
+    )
+
+    vm = 1.0
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    episode_id = "ep_test_v20"
+    plan_id = "plan_v20"
+
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    track_path = music_dir / "Track A.wav"
+    _export_short_wav(track_path, 2_500)
+
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=120,
+                bpm_range=(90, 110),
+                mood="chill",
+                host_script="",
+                target_playlist=[
+                    PlaylistItem(
+                        segment_name="开场",
+                        recommended_tracks=["Track A"],
+                        search_hints={},
+                    )
+                ],
+            ),
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="v20 regression",
+        plan_id=plan_id,
+    )
+    plan_path = save_plan_to_disk(
+        plan,
+        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
+        episode_id=episode_id,
+        plan_id=plan_id,
+    )
+
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=track_path, title="Track A", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=2.5, bpm=95.0, genre=None),
+        ),
+    ]
+
+    def _copy_master(mix_path: Path, output_path: Path, _config: object) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(mix_path, output_path)
+        return output_path
+
+    mock_mastering.side_effect = _copy_master
+
+    settings = Settings(
+        app=AppConfig(output_dir=str(output_dir)),
+        audio=AudioConfig(
+            crossfade_seconds=0.0,
+            voice_music_crossfade_seconds=vm,
+            loudness_target_lufs=-14.0,
+        ),
+        cache=CacheConfig(enabled=False),
+        tts=TTSConfig(
+            provider="elevenlabs",
+            elevenlabs=ElevenLabsConfig(api_key="test", voice_id="vid"),
+        ),
+    )
+
+    result = create_episode(plan_path, music_dir, settings=settings, topic="Regression")
+
+    assert result.episode_id == episode_id
+    assert len(result.tracks) == 1
+    assert result.tracks[0].track.title == "Track A"
+    assert result.audio_path.exists()
+    assert result.actual_duration_seconds >= 0
+    mix_path = get_mix_output_path(plan_path.parent.parent, ext="wav")
+    assert mix_path.exists()
+    # 边界 crossfade 缩短总时长，但应明显短于「段硬拼」近似上界（主持占位极短时约 2.5s 量级）
+    assert result.actual_duration_seconds <= 3.0
+
+
+@patch.object(MasteringService, "apply_mastering")
+@patch("podcast_ai.core.pipeline.Mixer.build_mix")
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+def test_v20_create_episode_passes_voice_music_crossfade_to_mixer(
+    mock_scan: object,
+    mock_build_mix: object,
+    mock_mastering: object,
+    tmp_path: Path,
+) -> None:
+    """Task 04：pipeline 构造的 AudioRenderConfig 含 voice_music_crossfade，并传给 Mixer。"""
+    from podcast_ai.core.models import Track, TrackMetadata, TrackWithMetadata
+    from podcast_ai.infra.config import (
+        AppConfig,
+        AudioConfig,
+        CacheConfig,
+        ElevenLabsConfig,
+        Settings,
+        TTSConfig,
+    )
+
+    output_dir = tmp_path / "out"
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    track_path = music_dir / "a.wav"
+    track_path.write_bytes(b"x")
+
+    episode_id = "ep_cfg"
+    plan_id = "plan_cfg"
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=120,
+                bpm_range=(90, 110),
+                mood="chill",
+                host_script="",
+                target_playlist=[
+                    PlaylistItem(segment_name="开场", recommended_tracks=["a"], search_hints={}),
+                ],
+            ),
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="cfg",
+        plan_id=plan_id,
+    )
+    plan_path = save_plan_to_disk(
+        plan,
+        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
+        episode_id=episode_id,
+        plan_id=plan_id,
+    )
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=track_path, title="a", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=1.0, bpm=95.0, genre=None),
+        ),
+    ]
+    mix_out = get_mix_output_path(plan_path.parent.parent, ext="wav")
+    mock_build_mix.return_value = MagicMock(
+        mix_path=mix_out,
+        actual_duration_seconds=1.0,
+        track_count=1,
+        voiceover_count=1,
+    )
+
+    def _stub_master(mix_path: Path, output_path: Path, _config: object) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"")
+        return output_path
+
+    mock_mastering.side_effect = _stub_master
+
+    vm = 2.5
+    settings = Settings(
+        app=AppConfig(output_dir=str(output_dir)),
+        audio=AudioConfig(voice_music_crossfade_seconds=vm, crossfade_seconds=0.0),
+        cache=CacheConfig(enabled=False),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+
+    create_episode(plan_path, music_dir, settings=settings)
+
+    assert mock_build_mix.called
+    _args, kwargs = mock_build_mix.call_args
+    cfg = _args[2]
+    assert cfg.voice_music_crossfade_seconds == vm
