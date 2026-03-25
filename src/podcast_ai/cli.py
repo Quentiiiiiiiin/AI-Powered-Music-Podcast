@@ -112,6 +112,7 @@ _INIT_CONFIG_YAML = """app:
 
 audio:
   crossfade_seconds: 8.0
+  voice_music_crossfade_seconds: 3.0
   loudness_target_lufs: -14.0
 
 cache:
@@ -137,7 +138,7 @@ tts:
   elevenlabs:
     api_key: ""
     voice_id: ""
-    model: "eleven_flash_v2_5"
+    model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
 """
 

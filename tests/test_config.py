@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from podcast_ai.core.exceptions import ConfigError
+from podcast_ai.core.models import AudioRenderConfig
 from podcast_ai.infra.config import (
     AppConfig,
     ElevenLabsConfig,
@@ -89,6 +90,13 @@ def test_v14_get_default_client_elevenlabs_with_factory_tts_only() -> None:
     """仅用默认 TTSConfig 工厂时，get_default_tts_client 返回 ElevenLabs 实现。"""
     s = Settings(app=AppConfig(output_dir="."), tts=TTSConfig())
     assert isinstance(get_default_tts_client(s), ElevenLabsTTSClient)
+
+
+def test_v20_audio_render_config_voice_music_crossfade_default() -> None:
+    """v2.0 Task 01：AudioRenderConfig 含 voice_music_crossfade_seconds 默认值。"""
+    c = AudioRenderConfig()
+    assert c.voice_music_crossfade_seconds == 3.0
+    assert c.crossfade_seconds == 8.0
 
 
 def test_v14_conftest_settings_elevenlabs_minimal_fixture(settings_elevenlabs_minimal: Settings) -> None:
