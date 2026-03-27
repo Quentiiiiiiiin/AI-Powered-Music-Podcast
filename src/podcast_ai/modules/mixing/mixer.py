@@ -4,8 +4,9 @@
 
 v1.3：有 plan 时按 plan 的 segment 拆分曲目组，确保 串词_i 与 segment_i 歌曲组严格对齐。
 
-v2.0（试验）：相邻「主持段」与「音乐段」之间用 `voice_music_crossfade_seconds` 做短时重叠
-（前段尾部淡出 + 后段头部淡入）；中段仍为独奏/独曲。歌曲-歌曲仍仅用 `crossfade_seconds`。
+v2.0（试验，已由 v2.1 替换）：对称叠化（前段淡出 + 后段淡入），实现已注释保留。
+v2.1（迭代六）：串词清晰度优先——「音乐→串词」硬切；「串词→音乐」仅在音乐轨做尾部重叠窗口内的
+fade_in，串词不淡出。歌曲-歌曲仍仅用 `crossfade_seconds`。
 """
 from __future__ import annotations
 
@@ -38,40 +39,71 @@ class MixRenderSummary:
     voiceover_count: int
 
 
-def _voice_music_crossfade_join(a: AudioSegment, b: AudioSegment, vm_ms: int) -> AudioSegment:
-    """
-    v2.0：串词↔音乐边界短时 crossfade。
+# --- 以下 v2.0 对称叠化已停用，勿再调用（v2.1 改为非对称逻辑）；保留备查 ---
+# def _voice_music_crossfade_join(a: AudioSegment, b: AudioSegment, vm_ms: int) -> AudioSegment:
+#     """v2.0：a 尾 fade_out + b 首 fade_in 同窗叠化。"""
+#     if vm_ms <= 0 or len(a) == 0 or len(b) == 0:
+#         return a + b
+#     vm_ms = min(vm_ms, len(a), len(b))
+#     if vm_ms <= 0:
+#         return a + b
+#     a_pre = a[:-vm_ms]
+#     a_tail = a[-vm_ms:].fade_out(vm_ms)
+#     b_head = b[:vm_ms].fade_in(vm_ms)
+#     b_rest = b[vm_ms:]
+#     overlap = a_tail.overlay(b_head)
+#     return a_pre + overlap + b_rest
 
-    - a 末尾 vm_ms：fade_out；b 开头 vm_ms：fade_in；同长度叠加以避免硬切。
-    - 总时长 = len(a) + len(b) - vm_ms（与简单串接相比缩短 vm_ms）。
-    - vm_ms==0、或任一侧为空、或有效窗口为 0：退化为 a + b。
+
+def _join_music_to_voice_hard(music: AudioSegment, voice: AudioSegment) -> AudioSegment:
+    """v2.1：音乐段结束后紧接串词——不叠化、硬切（music + voice）。"""
+    return music + voice
+
+
+def _join_voice_to_music_fade_music_only(
+    voice: AudioSegment,
+    music: AudioSegment,
+    vm_ms: int,
+) -> AudioSegment:
     """
-    if vm_ms <= 0 or len(a) == 0 or len(b) == 0:
-        return a + b
-    vm_ms = min(vm_ms, len(a), len(b))
+    v2.1：串词结束后紧接音乐——仅对音乐前 vm_ms 做 fade_in 与串词尾窗重叠；串词尾部不衰减。
+
+    总时长 = len(voice) + len(music) - vm_ms（与 v2.0 对称叠化总时长公式一致）。
+    """
+    if vm_ms <= 0 or len(voice) == 0 or len(music) == 0:
+        return voice + music
+    vm_ms = min(vm_ms, len(voice), len(music))
     if vm_ms <= 0:
-        return a + b
-    a_pre = a[:-vm_ms]
-    a_tail = a[-vm_ms:].fade_out(vm_ms)
-    b_head = b[:vm_ms].fade_in(vm_ms)
-    b_rest = b[vm_ms:]
-    overlap = a_tail.overlay(b_head)
-    return a_pre + overlap + b_rest
+        return voice + music
+    v_pre = voice[:-vm_ms]
+    v_tail = voice[-vm_ms:]
+    m_head = music[:vm_ms].fade_in(vm_ms)
+    m_rest = music[vm_ms:]
+    overlap = v_tail.overlay(m_head)
+    return v_pre + overlap + m_rest
 
 
 def _concat_parts_with_voice_music_crossfade(
     parts: list[AudioSegment],
     voice_music_crossfade_seconds: float,
 ) -> AudioSegment:
-    """将已排序的 [串词, 组, 串词, 组, …] 用边界 crossfade 串联。"""
+    """
+    将 [串词1, 组1, 串词2, 组2, …] 串联。
+
+    v2.1：奇数下标为音乐块——「上一段为串词」则用仅音乐淡入；偶数下标为串词块——「上一段为音乐」则硬切。
+    """
     if not parts:
         raise ValueError("parts 不能为空。")
     vm_ms = int(round(voice_music_crossfade_seconds * 1000))
     if vm_ms <= 0 or len(parts) == 1:
         return crossfade_concat(parts, crossfade_seconds=0.0)
     acc = parts[0]
-    for nxt in parts[1:]:
-        acc = _voice_music_crossfade_join(acc, nxt, vm_ms)
+    for j in range(1, len(parts)):
+        nxt = parts[j]
+        if j % 2 == 1:
+            acc = _join_voice_to_music_fade_music_only(acc, nxt, vm_ms)
+        else:
+            acc = _join_music_to_voice_hard(acc, nxt)
     return acc
 
 
@@ -99,7 +131,7 @@ def _split_tracks_into_groups(
 class Mixer:
     """
     v1.1 / v1.3：时间线 串词1 → 组1 → … → 串词N → 组N；组内歌曲 crossfade。
-    v2.0：串词与相邻音乐段边界使用 `voice_music_crossfade_seconds` 短时叠化；串词中段无背景乐。
+    v2.1：边界见 `_concat_parts_with_voice_music_crossfade`（音乐→串词硬切；串词→音乐仅音乐淡入）。
     """
 
     def build_mix(
@@ -114,7 +146,7 @@ class Mixer:
         执行混音并输出中间文件。
         - 有 voiceovers：按 串词_i → 组_i 顺序拼接；有 plan 时（v1.3）按 plan 的 segment 拆分曲目
         - 无 voiceovers：向后兼容，全部曲目 crossfade 拼接
-        - v2.0：段间（串词↔音乐）使用 `voice_music_crossfade_seconds`；置 0 等同 v1.1 硬拼
+        - v2.1：段间使用 `voice_music_crossfade_seconds`（仅串词→音乐侧淡入音乐）；置 0 等同全程硬拼
         """
         cf = config.crossfade_seconds
         output_path.parent.mkdir(parents=True, exist_ok=True)

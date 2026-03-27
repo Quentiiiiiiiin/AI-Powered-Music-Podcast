@@ -95,6 +95,11 @@ class ThemePlanner:
             except Exception:  # noqa: BLE001
                 seg_duration = None
 
+            if raw_duration is not None and seg_duration is None:
+                raise AIServiceError(
+                    f"segments[{idx}].target_duration_seconds 必须是整数或可转换为整数的值。",
+                )
+
             bpm_range_val = seg.get("bpm_range")
             bpm_range: Optional[Tuple[int, int]] = None
             if isinstance(bpm_range_val, (list, tuple)) and len(bpm_range_val) == 2:
@@ -105,20 +110,27 @@ class ThemePlanner:
 
             mood = str(seg.get("mood") or "")
             host_script = str(seg.get("host_script") or "")
+            if not host_script.strip():
+                raise AIServiceError(f"segments[{idx}].host_script 为空或缺失。")
 
             playlist_items_raw = seg.get("target_playlist") or []
             if not isinstance(playlist_items_raw, list):
-                playlist_items_raw = []
+                raise AIServiceError(f"segments[{idx}].target_playlist 不是数组。")
+            if not playlist_items_raw:
+                raise AIServiceError(f"segments[{idx}].target_playlist 为空。")
 
             playlist_items: List[PlaylistItem] = []
             for item_idx, item in enumerate(playlist_items_raw):
                 if not isinstance(item, dict):
-                    logger.warning("跳过无效的 target_playlist[%d]（非对象）。", item_idx)
-                    continue
+                    raise AIServiceError(
+                        f"segments[{idx}].target_playlist[{item_idx}] 不是对象。",
+                    )
 
                 recommended = item.get("recommended_tracks") or []
                 if not isinstance(recommended, list):
-                    recommended = []
+                    raise AIServiceError(
+                        f"segments[{idx}].target_playlist[{item_idx}].recommended_tracks 不是数组。",
+                    )
                 recommended = [str(x) for x in recommended]
 
                 search_hints = item.get("search_hints") or {}

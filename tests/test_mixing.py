@@ -252,41 +252,18 @@ def test_v11_duration_within_tolerance(tmp_path: Path) -> None:
     assert abs(summary.actual_duration_seconds - expected) < tolerance
 
 
-# ---------- v2.0：串词↔音乐边界 crossfade ----------
+# ---------- v2.1：串词清晰度优先的边界（音乐→串词硬切；串词→音乐仅音乐淡入） ----------
 
 
-@_ffmpeg_required
-def test_v20_voice_music_crossfade_shortens_mix(tmp_path: Path) -> None:
-    """v2.0：单串词+单组两段之间重叠 vm 秒，总时长缩短 vm。"""
-    vm = 1.0
-    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 3000)]
-    _make_silent_wav(tmp_path / "t1.wav", 4000)
-    twm1 = TrackWithMetadata(
-        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
-        metadata=TrackMetadata(track_id="t1", duration_seconds=4.0, bpm=100.0, genre=None),
-    )
-    st1 = SelectedTrack(
-        track=twm1.track, start_time_in_episode=0, end_time_in_episode=4.0, effective_duration=4.0
-    )
-    config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=vm)
-    mixer = Mixer()
-    out = tmp_path / "mix_v20.wav"
-    summary = mixer.build_mix([st1], voiceovers, config, out)
-    expected = 3.0 + 4.0 - vm
-    assert abs(summary.actual_duration_seconds - expected) < 0.2
-
-
-@_ffmpeg_required
-def test_v20_voice_music_boundary_crossfade_mid_unpolluted(tmp_path: Path) -> None:
+def _v21_sine_episode_tone_fixture(
+    tmp_path: Path,
+    vm_seconds: float,
+) -> dict:
     """
-    v2.0 Task 03：正弦「音乐1 → 主持 → 音乐2」时间线（产品顺序仍为 串词1→组1→串词2→组2）。
-    - 第一段串词用极短静音，第二段为“语音”正弦；组1/组2 为不同频率音乐。
-    - 串词中段 RMS 与同归一化下的纯轨接近；串词起始边界（与音乐重叠）RMS 明显不同于纯语音同窗口。
+    构造「极短开场串词 + music1 + 主串词 + music2」时间线，供边界 RMS 断言复用。
+    返回毫秒与路径等常量，避免多用例重复贴文件生成代码。
     """
-    vm = 1.0
-    vm_ms = int(vm * 1000)
-
-    # 极短开场串词 + music1 + 主串词 + music2
+    vm_ms = int(vm_seconds * 1000)
     l1_ms = 200
     g1_ms = 4_000
     v2_ms = 5_000
@@ -325,16 +302,69 @@ def test_v20_voice_music_boundary_crossfade_mid_unpolluted(tmp_path: Path) -> No
         end_time_in_episode=g2_ms / 1000.0,
         effective_duration=g2_ms / 1000.0,
     )
+    return {
+        "vm_seconds": vm_seconds,
+        "vm_ms": vm_ms,
+        "l1_ms": l1_ms,
+        "g1_ms": g1_ms,
+        "v2_ms": v2_ms,
+        "g2_ms": g2_ms,
+        "voiceovers": voiceovers,
+        "st1": st1,
+        "st2": st2,
+        "vo_main_path": vo_main_path,
+    }
+
+
+@_ffmpeg_required
+def test_v20_voice_music_crossfade_shortens_mix(tmp_path: Path) -> None:
+    """v2.1：单串词+单组仅在串词→音乐窗重叠 vm 秒，总时长仍缩短 vm（与 v2.0 公式一致）。"""
+    vm = 1.0
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 3000)]
+    _make_silent_wav(tmp_path / "t1.wav", 4000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=4.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(
+        track=twm1.track, start_time_in_episode=0, end_time_in_episode=4.0, effective_duration=4.0
+    )
+    config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=vm)
+    mixer = Mixer()
+    out = tmp_path / "mix_v20.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    expected = 3.0 + 4.0 - vm
+    assert abs(summary.actual_duration_seconds - expected) < 0.2
+
+
+@_ffmpeg_required
+def test_v21_voice_music_clarity_mid_start_tail(tmp_path: Path) -> None:
+    """
+    v2.1 验收：正弦「串词1→组1→主串词→组2」。
+    - 中段：与归一化纯主串词轨 RMS 接近（无人声淡出、中段无背景音乐）。
+    - 主串词起点（紧随组1）：音乐→串词硬切，起窗应与纯语音接近（开头不被音乐叠化拉低可懂度）。
+    - 主串词尾部 vm 窗：仅音乐淡入与串词尾重叠，混音与纯语音同窗应有明显能量差。
+    """
+    vm = 1.0
+    fx = _v21_sine_episode_tone_fixture(tmp_path, vm)
+    vm_ms = fx["vm_ms"]
+    l1_ms = fx["l1_ms"]
+    g1_ms = fx["g1_ms"]
+    v2_ms = fx["v2_ms"]
+    vo_main_path = fx["vo_main_path"]
 
     config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=vm)
     mixer = Mixer()
-    out = tmp_path / "mix_v20_tones.wav"
-    mixer.build_mix([st1, st2], voiceovers, config, out)
+    out = tmp_path / "mix_v21_tones.wav"
+    mixer.build_mix([fx["st1"], fx["st2"]], fx["voiceovers"], config, out)
 
     mix = load_audio(out)
-    vo2_start_ms = l1_ms + g1_ms - 2 * vm_ms
+    # 主串词起点：接在组1 硬切之后；组1 前与开场串词叠化，vm 可能被短串词截断
+    vm_cfg_ms = int(round(vm * 1000))
+    vm_open_music_ms = min(vm_cfg_ms, l1_ms, g1_ms)
+    vo2_start_ms = l1_ms + g1_ms - vm_open_music_ms
 
-    # 主串词中段：距起止均留足 vm + 余量，避免淡入淡出区
+    # 主串词中段：距首尾均远离 vm 窗
     mid_off = vm_ms + 400
     mid_end_off = v2_ms - vm_ms - 400
     assert mid_end_off > mid_off + 500
@@ -346,16 +376,26 @@ def test_v20_voice_music_boundary_crossfade_mid_unpolluted(tmp_path: Path) -> No
     assert r_ref_mid > 1.0
     assert abs(r_mix_mid - r_ref_mid) / r_ref_mid < 0.12
 
-    # 串词起点附近：与上一段音乐做 crossfade（淡入淡出叠化），波形与「同窗仅语音轨」应有明显差异
-    # （叠化窗内语音尚未满幅，RMS 不一定更大，但不应与纯语音切片几乎相同）
+    # 主串词起点：硬切后应与纯语音同窗接近（相对误差小）
     edge_ms = 700
     mix_edge = mix[vo2_start_ms : vo2_start_ms + edge_ms]
     ref_edge = ref_vo[:edge_ms]
     r_mix_e = _rms_mono(mix_edge)
     r_ref_e = _rms_mono(ref_edge)
     assert r_ref_e > 0
-    rel_edge = abs(r_mix_e - r_ref_e) / max(r_mix_e, r_ref_e)
-    assert rel_edge > 0.12
+    rel_start = abs(r_mix_e - r_ref_e) / max(r_mix_e, r_ref_e)
+    assert rel_start < 0.15
+
+    # 叠化窗末段：fade_in 前半几乎无声，对比整窗易与纯语音过近；末段音乐已抬起，RMS 差更明显
+    tail_focus_ms = min(450, max(200, vm_ms - 200))
+    tail_slice = mix[vo2_start_ms + v2_ms - tail_focus_ms : vo2_start_ms + v2_ms]
+    ref_tail = ref_vo[v2_ms - tail_focus_ms : v2_ms]
+    assert len(tail_slice) >= tail_focus_ms - 2 and len(ref_tail) >= tail_focus_ms - 2
+    r_mix_t = _rms_mono(tail_slice)
+    r_ref_t = _rms_mono(ref_tail)
+    assert r_ref_t > 1.0
+    rel_tail = abs(r_mix_t - r_ref_t) / r_ref_t
+    assert rel_tail > 0.10
 
 
 # ---------- v1.4：ElevenLabs 产出 mp3 与混音链路兼容 ----------
