@@ -174,7 +174,7 @@ class Mixer:
                 # 串词 i：主持期间无背景音乐，单独拼接
                 try:
                     vo_audio = load_audio(voiceovers[i].audio_path)
-                    vo_audio = simple_normalize(vo_audio, target_dbfs=-16.0)
+                    vo_audio = simple_normalize(vo_audio, target_dbfs=-20.0)
                     parts.append(vo_audio)
                     logger.debug("拼接主持: %s", voiceovers[i].segment_id)
                 except Exception as exc:  # noqa: BLE001

@@ -90,6 +90,7 @@ def build_theme_planner_messages(request: EpisodeRequest, segments_hint: int) ->
             - 第一个segment的开头串词（打招呼，引出电台名称Luma Hits，介绍本期主题，介绍第一个segment要播放的歌曲）
             - 每个segment的开头串词（主持人介绍该segment的情绪表达，要播放的歌曲或创作者等信息）
             - 最后一首歌之前结束语（重新回到本期主题，平滑引出最后一首歌，结束语）
+            - 每一段串词大致控制在40词左右。
 
         严格按照 JSON 结构返回，不要包含任何解释性文字或 Markdown代码块。
         """
