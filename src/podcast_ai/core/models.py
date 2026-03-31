@@ -121,11 +121,11 @@ class AudioRenderConfig(BaseModel):
     # 相邻歌曲-歌曲转场（与 v1.x 一致，配置来源 `audio.crossfade_seconds`）
     crossfade_seconds: float = 8.0
     loudness_target_lufs: float = -14.0
-    # v2.0：串词与相邻歌曲边界的短时 crossfade（试验）；0 表示关闭边界淡入淡出
+    # v2.1：仅「串词→音乐」时对音乐轨开头做短时淡入并与串词尾窗重叠；音乐→串词硬切；0=全硬拼
     voice_music_crossfade_seconds: float = Field(
         3.0,
         ge=0,
-        description="串词开始/结束附近与音乐的短时重叠过渡时长（秒），不影响歌曲-歌曲 crossfade",
+        description="串词结束后音乐淡入的叠化窗口（秒）；不影响歌曲-歌曲 crossfade",
     )
 
 
