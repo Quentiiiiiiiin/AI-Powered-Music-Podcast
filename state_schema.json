@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "theme": "一句话主题",
+    "theme_description": "详细描述",
+    "target_duration_seconds": 1800,
+    "overall_bpm_range": [90, 120]
+  },
+
+  "global_constraints": {
+    "tone": "深夜治愈",
+    "language_style": "第一人称，克制",
+    "avoid": ["说教", "浮夸"]
+  },
+
+  "plan": {
+    "segments_design": "节目结构说明",
+    "emotion_curve": ["平静", "低落", "治愈"]
+  },
+
+  "segments": [
+    {
+      "name": "开场",
+      "target_duration_seconds": 600,
+      "bpm_range": [90, 105],
+      "mood": "舒缓",
+
+      "segment_design": "选曲思路",
+
+      "playlist": [
+        {
+          "track": "曲目 A - 艺术家 X"
+        }
+      ],
+
+      "script": {
+        "segment_intro": "",
+        "between_tracks": []
+      }
+    }
+  ],
+
+  "critic": {
+    "pass": false,
+    "scores": {
+      "coherence": 0,
+      "emotion_flow": 0
+    },
+    "issues": [
+      {
+        "type": "emotion_flow",
+        "location": "segment[2]",
+        "problem": "情绪跳跃过大",
+        "suggestion": "替换为过渡更平缓的歌曲"
+      }
+    ],
+  "action": {
+    "target_agent": "Music Curator",
+    "instruction": "调整playlist情绪曲线"
+  }
+  },
+
+  "control": {
+    "iteration": 1,
+    "max_iterations": 3,
+    "status": "draft"
+  }
+}
