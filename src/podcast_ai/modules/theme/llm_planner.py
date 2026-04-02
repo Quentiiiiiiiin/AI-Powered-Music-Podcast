@@ -11,6 +11,7 @@ from podcast_ai.core.models import EpisodePlan, EpisodeRequest, EpisodeSegment, 
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.prompts import build_theme_planner_messages
+from podcast_ai.modules.theme.state import PlanState
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,16 @@ class ThemePlanner:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def generate_plan(self, request: EpisodeRequest) -> EpisodePlan:
+    def generate_plan(self, request: EpisodeRequest, *, use_orchestrator: bool = True) -> EpisodePlan:
         """
-        调用 LLM 生成 EpisodePlan，并解析为内部数据模型。
+        生成 EpisodePlan。
+
+        - v2.x：默认路径为单次 LLM 调用（use_orchestrator=False）
+        - v3.0：当 use_orchestrator=True 时，使用多 Agent Orchestrator + PlanState 转 EpisodePlan
         """
+        if use_orchestrator:
+            return self._generate_plan_v3_orchestrator(request)
+
         target_duration_seconds = request.duration_minutes * 60
         segments_hint = _suggest_segment_count(request.duration_minutes)
 
@@ -164,4 +171,119 @@ class ThemePlanner:
             plan_id=str(uuid.uuid4()),
         )
         return plan
+
+    def _generate_plan_v3_orchestrator(self, request: EpisodeRequest) -> EpisodePlan:
+        """
+        v3.0：通过 PlanOrchestrator.run() 生成 EpisodePlan。
+        """
+        from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
+
+        orchestrator = PlanOrchestrator(settings=self._settings)
+        state = orchestrator.run(request)
+        return _episode_plan_from_state(state)
+
+
+def _episode_plan_from_state(state: PlanState) -> EpisodePlan:
+    """根据最终 PlanState 构造 EpisodePlan。"""
+    meta = state.get("meta") or {}
+    segments_data = state.get("segments") or []
+    critic = state.get("critic") or {}
+
+    target_duration_seconds = int(meta.get("target_duration_seconds") or 0) or 1
+
+    overall_bpm_range = None
+    meta_bpm = meta.get("overall_bpm_range")
+    if isinstance(meta_bpm, list) and len(meta_bpm) == 2:
+        try:
+            overall_bpm_range = (int(meta_bpm[0]), int(meta_bpm[1]))
+        except Exception:  # noqa: BLE001
+            overall_bpm_range = None
+
+    segments: List[EpisodeSegment] = []
+    for idx, seg in enumerate(segments_data):
+        if not isinstance(seg, dict):
+            continue
+
+        name = str(seg.get("name") or f"Segment {idx + 1}")
+        raw_duration = seg.get("target_duration_seconds")
+        try:
+            seg_duration = int(raw_duration) if raw_duration is not None else 0
+        except Exception:  # noqa: BLE001
+            seg_duration = 0
+        if seg_duration <= 0:
+            seg_duration = max(1, target_duration_seconds // max(len(segments_data), 1))
+
+        bpm_range_val = seg.get("bpm_range")
+        bpm_range: Optional[Tuple[int, int]] = None
+        if isinstance(bpm_range_val, list) and len(bpm_range_val) == 2:
+            try:
+                bpm_range = (int(bpm_range_val[0]), int(bpm_range_val[1]))
+            except Exception:  # noqa: BLE001
+                bpm_range = None
+
+        mood = str(seg.get("mood") or "")
+
+        script = seg.get("script") or {}
+        host_script = str(script.get("segment_intro") or "")
+
+        playlist_items: List[PlaylistItem] = []
+        playlist = seg.get("playlist") or []
+        if isinstance(playlist, list):
+            for item in playlist:
+                if not isinstance(item, dict):
+                    continue
+                track_name = str(item.get("track") or "")
+                artist = str(item.get("artist") or "") if item.get("artist") is not None else ""
+                bpm = item.get("bpm")
+                label = track_name
+                if artist:
+                    label = f"{track_name} - {artist}"
+                recommended_tracks = [label] if label else []
+                search_hints: Dict[str, Any] = {}
+                if bpm is not None:
+                    try:
+                        search_hints["bpm"] = int(bpm)
+                    except Exception:  # noqa: BLE001
+                        pass
+                playlist_items.append(
+                    PlaylistItem(
+                        segment_name=name,
+                        recommended_tracks=recommended_tracks,
+                        search_hints=search_hints,
+                    ),
+                )
+
+        segments.append(
+            EpisodeSegment(
+                name=name,
+                target_duration_seconds=seg_duration,
+                bpm_range=bpm_range,
+                mood=mood,
+                host_script=host_script,
+                target_playlist=playlist_items,
+            ),
+        )
+
+    critic_summary: Dict[str, Any] = {
+        "pass": critic.get("pass"),
+        "scores": critic.get("scores"),
+        "issues": critic.get("issues"),
+        "actions": critic.get("actions"),
+    }
+
+    trace_raw = meta.get("generation_trace") or []
+    generation_trace: List[Dict[str, Any]] = []
+    if isinstance(trace_raw, list):
+        for name in trace_raw:
+            generation_trace.append({"agent": str(name)})
+
+    return EpisodePlan(
+        segments=segments,
+        target_duration_seconds=target_duration_seconds,
+        overall_bpm_range=overall_bpm_range,
+        style_description=str(state.get("plan", {}).get("segments_design") or ""),
+        plan_id=str(uuid.uuid4()),
+        critic_summary=critic_summary,
+        generation_trace=generation_trace or None,
+    )
 

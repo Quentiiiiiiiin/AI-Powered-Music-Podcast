@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from textwrap import dedent
 
 from podcast_ai.core.models import EpisodeRequest
@@ -98,6 +99,243 @@ def build_theme_planner_messages(request: EpisodeRequest, segments_hint: int) ->
 
     return [
         {"role": "system", "content": sys},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_planner_agent_messages(state: dict) -> list[dict[str, str]]:
+    """
+    构造 v3.0 Planner Agent 的消息。
+
+    Planner 只能写：
+    - plan.segments_design
+    - plan.emotion_curve
+    - segments[*].name/target_duration_seconds/bpm_range/mood/segment_design
+    """
+    system = dedent(
+        """
+        你是制作电台节目流程中的Planner Agent，
+        你的任务是根据用户提供的主题、目标时长和语言，规划一个音乐节目。
+        你必须严格输出 JSON 对象，不要输出任何解释文字。
+
+        你只能写入以下字段：
+        - meta.theme_description
+        - global_constraints.*
+        - plan.segments_design
+        - plan.emotion_curve
+        - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design
+
+        禁止写入：
+        - segments[*].playlist
+        - segments[*].script
+        - critic.*
+        - control.*
+
+        输出示例（示意）：
+        {
+          "meta": {
+            "theme_description": "详细描述本期节目主题整体风格，设计理念，节目编排思路等"
+          },
+          "global_constraints": {
+            "tone": "深夜治愈",
+            "language_style": "第一人称，克制",
+            "avoid": ["说教", "浮夸"]
+          },
+          "plan": {
+            "segments_design": "结构说明",
+            "emotion_curve": ["平静", "抬升", "收束"]
+          },
+          "segments": [
+            {
+              "segment_id": "seg_01",
+              "order": 1,
+              "name": "开场",
+              "target_duration_seconds": 600,
+              "bpm_range": [90, 105],
+              "mood": "舒缓",
+              "segment_design": "根据meta.theme_description和global_constraints.tone 详细描述选曲思路"
+            }
+          ]
+        }
+        """
+    ).strip()
+
+    user = dedent(
+        f"""
+        请基于当前 PlanState 生成 Planner 阶段产出。
+        当前 state（JSON）如下：
+        {json.dumps(state, ensure_ascii=False)}
+        """
+    ).strip()
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_music_curator_agent_messages(state: dict) -> list[dict[str, str]]:
+    """
+    构造 v3.0 Music Curator Agent 的消息。
+
+    Curator 只允许输出 segments[*].playlist，严禁越权写入 script/critic/control.max_iterations 等字段。
+    """
+    system = dedent(
+        """
+        你是制作电台节目流程中的 Music Curator Agent，
+        你的任务是根据Planner的计划，从网络中挑选合适的歌曲，并生成每个segment的playlist。
+        你必须严格输出 JSON 对象，不要输出任何解释文字。
+
+        你只能写入以下字段：
+        - segments[*].playlist[*].track/artist/bpm
+
+        禁止写入和输出：
+        - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design/script
+
+        输出示例（示意）：
+        {
+          "segments": [
+            {
+              "playlist": [
+                {"track": "曲目 A", "artist": "艺术家 X", "bpm": 98},
+                {"track": "曲目 B", "artist": "艺术家 Y", "bpm": 105}
+              ]
+            }
+          ]
+        }
+        """
+    ).strip()
+
+    user = dedent(
+        f"""
+        请基于当前 PlanState，生成 Music Curator 阶段的可执行 playlist（每段 playlist 需要有顺序）。
+        【歌曲要求】：
+          - 歌曲必须是真实存在的歌曲。 
+          - 你必须要理解每一首音乐的含义（通过歌词或网络上其他人的理解）来筛选歌曲，不能只通过歌曲名来判断。 
+          - 你不仅要考虑歌曲的含义，也要考虑歌曲的BPM，每一个segment的歌曲的BPM尽量接近。如果你无法获得BPM就填null。
+        当前 state（JSON）如下：
+        {json.dumps(state, ensure_ascii=False)}
+        """
+    ).strip()
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_script_writer_agent_messages(state: dict) -> list[dict[str, str]]:
+    """
+    构造 v3.0 Script Writer Agent 的消息。
+
+    Script Writer 只允许输出：
+    - segments[*].script.segment_intro
+    - segments[*].script.between_tracks
+    """
+    system = dedent(
+        """
+        你是制作电台节目流程中的Script Writer Agent。
+        你的任务是根据当前PlanState，为每个segment生成串词。
+        你必须严格输出 JSON 对象，保持json结构完整，不要输出任何解释文字。
+
+        你只能写入以下字段：
+        - segments[*].script.segment_intro
+        - segments[*].script.between_tracks[*].after_track_index
+        - segments[*].script.between_tracks[*].text
+
+        禁止写入和输出：
+        - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design/playlist
+
+        语言一致性：
+        - 使用 state.meta.language 指定的语言写作。
+
+        输出示例（示意）：
+        {
+          "segments": [
+            {
+              "script": {
+                "segment_intro": "这里写 segment 开场串词",
+                "between_tracks": [
+                  {"after_track_index": 0, "text": null},
+                  {"after_track_index": 1, "text": "这里写段内过渡串词"}
+                ]
+              }
+            }
+          ]
+        }
+        """
+    ).strip()
+
+    user = dedent(
+        f"""
+        请基于当前 PlanState，生成 Script Writer 阶段的脚本（段前串词 + 段内过渡）。
+        当前 state（JSON）如下：
+        {json.dumps(state, ensure_ascii=False)}
+        """
+    ).strip()
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
+    """
+    构造 v3.0 Critic Agent 的消息。
+
+    Critic 输出仅允许写：
+    - critic.pass
+    - critic.scores
+    - critic.issues
+    - critic.actions
+    - control.next_agent
+    """
+    system = dedent(
+        """
+        你是制作电台节目流程中的 Critic Agent。
+        你的任务是根据当前PlanState, 对Planner、Music Curator和Script Writer的输出进行评估, 并给出修复动作。
+
+        你必须严格输出 JSON 对象，不要输出任何解释文字。
+
+        你只能写入以下字段：
+        - critic.*
+        - control.next_agent
+
+        当 critic.pass=false：
+        - critic.actions 必须至少包含 1 条，并且每条 actions 都要指向一个明确的目标 agent 和可执行指令。
+
+        禁止写入：
+        - meta
+        - global_constraints
+        - plan
+        - segments
+        - control.max_iterations / control.iteration / control.status / control.last_updated_by
+        - critic.threshold
+
+        输出示例（示意）：
+        {
+          "critic": {
+            "pass": false,
+            "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
+            "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
+            "actions": [{"target_agent": "Music Curator", "instruction": "调整 playlist 情绪曲线并减少 BPM 跳变"}]
+          },
+          "control": {"next_agent": "Music Curator"}
+        }
+        """
+    ).strip()
+
+    user = dedent(
+        f"""
+        请基于当前 PlanState，对 Planner / Music Curator / Script Writer 的结构与内容进行结构化评估，并给出修复动作。
+        当前 state（JSON）如下：
+        {json.dumps(state, ensure_ascii=False)}
+        """
+    ).strip()
+
+    return [
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 

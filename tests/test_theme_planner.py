@@ -66,7 +66,7 @@ def test_v22_theme_planner_parses_strict_json_schema() -> None:
     )
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
-    plan = planner.generate_plan(request)
+    plan = planner.generate_plan(request, use_orchestrator=False)
 
     assert len(plan.segments) >= 2
     for seg in plan.segments:
@@ -117,7 +117,7 @@ def test_v22_theme_planner_search_hints_missing_or_invalid_fallback_to_empty_dic
     )
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
-    plan = planner.generate_plan(request)
+    plan = planner.generate_plan(request, use_orchestrator=False)
 
     assert len(plan.segments) == 1
     assert len(plan.segments[0].target_playlist) == 2
@@ -150,7 +150,7 @@ def test_v22_theme_planner_error_message_for_empty_host_script() -> None:
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
     with pytest.raises(AIServiceError, match=r"segments\[0\]\.host_script"):
-        planner.generate_plan(request)
+        planner.generate_plan(request, use_orchestrator=False)
 
 
 def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> None:
@@ -178,4 +178,4 @@ def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> N
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
     with pytest.raises(AIServiceError, match=r"segments\[0\]\.target_playlist"):
-        planner.generate_plan(request)
+        planner.generate_plan(request, use_orchestrator=False)

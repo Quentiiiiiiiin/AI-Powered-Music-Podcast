@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v2.2  
+**文档版本**：v3.0  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（已完成 v2.2）
+**产品阶段**：迭代验证中（进入 v3.0）
 
 ---
 
@@ -107,6 +107,27 @@
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
 - TTS 当前主路径为 ElevenLabs。
+
+### 迭代进行中（v3.0）
+
+- **v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）**：
+  - **问题**：阶段一目前仍以“单次模型调用”生成 EpisodePlan，存在质量波动、结构失衡、风格不统一、局部难优化的问题。
+  - **变更目标**：将阶段一升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），通过“共享 State + 结构化反馈 + 有限迭代”提升 plan 质量与稳定性。
+  - **功能描述（核心）**：
+    1. 采用共享 `state`（JSON）作为唯一事实源，Agent 间不自由对话，只读写受控字段。
+    2. 引入 Critic Agent 进行结构化评估（评分 + 问题定位 + 修复指令）。
+    3. 引入有限次 Refinement Loop（建议最多 2~3 次），达到阈值提前结束。
+    4. 增加异常处理：JSON 不合法、缺字段、偏离指令时的 fallback 与重试。
+  - **State Schema（v3.0 草案）**：以 `meta / global_constraints / plan / segments / critic / control` 为核心层级；其中 `control.max_iterations` 默认为 3，可配置。
+  - **State Schema 完善（本轮）**：补充 `schema_version`、`meta.language/request_id`、`segments.segment_id/order`、`critic.actions[]`（支持多点修复）以及 `control.next_agent/last_updated_by`，提升可追踪性与可编排性。
+  - **User Story（用户视角）**：作为内容创作者，我希望 episode plan 由多 Agent 协同生成并可被评估与回修，这样结果更稳定、结构更合理，也更容易按问题定向优化。
+  - **功能归类**：新功能（架构升级）+ 优化（质量稳定性提升）。
+  - **Acceptance Criteria（验收标准）**：
+    1. 阶段一输出不再是单次黑盒结果，流程可追踪到 Planner / Music Curator / Script Writer / Critic 各步骤。
+    2. 所有 Agent 输入/输出均为结构化 JSON，并遵循 state schema 的字段约束（仅允许修改自身负责字段）。
+    3. Critic 必须输出结构化评估：`pass`、评分维度、问题列表、修复 action（目标 agent + 指令）。
+    4. 系统支持有限迭代（max 2~3 次）与提前收敛；超过阈值时给出最终状态与未解决问题。
+    5. 异常路径可处理：JSON 非法、缺字段、输出偏离 schema 时可重试或回退，不直接产出不可用 plan。
 
 ## 1. 产品背景
 
@@ -217,6 +238,7 @@
 | US-08 | 内容创作者 | 主持串词与 plan 的 segment/歌曲边界严格对齐 | 我能听到的串词始终与 plan 策划一致，不会因 target duration 预估偏差而错位 |
 | US-09 | 内容创作者 | 串词与歌曲之间具备平滑过渡（crossfade 试验） | 串词更有存在感，与音乐更融为一体 |
 | US-10 | 内容创作者 | EpisodePlan 结构与串词位置更接近真实节目 | 我能更少返工，导出结果与 plan 的结构设定更一致 |
+| US-11 | 内容创作者 | Episode Plan 由多 Agent 协同并带评估回修机制生成 | 计划质量更稳定且可解释，问题可被定向修复 |
 
 ### 5.2 验收标准（以 US-01 为例）
 
@@ -289,7 +311,7 @@
 |------|------|
 | **输入** | 用户主题、期望时长 |
 | **输出** | 节目结构、节目段落、情绪描述、每段 BPM 区间、主持串词草稿、**目标歌单规划**（为每个段落给出若干推荐曲目或搜索条件，如艺术家 / 曲风 / BPM / 关键词等） |
-| **实现（v2.2）** | 调用 LLM API，并通过更强的 prompt/约束确保返回严格 JSON、字段命名规范、语言一致性与时长/串词位置可执行性（更贴近真实 EpisodePlan）。 |
+| **实现（v3.0）** | 阶段一从单 Agent 升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），基于共享 state schema 读写；通过 Critic 结构化反馈驱动 2~3 次有限回修迭代，输出可追踪且可执行的 EpisodePlan。 |
 | **使用方式** | 用户可仅运行本模块，先获得节目策划与目标歌单，再根据该规划手动获取或整理歌曲后，继续后续自动化流程 |
 | **优先级** | P0 |
 
@@ -349,7 +371,23 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 当前版本成功指标（v2.2）
+### 6.3 Agent 输入/输出契约表（v3.0）
+
+| Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
+|------|------|------|------|
+| **Planner** | `meta`、`global_constraints`、历史 `critic.issues` | `meta.theme_description`、`global_constraints.*`、`plan.segments_design`、`plan.emotion_curve`、`segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design` | `segments[*].playlist`、`segments[*].script`、`critic.*`、`control.*` |
+| **Music Curator** | `meta`、`global_constraints`、`plan`、`segments[*].segment_design/mood/bpm_range`、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
+| **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
+| **Critic** | 全量 `state` | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`、`control.next_agent` | `meta`、`global_constraints`、`plan`、`segments` 内容本身 |
+| **Orchestrator（流程控制）** | 全量 `state` | `control.iteration/status/next_agent/last_updated_by`、重试与回退标记 | 业务内容字段（`plan`、`segments[*].playlist/script`） |
+
+**契约补充规则**
+- 所有 Agent 仅允许修改自己负责字段；非负责字段必须原样透传。
+- 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
+- Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
+- 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
+
+### 6.4 当前版本成功指标（v3.0）
 
 | 指标 | 目标 |
 |------|------|

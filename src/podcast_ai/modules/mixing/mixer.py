@@ -158,7 +158,7 @@ class Mixer:
         if n == 0:
             # 向后兼容：无主持时，全部曲目 crossfade 拼接
             track_audios = [
-                simple_normalize(load_audio(st.track.file_path), target_dbfs=-20.0)
+                simple_normalize(load_audio(st.track.file_path), target_dbfs=-16.0)
                 for st in selected_tracks
             ]
             mix = crossfade_concat(track_audios, cf)
@@ -174,7 +174,7 @@ class Mixer:
                 # 串词 i：主持期间无背景音乐，单独拼接
                 try:
                     vo_audio = load_audio(voiceovers[i].audio_path)
-                    vo_audio = simple_normalize(vo_audio, target_dbfs=-20.0)
+                    vo_audio = simple_normalize(vo_audio, target_dbfs=-16.0)
                     parts.append(vo_audio)
                     logger.debug("拼接主持: %s", voiceovers[i].segment_id)
                 except Exception as exc:  # noqa: BLE001
@@ -185,7 +185,7 @@ class Mixer:
                 group = track_groups[i]
                 if group:
                     group_audios = [
-                        simple_normalize(load_audio(st.track.file_path), target_dbfs=-20.0)
+                        simple_normalize(load_audio(st.track.file_path), target_dbfs=-16.0)
                         for st in group
                     ]
                     group_mix = crossfade_concat(group_audios, cf)

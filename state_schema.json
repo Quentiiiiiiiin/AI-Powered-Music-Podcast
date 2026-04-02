@@ -1,67 +1,81 @@
 {
+  "schema_version": "v3.0",
   "meta": {
+    "request_id": "ep_20260401_001",
     "theme": "一句话主题",
     "theme_description": "详细描述",
+    "language": "zh-CN",
     "target_duration_seconds": 1800,
     "overall_bpm_range": [90, 120]
   },
-
   "global_constraints": {
     "tone": "深夜治愈",
     "language_style": "第一人称，克制",
     "avoid": ["说教", "浮夸"]
   },
-
   "plan": {
     "segments_design": "节目结构说明",
     "emotion_curve": ["平静", "低落", "治愈"]
   },
-
   "segments": [
     {
+      "segment_id": "seg_01",
+      "order": 1,
       "name": "开场",
       "target_duration_seconds": 600,
       "bpm_range": [90, 105],
       "mood": "舒缓",
-
       "segment_design": "选曲思路",
-
       "playlist": [
         {
-          "track": "曲目 A - 艺术家 X"
+          "track": "曲目 A",
+          "artist": "艺术家 X",
+          "bpm": 98
         }
       ],
-
       "script": {
-        "segment_intro": "",
-        "between_tracks": []
+        "segment_intro": "这里是该段开场串词",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": null
+          }
+        ]
       }
     }
   ],
-
   "critic": {
     "pass": false,
     "scores": {
       "coherence": 0,
-      "emotion_flow": 0
+      "emotion_flow": 0,
+      "immersion": 0
+    },
+    "threshold": {
+      "coherence": 7,
+      "emotion_flow": 7,
+      "immersion": 7
     },
     "issues": [
       {
         "type": "emotion_flow",
-        "location": "segment[2]",
+        "location": "segments[1].playlist[2]",
         "problem": "情绪跳跃过大",
         "suggestion": "替换为过渡更平缓的歌曲"
       }
     ],
-  "action": {
-    "target_agent": "Music Curator",
-    "instruction": "调整playlist情绪曲线"
-  }
+    "actions": [
+      {
+        "target_agent": "Music Curator",
+        "instruction": "调整 playlist 情绪曲线并减少 BPM 跳变"
+      }
+    ]
   },
-
   "control": {
     "iteration": 1,
     "max_iterations": 3,
-    "status": "draft"
+    "status": "draft",
+    "last_updated_by": "Planner",
+    "next_agent": "Music Curator"
   }
 }

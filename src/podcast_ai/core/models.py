@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -57,6 +57,9 @@ class EpisodePlan(BaseModel):
     overall_bpm_range: Optional[Tuple[int, int]] = None
     style_description: str = ""
     plan_id: str
+    # v3.0：可选的多 Agent 评估与生成追踪信息
+    critic_summary: Optional[Dict[str, Any]] = None
+    generation_trace: Optional[List[Dict[str, Any]]] = None
 
 
 class Track(BaseModel):
