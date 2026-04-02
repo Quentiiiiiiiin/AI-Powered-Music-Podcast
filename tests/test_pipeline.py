@@ -50,9 +50,9 @@ def _mock_plan_json() -> str:
     )
 
 
-@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan")
-def test_plan_episode_with_mock_llm(mock_generate: object, tmp_path: Path) -> None:
-    """plan_episode 在 mock LLM 下应正常完成并落盘。"""
+@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
+def test_plan_episode_with_mock_llm(mock_generate_and_state: object, tmp_path: Path) -> None:
+    """plan_episode 在 mock 下应正常完成并落盘（含 state.json）。"""
     plan = EpisodePlan(
         segments=[
             EpisodeSegment(
@@ -69,7 +69,6 @@ def test_plan_episode_with_mock_llm(mock_generate: object, tmp_path: Path) -> No
         style_description="Mock style",
         plan_id="mock_plan",
     )
-    mock_generate.return_value = plan
 
     request = EpisodeRequest(
         topic="Test",
@@ -78,13 +77,19 @@ def test_plan_episode_with_mock_llm(mock_generate: object, tmp_path: Path) -> No
         output_dir=tmp_path,
     )
 
-    result_plan, plan_path, playlist_path = plan_episode(request)
+    # state.json 校验要求 critic/control 在 multi_agent 模式下为 object
+    from podcast_ai.modules.theme.state import initialize_plan_state
+
+    mock_generate_and_state.return_value = (plan, initialize_plan_state(request))
+
+    result_plan, plan_path, playlist_path, state_path = plan_episode(request)
 
     assert result_plan.plan_id
     assert plan_path.exists()
     assert plan_path.suffix == ".json"
     assert playlist_path.exists()
     assert "Test" in playlist_path.read_text(encoding="utf-8")
+    assert state_path.exists()
 
 
 def test_save_and_load_plan_roundtrip(tmp_path: Path, sample_plan: EpisodePlan) -> None:
@@ -97,6 +102,143 @@ def test_save_and_load_plan_roundtrip(tmp_path: Path, sample_plan: EpisodePlan) 
     assert loaded.plan_id == sample_plan.plan_id
     assert len(loaded.segments) == len(sample_plan.segments)
     assert loaded.segments[0].name == sample_plan.segments[0].name
+
+
+# ---------- v3.1：阶段一 state.json 生成/校验 ----------
+
+
+@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
+def test_v31_plan_episode_single_agent_outputs_valid_state_json(
+    mock_generate_and_state: object,
+    tmp_path: Path,
+) -> None:
+    from podcast_ai.core.exceptions import PodcastAIError
+    from podcast_ai.core.models import EpisodeSegment
+    from podcast_ai.modules.theme.state import (
+        initialize_plan_state,
+        validate_state_conforms_to_schema,
+    )
+
+    request = EpisodeRequest(topic="Test Single", duration_minutes=10, language="zh", output_dir=tmp_path)
+
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=300,
+                bpm_range=(90, 100),
+                mood="chill",
+                host_script="欢迎。",
+                target_playlist=[],
+            )
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="single agent plan",
+        plan_id="plan_single",
+    )
+
+    state = initialize_plan_state(request)
+    state["critic"] = None
+    state["control"] = None
+
+    # pipeline 内部会做 schema 校验；这里直接确保返回的 state 处于合法 single_agent 形态
+    validate_state_conforms_to_schema(state, agent_mode="single_agent")
+    mock_generate_and_state.return_value = (plan, state)
+
+    _, _, _, state_path = plan_episode(request, agent_mode="single_agent")
+    assert state_path.exists()
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    validate_state_conforms_to_schema(raw, agent_mode="single_agent")
+
+    assert raw["critic"] is None
+    assert raw["control"] is None
+
+
+@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
+def test_v31_plan_episode_multi_agent_outputs_valid_state_json(
+    mock_generate_and_state: object,
+    tmp_path: Path,
+) -> None:
+    from podcast_ai.modules.theme.state import (
+        initialize_plan_state,
+        validate_state_conforms_to_schema,
+    )
+
+    request = EpisodeRequest(topic="Test Multi", duration_minutes=10, language="zh", output_dir=tmp_path)
+
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=300,
+                bpm_range=(90, 100),
+                mood="chill",
+                host_script="欢迎。",
+                target_playlist=[],
+            )
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="multi agent plan",
+        plan_id="plan_multi",
+    )
+
+    state = initialize_plan_state(request)
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+    mock_generate_and_state.return_value = (plan, state)
+
+    _, _, _, state_path = plan_episode(request, agent_mode="multi_agent")
+    assert state_path.exists()
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    validate_state_conforms_to_schema(raw, agent_mode="multi_agent")
+
+    assert isinstance(raw["critic"], dict)
+    assert isinstance(raw["control"], dict)
+
+
+@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
+def test_v31_plan_episode_schema_validation_failure_blocks_output(
+    mock_generate_and_state: object,
+    tmp_path: Path,
+) -> None:
+    from podcast_ai.core.exceptions import AIServiceError
+    from podcast_ai.core.models import EpisodeSegment
+    from podcast_ai.modules.theme.state import initialize_plan_state
+
+    request = EpisodeRequest(topic="Bad State", duration_minutes=10, language="zh", output_dir=tmp_path)
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=300,
+                bpm_range=(90, 100),
+                mood="chill",
+                host_script="欢迎。",
+                target_playlist=[],
+            )
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="bad",
+        plan_id="plan_bad",
+    )
+
+    bad_state = initialize_plan_state(request)
+    bad_state["meta"]["target_duration_seconds"] = "not-int"  # type: ignore[assignment]
+
+    mock_generate_and_state.return_value = (plan, bad_state)
+
+    with pytest.raises(AIServiceError) as exc_info:
+        plan_episode(request, agent_mode="multi_agent")
+
+    assert "meta.target_duration_seconds" in str(exc_info.value)
+
+    # schema 校验失败应阻断写入，不创建 state.json
+    episodes_root = tmp_path / "episodes"
+    assert not episodes_root.exists()
 
 
 # ---------- v1.3 验收测试 ----------

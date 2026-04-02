@@ -1,186 +1,127 @@
-## 版本 v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）
+## 版本 v3.1（迭代九：阶段一模式可选 + 统一 state_schema.json 输出）
 
-基于 PRD v3.0 与 `6.3 Agent 输入/输出契约表`、`ARCHITECTURE.md`：阶段一从单次模型调用升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），以共享 `PlanState` 为唯一事实源，通过 Critic 结构化反馈驱动 2~3 次有限回修迭代。
+基于 PRD v3.1：
+1) 阶段一支持 `single_agent` / `multi_agent` 模式切换（默认值可由实现指定，但必须可切换）。
+2) 无论单/多 agent，阶段一最终输出文件均为 `state.json`，且与 `state_schema.json` **同结构**；单 agent 不涉及字段以 `null` 填充。
+3) 若 schema 校验失败，必须报错并阻断后续阶段。
 
 ---
 
-### Task 01 - 定义 PlanState schema 与契约校验工具
-- **Task name**: v3.0 - `PlanState` 数据结构与读写约束落地
-- **目标**: 落地共享状态模型（`meta / global_constraints / plan / segments / critic / control`）与最小校验工具，确保所有 Agent 输入/输出都基于统一 schema。
-- **类型**: backend
+### Task 01 - plan-episode 暴露模式选择（single_agent / multi_agent）
+- **Task name**: v3.1 CLI / pipeline 模式选择接入
+- **目标**: 让用户能够通过配置或命令参数选择 `single_agent` 或 `multi_agent`，并把选择结果贯通到阶段一生成逻辑。
+- **类型**: api
 - **依赖关系**: 无
 - **Description**:
-  - 新增 `modules/theme/state.py`，定义 `PlanState` 与子结构（含 `schema_version`、`control.max_iterations`、`control.next_agent`、`control.last_updated_by`）。
-  - 提供基础函数：初始化 state、字段级 merge、必填字段检查、schema 合法性检查。
-  - 明确默认值：`control.max_iterations=3`。
+  - 在 `src/podcast_ai/cli.py` 的 `plan-episode` 命令增加一个参数（示例：`--agent-mode`，choices: `single_agent|multi_agent`）。
+  - 更新 `src/podcast_ai/core/pipeline.py::plan_episode` 增加入参（或读取同名配置），并将其映射到 `ThemePlanner.generate_plan(..., use_orchestrator=...)`。
+  - 保持外部接口默认值不破坏现有体验（未传入时走默认实现）。
 - **Input**:
-  - PRD v3.0 state schema 草案
-  - 6.3 Agent 读写契约
+  - `EpisodeRequest`（topic/duration/language/output_dir）
+  - 用户选择的 `agent_mode`
 - **Output**:
-  - 可被 4 个 Agent 与 Orchestrator 共享的结构化 state
-  - 基础校验工具可检测缺字段/类型不符
+  - 阶段一可切换生成模式
+  - 后续任务能依此选择正确的 state 生成路径
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/state.py`
-  - `src/podcast_ai/core/models.py`（若补充 PlanState/EpisodePlan 可选追踪字段）
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 02 - Planner Agent（全局结构与段落骨架）
-- **Task name**: v3.0 - 实现 Planner Agent
-- **目标**: 实现只负责“全局结构与段落骨架”的 Planner，严格遵守契约仅写允许字段。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 在 `modules/theme/llm_planner.py`（或拆分 `planner.py`）实现 Planner agent 调用：
-    - 读取 `meta/global_constraints/critic.issues`
-    - 写入 `plan.segments_design`、`plan.emotion_curve`、`segments[*].name/target_duration_seconds/bpm_range/mood/segment_design`、`control.next_agent`
-  - 增加“禁止写字段”保护（越权字段忽略或报错）。
-- **Input**:
-  - `EpisodeRequest`
-  - 共享 `PlanState` 初始状态
-- **Output**:
-  - 结构完整的段落骨架 state
-- **Files involved**:
+  - `src/podcast_ai/cli.py`
+  - `src/podcast_ai/core/pipeline.py`
   - `src/podcast_ai/modules/theme/llm_planner.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2-3 小时）
+- **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 03 - Music Curator Agent（按段落填充 playlist）
-- **Task name**: v3.0 - 实现 Music Curator Agent
-- **目标**: 基于 Planner 产出的段落设计填充 `segments[*].playlist`，并保证曲目顺序可执行；只写允许字段。
+### Task 02 - state.json 落盘路径与读写工具
+- **Task name**: episode 输出 state.json 的 storage 工具
+- **目标**: 提供 `state.json` 的稳定落盘路径与读写函数，供阶段一输出与阶段二读取使用。
+- **类型**: backend
+- **依赖关系**: Task 01（需要确定模式切换的阶段一输出流程）
+- **Description**:
+  - 在 `src/podcast_ai/infra/storage/paths.py` 新增：
+    - `get_state_path(episode_root: Path) -> Path`（文件名明确为 `state.json`）
+    - `save_state_json(state: PlanState, output_dir/episode_id ...)`
+    - `load_state_json(path: Path) -> PlanState`
+  - 明确目录结构与现有 `plans/` 文件夹的关系（例如放在 `episodes/{episode_id}/plans/state.json`）。
+- **Input**:
+  - `PlanState`
+  - `episode_id` / `episode_root`
+- **Output**:
+  - `state.json` 能正确写入并在阶段二读取
+- **Files involved**:
+  - `src/podcast_ai/infra/storage/paths.py`
+  - `src/podcast_ai/modules/theme/state.py`（仅用于类型引用）
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 03 - 阶段一统一输出 state.json（单 agent & 多 agent）
+- **Task name**: PlanState 生成与 EpisodePlan 转换解耦
+- **目标**: 无论 `single_agent` 还是 `multi_agent`，阶段一都返回并落盘 `state.json`；多 agent 走 Orchestrator 的 PlanState，单 agent 需要把 EpisodePlan 映射为 PlanState，并对不涉及字段填 null。
 - **类型**: backend
 - **依赖关系**: Task 01, Task 02
 - **Description**:
-  - 新增 `modules/theme/music_curator.py`，读取段落 mood/bpm/segment_design 与 critic 历史问题。
-  - 写入 `segments[*].playlist`（推荐曲目与顺序）。
-  - 添加字段保护，禁止改写 `plan` 主结构、`segments[*].script`、`critic.*` 等。
-- **Input**:
-  - Planner 阶段后的 `PlanState`
-- **Output**:
-  - 含每段 playlist 的 state
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/music_curator.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 04 - Script Writer Agent（段前串词与段内串词）
-- **Task name**: v3.0 - 实现 Script Writer Agent
-- **目标**: 按 `meta.language` 与 playlist 结构写入脚本字段（段前串词与段内过渡串词），并保持语言一致性。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 03
-- **Description**:
-  - 新增 `modules/theme/script_writer.py`。
-  - 读取 `meta.language`、`segments[*].playlist/mood`、critic 历史反馈。
-  - 写入 `segments[*].script.segment_intro`、`segments[*].script.between_tracks`。
-  - 校验脚本语言一致性（最小规则即可）并禁止越权改写 playlist。
-- **Input**:
-  - Curator 阶段后的 `PlanState`
-- **Output**:
-  - 含串词脚本的 state
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/script_writer.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 05 - Critic Agent（结构化评估与修复动作）
-- **Task name**: v3.0 - 实现 Critic Agent
-- **目标**: 基于全量 state 产出结构化评估：`pass/scores/issues/actions`，并按契约写 `control.next_agent`。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 04
-- **Description**:
-  - 新增 `modules/theme/critic.py`。
-  - 输出字段：`critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`。
-  - 规则：当 `pass=false` 时 `actions` 至少 1 条，且包含目标 agent + 指令；Critic 不得改业务内容字段。
-- **Input**:
-  - Script Writer 阶段后的 `PlanState`
-- **Output**:
-  - 可执行的评估结果与修复指令
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/critic.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 06 - Orchestrator（有限迭代、重试、回退）
-- **Task name**: v3.0 - 实现多 Agent 编排器
-- **目标**: 实现 `PlanOrchestrator.run()`：按 Planner → Curator → Writer → Critic 执行，支持 `max_iterations` 次有限回修与提前收敛。
-- **类型**: backend
-- **依赖关系**: Task 02, Task 03, Task 04, Task 05
-- **Description**:
-  - 新增 `modules/theme/orchestrator.py`。
-  - 编排逻辑：
-    - 正向流水执行 4 agents
-    - Critic `pass=true` 提前结束
-    - `pass=false` 根据 `critic.actions` 与 `control.next_agent` 定向回修
-    - 达到 `max_iterations` 输出最终状态与未解决问题
-  - 加入异常路径处理：JSON 非法、缺字段、越权写入时重试/回退。
+  - 让 `ThemePlanner`（或阶段一 pipeline 内部）同时支持两条路径：
+    - `multi_agent`: 直接调用 `PlanOrchestrator.run(request)` 获取 PlanState
+    - `single_agent`: 走现有单次 LLM 生成 EpisodePlan，然后映射成 PlanState（需要补齐 state_schema.json 要求的字段层级；不涉及的 `critic/control/...` 以 `null` 或不参与约束的默认形态填充）
+  - 在保存前做 schema 契约校验；失败则抛出明确错误并阻断。
+  - 同时保留 `playlist.md` 输出（不改动或最小调整）。
 - **Input**:
   - `EpisodeRequest`
-  - 初始 `PlanState`
+  - `agent_mode`
 - **Output**:
-  - 最终 `PlanState`（含 critic 评估结果）
+  - `state.json` 与 `playlist.md` 落盘成功
+  - schema 校验通过才允许返回给 CLI
 - **Files involved**:
+  - `src/podcast_ai/core/pipeline.py`
   - `src/podcast_ai/modules/theme/orchestrator.py`
+  - `src/podcast_ai/modules/theme/llm_planner.py`
   - `src/podcast_ai/modules/theme/state.py`
-  - `src/podcast_ai/modules/theme/*.py`（agent 调用）
+  - `src/podcast_ai/infra/storage/paths.py`
 - **Estimated complexity**: L（3 小时）
 
 ---
 
-### Task 07 - ThemePlanner / Pipeline 接入 Orchestrator
-- **Task name**: v3.0 - 阶段一入口切换到多 Agent
-- **目标**: 将阶段一入口从“单次 generate_plan”切换为 orchestrator 输出，并把 `PlanState` 结果映射回 `EpisodePlan`（兼容后续阶段二）。
+### Task 04 - 与 state_schema.json 的结构一致校验（仅阶段一）
+- **Task name**: state_schema.json 同构校验与可定位错误
+- **目标**: 确保 state.json 真正与 `state_schema.json` 同结构，并在失败时给出可定位原因；同时允许单 agent 的“不涉及字段”为 null 的合法形态。
 - **类型**: backend
-- **依赖关系**: Task 06
+- **依赖关系**: Task 03
 - **Description**:
-  - 在 `ThemePlanner.generate_plan` 中调用 `PlanOrchestrator.run()`，将最终 state 转换为 `EpisodePlan`。
-  - 回填 `EpisodePlan.critic_summary` 与 `EpisodePlan.generation_trace`（可选字段）。
-  - `core/pipeline.py::plan_episode` 保持外部接口不变，仅替换内部阶段一实现。
+  - 在 `src/podcast_ai/modules/theme/state.py` 增加/强化校验逻辑：
+    - 读取 `state_schema.json` 作为结构模板（或以等价的深度 key/类型检查实现）
+    - 校验字段层级一致；数组/对象字段类型匹配；允许单 agent 模式下指定字段取 null（需要明确允许的字段集合）
+  - 对校验失败抛出清晰错误信息（字段路径 + 期望/实际）。
 - **Input**:
-  - Orchestrator 最终 state
+  - PlanState
+  - state_schema.json 模板
+  - agent_mode（用于决定允许哪些 null）
 - **Output**:
-  - 与现有 `plan_episode`/持久化流程兼容的 `EpisodePlan`
+  - `validate_state_conforms_to_schema(...)`（或等价函数）
+  - 校验失败可读错误
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/llm_planner.py`
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/core/models.py`
-- **Estimated complexity**: M（2-3 小时）
+  - `src/podcast_ai/modules/theme/state.py`
+  - `state_schema.json`
+- **Estimated complexity**: L（3 小时）
 
 ---
 
-### Task 08 - 多 Agent 契约与异常路径测试
-- **Task name**: v3.0 - 单测覆盖 Agent 契约与迭代控制
-- **目标**: 覆盖 v3.0 验收重点：契约化读写、Critic 结构化输出、有限迭代、异常重试/回退、可追踪输出。
+### Task 05 - 单元测试：v3.1 阶段一模式切换 + state.json 生成/校验
+- **Task name**: v3.1 - 阶段一回归测试
+- **目标**: 自动化覆盖本次迭代的阶段一验收点：模式可切换、最终产物为 schema 同构 `state.json`，校验失败可定位并阻断。
 - **类型**: backend
-- **依赖关系**: Task 07
+- **依赖关系**: Task 01, Task 03, Task 04
 - **Description**:
-  - 新增 `tests/test_theme_orchestrator.py`（建议）：
-    - 正常路径：1 次或 2 次迭代收敛
-    - `pass=false` 路径：检查 `critic.actions` 生效并触发定向回修
-    - 超过 `max_iterations`：输出最终状态与未解决问题
-    - 非法 JSON/缺字段：触发重试或回退
-    - 越权写字段：被拦截
-  - 补充 `tests/test_pipeline.py`，验证 `plan_episode` 仍能落盘并被阶段二消费。
+  - 新增/更新测试：
+    1) `single_agent` 与 `multi_agent` 两种模式下 `plan_episode` 都产出 `state.json`
+    2) `state.json` 可通过与 `state_schema.json` 的同构校验
+    3) 故意构造不合法字段的场景下，校验失败抛出可定位错误并阻断（不进入后续阶段；无需改 stage2 代码）
 - **Input**:
-  - mock LLM 返回（各 agent）
-  - state schema 合法/非法样例
+  - mock LLM（单 agent）/ mock agents（multi agent）
+  - state_schema.json
 - **Output**:
-  - 自动化测试通过且覆盖 v3.0 关键验收项
+  - `pytest` 通过
 - **Files involved**:
-  - `tests/test_theme_orchestrator.py`（新增）
-  - `tests/test_pipeline.py`
-  - `tests/conftest.py`（如需 fixture）
+  - `tests/test_pipeline.py`（或新增测试文件）
+  - `tests/test_theme_state.py`
+  - （可选）`tests/test_theme_planner.py`
 - **Estimated complexity**: M（2-3 小时）
 

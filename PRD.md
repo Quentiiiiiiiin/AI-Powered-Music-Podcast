@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.0  
+**文档版本**：v3.1  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.0）
+**产品阶段**：迭代验证中（进入 v3.1）
 
 ---
 
@@ -100,15 +100,32 @@
     4. `host_script`（以及可选的段内串词）使用正确语言；必须的开场/段落过渡/结尾串词位置存在。
     5. 在同等输入下，相比 v2.1，EpisodePlan 的段落结构与串词位置更贴近真实 episode（以内部试听/对比为准）。
 
-### 当前生效规则（v2.2）
+- **v3.1（迭代九：阶段一模式可选 + 统一 state_schema.json 输出）**：
+  - **问题**：
+    1. 阶段一的 `plan-episode` 指令当前代码写死使用多 agent 模式，用户无法选择单 agent 或多 agent。
+    2. 无论单 agent 还是多 agent，当前最终返回的仍是 EpisodePlan 格式 JSON，而不是 `state_schema.json` 的同构结构，导致后续链路字段对齐成本高。
+  - **变更目标**：
+    1. 将多 agent/单 agent 作为用户可选配置（或参数），允许选择不同生成策略。
+    2. 无论选择哪种模式，阶段一最终产物输出文件都必须与 `state_schema.json` **同结构**；单 agent 下不涉及的字段填充为 `null`。
+  - **功能归类**：优化（可配置性与数据契约一致性提升）。
+  - **User Story（用户视角）**：作为内容创作者，我希望能够选择单 agent 或多 agent 生成 EpisodePlan，并且无论选择哪种模式，最终输出都保持与 `state_schema.json` 一致的结构，便于后续混音与调试。
+  - **Acceptance Criteria（验收标准）**：
+    1. 用户能通过配置/命令参数选择生成模式：`single_agent` 或 `multi_agent`（默认值可由实现指定，但必须可切换）。
+    2. 在两种模式下，最终输出文件都能被 `state_schema.json` 的结构约束通过校验（字段层级一致，缺失字段用 `null` 表达）。
+    3. 多 agent 模式下生成结果可追踪到 Planner / Music Curator / Script Writer / Critic 的执行状态（至少在 state 的 control/meta 或日志中可定位）。
+    4. 若输出 schema 校验失败，系统必须返回明确错误并阻断后续阶段，避免产生不可用 mix。
+
+### 当前生效规则（v3.1）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
+- 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
+- 无论单 agent 还是多 agent，阶段一最终输出文件结构都与 `state_schema.json` 同构；单 agent 不涉及字段以 `null` 表达。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
 - TTS 当前主路径为 ElevenLabs。
 
-### 迭代进行中（v3.0）
+### 已完成迭代（v3.0）
 
 - **v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）**：
   - **问题**：阶段一目前仍以“单次模型调用”生成 EpisodePlan，存在质量波动、结构失衡、风格不统一、局部难优化的问题。
@@ -258,8 +275,7 @@
         ↓
 ┌─────────────────────────────────────────────────────────┐
 │  1. 主题生成模块（AI）                                    │
-│     → 节目结构、段落、情绪、BPM 区间、串词草稿              │
-│     → 目标歌单规划（每段推荐若干曲目）            │
+│     → 输出 `state.json`（与 state_schema.json 同结构的 episode plan state） │
 └─────────────────────────────────────────────────────────┘
         ↓
      （人工步骤）
@@ -310,8 +326,8 @@
 | 项目 | 说明 |
 |------|------|
 | **输入** | 用户主题、期望时长 |
-| **输出** | 节目结构、节目段落、情绪描述、每段 BPM 区间、主持串词草稿、**目标歌单规划**（为每个段落给出若干推荐曲目或搜索条件，如艺术家 / 曲风 / BPM / 关键词等） |
-| **实现（v3.0）** | 阶段一从单 Agent 升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），基于共享 state schema 读写；通过 Critic 结构化反馈驱动 2~3 次有限回修迭代，输出可追踪且可执行的 EpisodePlan。 |
+| **输出（v3.1）** | `state.json`（与 `state_schema.json` **同结构**的 episode plan state 文件；单 agent 不涉及字段填充为 `null`）。 |
+| **实现（v3.1）** | 阶段一支持用户选择 `single_agent` / `multi_agent` 模式；多 agent 模式包含 Planner / Music Curator / Script Writer / Critic + 有限迭代回修；无论模式如何，最终输出均为 `state.json` 并满足 schema 契约。 |
 | **使用方式** | 用户可仅运行本模块，先获得节目策划与目标歌单，再根据该规划手动获取或整理歌曲后，继续后续自动化流程 |
 | **优先级** | P0 |
 
@@ -387,7 +403,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.0）
+### 6.4 当前版本成功指标（v3.1）
 
 | 指标 | 目标 |
 |------|------|

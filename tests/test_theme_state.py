@@ -13,6 +13,7 @@ from podcast_ai.modules.theme.state import (
     get_missing_required_fields,
     initialize_plan_state,
     merge_plan_state,
+    validate_state_conforms_to_schema,
     validate_plan_state_schema,
 )
 
@@ -94,3 +95,28 @@ def test_v30_merge_list_of_dict_merges_by_index() -> None:
     assert merged["segments"][0]["playlist"][0]["track"] == "A"
     assert merged["segments"][1]["name"] == "中段"
     assert merged["segments"][1]["playlist"] == []
+
+
+# ---------- v3.1：state_schema.json 同构校验 ----------
+
+
+def test_v31_validate_state_conforms_to_schema_allows_critic_control_null_in_single_agent() -> None:
+    state = initialize_plan_state(_request())
+    state["critic"] = None
+    state["control"] = None
+    validate_state_conforms_to_schema(state, agent_mode="single_agent")
+
+
+def test_v31_validate_state_conforms_to_schema_rejects_critic_control_null_in_multi_agent() -> None:
+    state = initialize_plan_state(_request())
+    state["critic"] = None
+    state["control"] = None
+    with pytest.raises(AIServiceError):
+        validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+
+def test_v31_validate_state_conforms_to_schema_allows_between_tracks_text_string() -> None:
+    """between_tracks[*].text 在模板中为 null，但实际允许为字符串或 null（交给 agent 决定）。"""
+    state = initialize_plan_state(_request())
+    state["segments"][0]["script"]["between_tracks"][0]["text"] = "下一首歌稍微推高情绪。"
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")

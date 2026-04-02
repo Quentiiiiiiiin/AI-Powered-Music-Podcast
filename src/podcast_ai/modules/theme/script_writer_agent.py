@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
@@ -162,6 +164,16 @@ class ScriptWriterAgent:
         try:
             data = json.loads(_normalize_llm_json_raw(raw))
         except Exception as exc:  # noqa: BLE001
+            # json.loads 失败时持久化“完整 raw”（不要只看截断日志），便于定位模型输出为何不是合法 JSON。
+            request_id = str(state.get("meta", {}).get("request_id") or "unknown")
+            iteration = str((state.get("control") or {}).get("iteration") or "na")
+            out_dir = Path(self._settings.app.output_dir) / "debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            dump_path = out_dir / f"script_writer_jsondecode_error_{request_id}_iter{iteration}_{ts}.json"
+            dump_payload = {"error": {"type": exc.__class__.__name__, "message": str(exc)}, "raw": raw}
+            dump_path.write_text(json.dumps(dump_payload, ensure_ascii=False), encoding="utf-8")
+            logger.error("Script Writer Agent json.loads失败：%s；已保存失败raw到：%s", str(exc), dump_path)
             raise AIServiceError("Script Writer Agent 返回结果不是有效 JSON。") from exc
 
         if not isinstance(data, dict):

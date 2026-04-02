@@ -10,6 +10,7 @@ import pytest
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
+from podcast_ai.modules.theme.state import validate_state_conforms_to_schema
 
 
 class _StubLLMClient:
@@ -179,3 +180,39 @@ def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> N
 
     with pytest.raises(AIServiceError, match=r"segments\[0\]\.target_playlist"):
         planner.generate_plan(request, use_orchestrator=False)
+
+
+def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() -> None:
+    """v3.1：single_agent 生成的 PlanState（state.json）应与 state_schema.json 同构，并将 critic/control 置 null。"""
+    payload = {
+        "style_description": "late-night test flow",
+        "overall_bpm_range": [90, 120],
+        "segments": [
+            {
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "bpm_range": [90, 105],
+                "mood": "chill",
+                "host_script": "欢迎来到 Luma Hits。",
+                "target_playlist": [
+                    {
+                        "recommended_tracks": ["Track A - Artist X"],
+                        "search_hints": {"bpm": 98},
+                    }
+                ],
+            }
+        ],
+    }
+    request = EpisodeRequest(
+        topic="Late Night Chill",
+        duration_minutes=10,
+        language="zh",
+        output_dir=Path("./output"),
+    )
+    planner = ThemePlanner(llm_client=_StubLLMClient(payload))
+
+    plan, state = planner.generate_plan_and_state(request, agent_mode="single_agent")
+    validate_state_conforms_to_schema(state, agent_mode="single_agent")
+    assert state["critic"] is None
+    assert state["control"] is None
+    assert len(state["segments"]) == len(plan.segments)

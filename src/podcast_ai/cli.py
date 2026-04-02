@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import typer
 
@@ -67,6 +68,12 @@ def version() -> None:
 def plan_episode_cli(
     topic: str = typer.Argument(..., help="节目主题（如：Late Night Chill Electronic）"),
     duration_minutes: int = typer.Argument(..., help="目标时长（分钟）"),
+    agent_mode: Literal["single_agent", "multi_agent"] = typer.Option(
+        "multi_agent",
+        "--agent-mode",
+        help="阶段一生成模式：single_agent 或 multi_agent。",
+        show_default=True,
+    ),
     language: str = typer.Option(
         "zh",
         "--language",
@@ -95,7 +102,11 @@ def plan_episode_cli(
     )
 
     try:
-        plan, plan_path, playlist_path = pipeline_plan_episode(request, settings=settings)
+        plan, plan_path, playlist_path, state_path = pipeline_plan_episode(
+            request,
+            settings=settings,
+            agent_mode=agent_mode,
+        )
     except PodcastAIError as exc:
         typer.echo(f"[错误] 规划失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -104,6 +115,7 @@ def plan_episode_cli(
     typer.echo(f"- Episode ID: {plan.plan_id}")
     typer.echo(f"- 规划文件（JSON）：{plan_path}")
     typer.echo(f"- 目标歌单（Markdown）：{playlist_path}")
+    typer.echo(f"- state.json（统一状态）：{state_path}")
 
 
 _INIT_CONFIG_YAML = """app:

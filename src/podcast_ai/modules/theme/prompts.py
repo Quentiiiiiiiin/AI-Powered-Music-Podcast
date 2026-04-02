@@ -305,6 +305,10 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         当 critic.pass=false：
         - critic.actions 必须至少包含 1 条，并且每条 actions 都要指向一个明确的目标 agent 和可执行指令。
 
+        当 critic.pass=true:
+        - critic.actions 必须为空数组。
+        - critic.issues 必须为空数组。
+
         禁止写入：
         - meta
         - global_constraints

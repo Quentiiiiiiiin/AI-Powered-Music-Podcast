@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import uuid
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Literal
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
@@ -278,3 +280,178 @@ def assert_plan_state_valid(state: PlanState) -> None:
     ok, errors = validate_plan_state_schema(state)
     if not ok:
         raise AIServiceError(f"PlanState schema 校验失败：{'; '.join(errors)}")
+
+
+def _state_schema_template_path() -> Path:
+    # state.py: src/podcast_ai/modules/theme/state.py -> repo root is parents[4]
+    return Path(__file__).resolve().parents[4] / "state_schema.json"
+
+
+def _load_state_schema_template() -> Dict[str, Any]:
+    path = _state_schema_template_path()
+    text = path.read_text(encoding="utf-8")
+    raw: Any = json.loads(text)
+    if not isinstance(raw, dict):
+        raise AIServiceError(f"state_schema.json 格式错误：期望 object，但得到 {type(raw).__name__}")
+    return raw
+
+
+def _path_to_str(path: Tuple[str, ...]) -> str:
+    out = ""
+    for part in path:
+        if part == "*":
+            out += "[*]"
+        else:
+            out = part if not out else f"{out}.{part}"
+    return out
+
+
+def _is_int_non_bool(x: Any) -> bool:
+    return type(x) is int
+
+
+def validate_state_conforms_to_schema(
+    state: PlanState,
+    *,
+    agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
+) -> None:
+    """
+    严格校验：state.json 的字段层级与类型要与 state_schema.json 同构。
+
+    允许的兼容点：
+    - `meta.overall_bpm_range`、`segments[*].bpm_range`：允许为 null
+    - `segments[*].playlist[*].bpm`：允许为 null（Curator 可能未知 BPM）
+    - `segments[*].script.between_tracks[*].text`：允许为 null（模板即为 null）
+    - 单 agent 模式：`critic` / `control` 允许为 null（不涉及字段）
+
+    失败时抛出可定位错误：字段路径 + 期望/实际类型。
+    """
+    template = _load_state_schema_template()
+
+    # 当模板期望值为 null 时，有两类语义：
+    # 1) 该字段是“允许为 null”，但模板用 null 作为示例（并不表示实际只能是 null）
+    # 2) 该字段本身必须严格为 null
+    #
+    # v3.1 目前我们主要需要处理 (1)：between_tracks[*].text 允许 string 或 null（交给 agent 决定）。
+    nullable_paths: set[Tuple[str, ...]] = {
+        ("meta", "overall_bpm_range"),
+        ("segments", "*", "bpm_range"),
+        ("segments", "*", "playlist", "*", "bpm"),
+        # between_tracks[*].text：允许为 null（模板示例），且允许出现真实 string
+        ("segments", "*", "script", "between_tracks", "*", "text"),
+    }
+    # 对 “expected 为 null” 且允许出现非 null 值的字段，按路径给出允许类型
+    nullable_expected_none_allows: dict[Tuple[str, ...], tuple[type, ...]] = {
+        ("segments", "*", "script", "between_tracks", "*", "text"): (str,),
+    }
+    if agent_mode == "single_agent":
+        nullable_paths |= {("critic",), ("control",)}
+
+    errors: List[str] = []
+
+    def _validate(actual: Any, expected: Any, path: Tuple[str, ...]) -> None:
+        # 允许某些字段为 null
+        if actual is None:
+            if expected is None:
+                return
+            if path in nullable_paths:
+                return
+            errors.append(
+                f"{_path_to_str(path)}：期望 {type(expected).__name__}，但实际为 null"
+            )
+            return
+
+        # expected: dict
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                errors.append(
+                    f"{_path_to_str(path)}：期望 object，但实际为 {type(actual).__name__}"
+                )
+                return
+
+            expected_keys = set(expected.keys())
+            actual_keys = set(actual.keys())
+            if expected_keys != actual_keys:
+                extra = sorted(actual_keys - expected_keys)
+                missing = sorted(expected_keys - actual_keys)
+                errors.append(
+                    f"{_path_to_str(path)}：字段不匹配，missing={missing}, extra={extra}"
+                )
+                return
+
+            for k, v in expected.items():
+                _validate(actual.get(k), v, path + (k,))
+            return
+
+        # expected: list（模板用第一个元素做元素结构参考）
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                errors.append(
+                    f"{_path_to_str(path)}：期望 array，但实际为 {type(actual).__name__}"
+                )
+                return
+
+            # 对“range 类型”数组做长度约束：模板长度为 2 且元素为 int
+            if len(expected) == 2 and all(_is_int_non_bool(x) for x in expected):
+                if len(actual) != 2:
+                    errors.append(
+                        f"{_path_to_str(path)}：期望长度为 2，但实际长度为 {len(actual)}"
+                    )
+                    return
+                for idx, elem in enumerate(actual):
+                    if not _is_int_non_bool(elem):
+                        errors.append(
+                            f"{_path_to_str(path)}[{idx}]：期望 int，但实际为 {type(elem).__name__}"
+                        )
+                return
+
+            elem_expected = expected[0] if expected else None
+            if elem_expected is None:
+                # 模板为 []：只要是数组即可
+                return
+
+            for elem in actual:
+                _validate(elem, elem_expected, path + ("*",))
+            return
+
+        # expected: primitive / null
+        if expected is None:
+            # 模板写了 null 但语义允许实际为非 null（例如 between_tracks[*].text）
+            if path in nullable_expected_none_allows:
+                allowed_types = nullable_expected_none_allows[path]
+                if actual is None:
+                    return
+                if isinstance(actual, allowed_types):
+                    return
+                errors.append(
+                    f"{_path_to_str(path)}：期望为 {', '.join(t.__name__ for t in allowed_types)} 或 null，但实际为 {type(actual).__name__}"
+                )
+                return
+            errors.append(f"{_path_to_str(path)}：期望 null，但实际为 {type(actual).__name__}")
+            return
+
+        if isinstance(expected, str):
+            if not isinstance(actual, str):
+                errors.append(
+                    f"{_path_to_str(path)}：期望 string，但实际为 {type(actual).__name__}"
+                )
+            return
+
+        if _is_int_non_bool(expected):
+            if not _is_int_non_bool(actual):
+                errors.append(
+                    f"{_path_to_str(path)}：期望 int，但实际为 {type(actual).__name__}"
+                )
+            return
+
+        # fallback：类型不在可预期集合中
+        if type(actual) is not type(expected):
+            errors.append(
+                f"{_path_to_str(path)}：期望 {type(expected).__name__}，但实际为 {type(actual).__name__}"
+            )
+
+    _validate(state, template, ())
+    if errors:
+        # 只取前 N 条，避免错误太多时淹没关键信息
+        head = errors[:10]
+        raise AIServiceError("state.json schema 校验失败：" + "；".join(head))

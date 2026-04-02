@@ -32,7 +32,7 @@ pip install -e .
 
 ### 3. 安装 FFmpeg（Windows）
 
-1. 下载：<https://ffmpeg.org/download.html> 或使用 `winget install ffmpeg`
+1. 下载：[https://ffmpeg.org/download.html](https://ffmpeg.org/download.html) 或使用 `winget install ffmpeg`
 2. 将 `ffmpeg/bin` 所在目录添加到系统环境变量 `PATH`
 3. 验证：
 
@@ -75,19 +75,24 @@ PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
 ### 阶段一：规划（生成目标歌单）
 
 ```bash
-podcast-ai plan-episode "Late Night Chill Electronic" 60
+podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mode multi_agent -l en
 ```
 
 - 调用 LLM 生成节目结构与目标歌单规划
-- 输出：`output/episodes/<episode_id>/plans/<plan_id>.json`、`playlist.md`
+- 输出：
+  - `output/episodes/<episode_id>/plans/<plan_id>.json`（兼容阶段二读取）
+  - `output/episodes/<episode_id>/plans/state.json`（v3.1 统一 state_schema 同结构输出）
+  - `output/episodes/<episode_id>/playlist.md`（人类可读目标歌单）
 
 根据歌单到各平台搜索、下载歌曲，放入指定目录（如 `./music/本期节目`）。
 
 **plan-episode 示例输出：**
+
 ```
 规划完成：
 - Episode ID: ep_20250309T120000Z_abc12345
 - 规划文件（JSON）：output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json
+- state.json（统一状态）：output/episodes/ep_xxx/plans/state.json
 - 目标歌单（Markdown）：output/episodes/ep_xxx/playlist.md
 ```
 
@@ -101,6 +106,7 @@ podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json D:/M
 - 输出：`output/episodes/<episode_id>/final/<episode_id>.mp3`、`show_notes.md`
 
 **create-episode 示例输出：**
+
 ```
 制作完成：
 - 音频：output/episodes/ep_xxx/final/ep_xxx.mp3
@@ -114,22 +120,25 @@ podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json D:/M
 podcast-ai scan-library D:/Music          # 扫描音乐库并缓存元数据
 podcast-ai init-config --force            # 强制覆盖配置文件
 podcast-ai plan-episode "主题" 30 -l en   # 英文规划
+podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生成（critic/control 置 null）
 ```
 
 ---
 
 ## 配置说明
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `app.music_dir` | 音乐目录 | `./music` |
-| `app.output_dir` | 输出目录 | `./output` |
-| `audio.crossfade_seconds` | 曲目过渡时长（秒） | `8.0` |
-| `audio.loudness_target_lufs` | 母带响度目标（LUFS） | `-14.0` |
-| `llm.base_url` | LLM API 地址 | 需配置 |
-| `llm.api_key` | LLM API Key | 建议用环境变量 |
-| `tts.provider` | TTS 供应商 | `elevenlabs` |
-| `tts.elevenlabs.voice_id` | ElevenLabs Voice ID | 需配置 |
+
+| 配置项                          | 说明                  | 默认值          |
+| ---------------------------- | ------------------- | ------------ |
+| `app.music_dir`              | 音乐目录                | `./music`    |
+| `app.output_dir`             | 输出目录                | `./output`   |
+| `audio.crossfade_seconds`    | 曲目过渡时长（秒）           | `8.0`        |
+| `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
+| `llm.base_url`               | LLM API 地址          | 需配置          |
+| `llm.api_key`                | LLM API Key         | 建议用环境变量      |
+| `tts.provider`               | TTS 供应商             | `elevenlabs` |
+| `tts.elevenlabs.voice_id`    | ElevenLabs Voice ID | 需配置          |
+
 
 ---
 
@@ -139,7 +148,9 @@ podcast-ai plan-episode "主题" 30 -l en   # 英文规划
 output/
   episodes/
     ep_YYYYMMDDTHHMMSSZ_xxxxxxxx/
-      plans/           # 规划 JSON
+      plans/           # v3.1 统一规划目录
+        state.json     # 与 state_schema.json 同结构的统一状态（阶段一产物）
+        <plan_id>.json # 规划文件（阶段二兼容读取）
       mix/             # 中间混音 wav
       final/           # 最终 MP3、Show Notes
       playlist.md      # 目标歌单（阶段一产出）
@@ -159,7 +170,7 @@ podcast-ai --log-level DEBUG plan-episode "主题" 30
 podcast-ai --log-level DEBUG create-episode plans/ep_xxx.json ./music
 
 # 将日志同时写入文件（追加，UTF-8）
-podcast-ai --log-level DEBUG --log-file ./logs/podcast.log plan-episode "主题" 30
+podcast-ai --log-level DEBUG --log-file ./logs/podcast.log plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mode multi_agent -l en
 ```
 
 ### 环境变量
@@ -180,12 +191,14 @@ PODCAST_AI_LOG_FILE=./logs/podcast.log
 
 ### 日志等级说明
 
-| 等级 | 适用场景 |
-|------|----------|
-| `DEBUG` | 调试：LLM 请求/响应、TTS 缓存命中、FFmpeg 命令、BPM 估计、选曲详情等 |
-| `INFO` | 默认：阶段进度、耗时统计、扫描/选曲数量等 |
-| `WARNING` | 异常但不中断：单段 TTS 失败、LLM 重试等 |
-| `ERROR` | 严重错误：FFmpeg 失败、依赖缺失等 |
+
+| 等级        | 适用场景                                         |
+| --------- | -------------------------------------------- |
+| `DEBUG`   | 调试：LLM 请求/响应、TTS 缓存命中、FFmpeg 命令、BPM 估计、选曲详情等 |
+| `INFO`    | 默认：阶段进度、耗时统计、扫描/选曲数量等                        |
+| `WARNING` | 异常但不中断：单段 TTS 失败、LLM 重试等                     |
+| `ERROR`   | 严重错误：FFmpeg 失败、依赖缺失等                         |
+
 
 ---
 
@@ -215,12 +228,14 @@ PODCAST_AI_LOG_FILE=./output/debug.log
 
 ### 日志等级
 
-| 等级 | 说明 |
-|------|------|
-| `DEBUG` | 最详细，含 LLM 请求片段、TTS 缓存命中、FFmpeg 命令等 |
-| `INFO` | 默认，主要流程与耗时 |
-| `WARNING` | 仅警告与错误 |
-| `ERROR` | 仅错误 |
+
+| 等级        | 说明                                 |
+| --------- | ---------------------------------- |
+| `DEBUG`   | 最详细，含 LLM 请求片段、TTS 缓存命中、FFmpeg 命令等 |
+| `INFO`    | 默认，主要流程与耗时                         |
+| `WARNING` | 仅警告与错误                             |
+| `ERROR`   | 仅错误                                |
+
 
 ### 调试示例
 
@@ -235,16 +250,18 @@ podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx_plan_xxx.json D:\M
 
 ## 常见错误排查
 
-| 错误 | 可能原因 | 处理 |
-|------|----------|------|
-| `未检测到可用的 FFmpeg/ffprobe` | FFmpeg 未安装或未加入 PATH | 安装 FFmpeg，将 `ffmpeg/bin` 加入 PATH |
-| `LLM base_url 未配置` | 未配置 `llm.base_url` 或 `PODCAST_AI_LLM__BASE_URL` | 在 `config.yaml` 或 `.env` 中配置 |
-| `ElevenLabs TTS 配置不完整` | 未配置 `tts.elevenlabs.api_key` 或 `voice_id` | 在 `.env` 设置 `PODCAST_AI_TTS__ELEVENLABS__API_KEY` 与 `PODCAST_AI_TTS__ELEVENLABS__VOICE_ID` |
-| `ElevenLabs TTS 调用失败：鉴权失败` | API Key 无效或过期 | 检查 ElevenLabs key 是否正确 |
-| `ElevenLabs TTS 调用失败：资源不存在` | `voice_id` 不正确 | 到 ElevenLabs 控制台复制正确 Voice ID |
-| `ElevenLabs TTS 调用失败：配额或频率受限` | 配额不足或触发限流 | 稍后重试或提升套餐 |
-| `音乐目录为空或扫描失败` | 目录不存在或无 mp3/wav | 检查路径，确保有音频文件 |
-| `选曲结果为空` | 曲库中无符合 BPM 区间的曲目 | 放宽规划中的 BPM 范围或准备更多曲目 |
+
+| 错误                            | 可能原因                                            | 处理                                                                                         |
+| ----------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `未检测到可用的 FFmpeg/ffprobe`      | FFmpeg 未安装或未加入 PATH                             | 安装 FFmpeg，将 `ffmpeg/bin` 加入 PATH                                                           |
+| `LLM base_url 未配置`            | 未配置 `llm.base_url` 或 `PODCAST_AI_LLM__BASE_URL` | 在 `config.yaml` 或 `.env` 中配置                                                               |
+| `ElevenLabs TTS 配置不完整`        | 未配置 `tts.elevenlabs.api_key` 或 `voice_id`       | 在 `.env` 设置 `PODCAST_AI_TTS__ELEVENLABS__API_KEY` 与 `PODCAST_AI_TTS__ELEVENLABS__VOICE_ID` |
+| `ElevenLabs TTS 调用失败：鉴权失败`    | API Key 无效或过期                                   | 检查 ElevenLabs key 是否正确                                                                     |
+| `ElevenLabs TTS 调用失败：资源不存在`   | `voice_id` 不正确                                  | 到 ElevenLabs 控制台复制正确 Voice ID                                                              |
+| `ElevenLabs TTS 调用失败：配额或频率受限` | 配额不足或触发限流                                       | 稍后重试或提升套餐                                                                                  |
+| `音乐目录为空或扫描失败`                 | 目录不存在或无 mp3/wav                                 | 检查路径，确保有音频文件                                                                               |
+| `选曲结果为空`                      | 曲库中无符合 BPM 区间的曲目                                | 放宽规划中的 BPM 范围或准备更多曲目                                                                       |
+
 
 ---
 

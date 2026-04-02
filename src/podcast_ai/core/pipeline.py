@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.logging_config import log_timing
@@ -23,6 +23,7 @@ from podcast_ai.infra.storage.paths import (
     get_playlist_markdown_path,
     load_episode_plan,
     save_episode_plan,
+    save_state_json,
 )
 from podcast_ai.modules.exporter.exporter import Exporter
 from podcast_ai.modules.library.scanner import LibraryScanner
@@ -30,6 +31,7 @@ from podcast_ai.modules.mastering.processor import MasteringService
 from podcast_ai.modules.mixing.mixer import Mixer
 from podcast_ai.modules.selection.selector import compute_segment_boundaries, select_tracks_by_plan
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
+from podcast_ai.modules.theme.state import validate_state_conforms_to_schema
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
 
 logger = logging.getLogger(__name__)
@@ -62,11 +64,12 @@ def load_plan_from_disk(path: Path) -> EpisodePlan:
 def plan_episode(
     request: EpisodeRequest,
     settings: Settings | None = None,
-) -> Tuple[EpisodePlan, Path, Path]:
+    agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
+) -> Tuple[EpisodePlan, Path, Path, Path]:
     """
     阶段一：调用 ThemePlanner 生成 EpisodePlan，并落盘 JSON + playlist Markdown。
 
-    返回：(plan, plan_json_path, playlist_markdown_path)
+    返回：(plan, plan_json_path, playlist_markdown_path, state_json_path)
     """
     effective_settings = settings or load_settings()
     with log_timing(logger, "plan_episode"):
@@ -74,7 +77,11 @@ def plan_episode(
         output_dir = Path(request.output_dir or effective_settings.app.output_dir)
 
         planner = ThemePlanner(settings=effective_settings)
-        plan = planner.generate_plan(request)
+        plan, state = planner.generate_plan_and_state(
+            request,
+            agent_mode=agent_mode,
+        )
+        # validate_state_conforms_to_schema(state, agent_mode=agent_mode)
 
         episode_id = generate_episode_id()
         plan_id = generate_plan_id(episode_id)
@@ -90,6 +97,7 @@ def plan_episode(
         )
 
         episode_root = get_episode_root(output_dir, episode_id)
+        state_json_path = save_state_json(state=state, output_dir=output_dir, episode_id=episode_id)
         playlist_md_path = get_playlist_markdown_path(episode_root)
         playlist_md_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -124,7 +132,7 @@ def plan_episode(
 
         playlist_md_path.write_text("\n".join(lines), encoding="utf-8")
 
-        return plan, plan_json_path, playlist_md_path
+        return plan, plan_json_path, playlist_md_path, state_json_path
 
 
 def create_episode(

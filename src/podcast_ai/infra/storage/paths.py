@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 from podcast_ai.core.models import EpisodePlan, VoiceoverSegment
+from podcast_ai.modules.theme.state import PlanState
 
 
 def generate_episode_id() -> str:
@@ -123,4 +126,34 @@ def load_episode_plan(path: Path) -> EpisodePlan:
     """从 JSON 文件加载 EpisodePlan。"""
     text = path.read_text(encoding="utf-8")
     return EpisodePlan.model_validate_json(text)
+
+
+def get_state_path(episode_root: Path) -> Path:
+    """
+    阶段一输出的统一状态文件路径：
+      {episode_root}/plans/state.json
+    """
+    return episode_root.joinpath("plans", "state.json")
+
+
+def save_state_json(state: PlanState, output_dir: Path, episode_id: str) -> Path:
+    """
+    将 PlanState 落盘为 state.json，并返回文件路径。
+    """
+    episode_root = get_episode_root(output_dir, episode_id)
+    state_path = get_state_path(episode_root)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    # PlanState 约定为结构化 dict，可直接 JSON 化
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return state_path
+
+
+def load_state_json(path: Path) -> PlanState:
+    """从 JSON 文件加载 PlanState。"""
+    text = path.read_text(encoding="utf-8")
+    # PlanState 为结构化 dict：直接反序列化即可
+    raw: Any = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError(f"state.json 格式错误：期望 object，但得到 {type(raw).__name__}")
+    return raw
 
