@@ -37,6 +37,39 @@ def _base_settings(tmp_path: Path) -> Settings:
     return Settings(app=AppConfig(output_dir=str(tmp_path)))
 
 
+def test_planner_agent_json_repair_truncated_closing_braces(tmp_path: Path) -> None:
+    """v3.3：stub 返回缺末尾 `}` 时，结构闭合后应能解析。"""
+    truncated = """
+    ```json
+    {
+      "meta": {"theme_description": "深夜陪伴"},
+      "global_constraints": {"tone": "克制", "avoid": ["说教"]},
+      "plan": {"segments_design": "两段式", "emotion_curve": ["平静", "治愈"]},
+      "segments": [
+        {
+          "segment_id": "seg_01",
+          "order": 1,
+          "name": "开场",
+          "target_duration_seconds": 1200,
+          "bpm_range": [90, 105],
+          "mood": "舒缓",
+          "segment_design": "铺垫主题"
+        }
+      ]
+    """
+    request = EpisodeRequest(
+        topic="Late Night Chill",
+        duration_minutes=60,
+        language="zh",
+        output_dir=tmp_path,
+    )
+    state = initialize_plan_state(request)
+    agent = PlannerAgent(llm_client=_StubLLMClient(truncated), settings=_base_settings(tmp_path))
+    next_state = agent.run(state)
+    assert next_state["control"]["last_updated_by"] == "Planner"
+    assert next_state["meta"]["theme_description"] == "深夜陪伴"
+
+
 def test_planner_agent_json_repair_success(tmp_path: Path) -> None:
     payload = """
     一些前后文本，以及代码块：

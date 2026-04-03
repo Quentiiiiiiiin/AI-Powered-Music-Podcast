@@ -10,6 +10,7 @@ from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodePlan, EpisodeRequest, EpisodeSegment, PlaylistItem
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
+from podcast_ai.modules.theme.json_repair import repair_and_standardize_json
 from podcast_ai.modules.theme.prompts import build_theme_planner_messages
 from podcast_ai.modules.theme.state import PlanState
 
@@ -76,7 +77,8 @@ class ThemePlanner:
         logger.debug("Raw LLM plan output (truncated): %s", raw[:1000])
 
         try:
-            data = json.loads(raw)
+            repaired = repair_and_standardize_json(raw)
+            data = json.loads(repaired)
         except Exception as exc:  # noqa: BLE001
             raise AIServiceError("LLM 返回结果不是有效的 JSON。") from exc
 

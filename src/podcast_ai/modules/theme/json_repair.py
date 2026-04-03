@@ -34,6 +34,70 @@ def standardize_llm_json_text(raw: str) -> str:
     return text.strip()
 
 
+def _first_json_structure_index(text: str) -> Optional[int]:
+    """返回第一个可作为 JSON 根的起始下标（`{` 或 `[`），若无则 None。"""
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            return i
+    return None
+
+
+def close_unclosed_json_structures(text: str) -> str:
+    """
+    v3.3：在纯文本层面检测未闭合的 `{` / `[`，仅在可安全推断时于末尾补全 `}` / `]`。
+
+    与 `_extract_first_json_substring` 一致：仅在字符串外统计括号；尊重 `\"` 与转义。
+    - 若出现与栈顶不匹配的 `}` / `]`，视为无法安全修复，**返回原文本**。
+    - 若扫描结束时仍在字符串内（未闭合引号），**返回原文本**，不追加闭合括号。
+    - 若栈非空且已出字符串，按栈逆序追加对应的 `}` / `]`。
+    """
+    s = text
+    n = len(s)
+    stack: list[str] = []
+    in_string = False
+    escape = False
+
+    for i in range(n):
+        ch = s[i]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch == "{":
+            stack.append("{")
+        elif ch == "[":
+            stack.append("[")
+        elif ch == "}":
+            if not stack or stack[-1] != "{":
+                return text
+            stack.pop()
+        elif ch == "]":
+            if not stack or stack[-1] != "[":
+                return text
+            stack.pop()
+
+    if in_string:
+        return text
+    if not stack:
+        return text
+
+    closers: list[str] = []
+    while stack:
+        top = stack.pop()
+        closers.append("}" if top == "{" else "]")
+    return text + "".join(closers)
+
+
 def _extract_first_json_substring(text: str) -> Optional[str]:
     """
     从文本中提取第一个 JSON 对象/数组子串。
@@ -100,10 +164,11 @@ def _extract_first_json_substring(text: str) -> Optional[str]:
 
 def repair_and_standardize_json(raw: str) -> str:
     """
-    在 standardize 的基础上做最小“可解析 JSON”修复：
-    - 提取第一个 JSON 对象/数组子串（去掉前后文本）
+    在 standardize 的基础上做最小“可解析 JSON”修复（v3.2 + v3.3）：
+    - `standardize_llm_json_text`
+    - 提取第一个完整 JSON 子串；若无法提取则从首个 `{`/`[` 起截取到末尾（便于截断 JSON 的闭合补全）
     - 移除尾随逗号：`{...,}` / `[...,]`
-    - 如果无法提取，退化为对标准化文本直接做尾随逗号移除
+    - `close_unclosed_json_structures`：末尾补全未闭合的 `}` / `]`
 
     注意：即使修复失败，也不抛异常；调用方应在 `json.loads` 处决定是否报错。
     """
@@ -112,9 +177,15 @@ def repair_and_standardize_json(raw: str) -> str:
     extracted = _extract_first_json_substring(text)
     if extracted is not None:
         text = extracted
+    else:
+        # 截断输出无完整闭合时 extract 为 None；从第一个 JSON 根起点截取，避免前缀杂质
+        j = _first_json_structure_index(text)
+        if j is not None:
+            text = text[j:].strip()
 
     # 去掉对象/数组的尾随逗号（常见：{"a":1,}）
     text = re.sub(r",\s*([}\]])", r"\1", text)
+    text = close_unclosed_json_structures(text)
     return text.strip()
 
 
