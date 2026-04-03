@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime
@@ -14,9 +13,9 @@ from podcast_ai.modules.theme.agent_response_schemas import (
     build_script_writer_response_schema,
 )
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
-from podcast_ai.modules.theme.json_repair import dump_json_repair_debug, repair_and_standardize_json
+from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.prompts import build_script_writer_agent_messages
-from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, merge_plan_state
+from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +140,6 @@ class ScriptWriterAgent:
         self._llm = llm_client or get_default_llm_client(self._settings)
 
     def run(self, state: PlanState) -> PlanState:
-        assert_plan_state_valid(state)
         segments_count = len(state.get("segments", []))
 
         messages = build_script_writer_agent_messages(state)
@@ -163,36 +161,14 @@ class ScriptWriterAgent:
 
         logger.debug("Script Writer Agent raw output (truncated): %s", raw[:1000])
 
-        try:
-            repaired = repair_and_standardize_json(raw)
-            data = json.loads(repaired)
-        except Exception as exc:  # noqa: BLE001
-            dump_info = dump_json_repair_debug(
-                output_dir=Path(self._settings.app.output_dir),
-                agent_name="Script Writer",
-                state=state,
-                raw=raw,
-                repaired=locals().get("repaired", ""),
-                exc=exc,
-            )
-            req_id = str((state.get("meta") or {}).get("request_id") or "unknown")
-            iter_s = str((state.get("control") or {}).get("iteration") or "na")
-            so_note = "；已启用 OpenRouter 结构化输出仍解析失败" if structured else ""
-            logger.error(
-                "%s json.loads 失败 request_id=%s iteration=%s：%s；debug=%s%s",
-                AGENT_LABEL,
-                req_id,
-                iter_s,
-                str(exc),
-                dump_info.dump_path,
-                so_note,
-            )
-            raise AIServiceError(
-                f"{AGENT_LABEL} 返回结果不是有效 JSON（request_id={req_id}, iteration={iter_s}{so_note}；已保存：{dump_info.dump_path}）。"
-            ) from exc
-
-        if not isinstance(data, dict):
-            raise AIServiceError("Script Writer Agent 返回的 JSON 顶层必须是对象。")
+        data = parse_agent_json_response(
+            agent_label=AGENT_LABEL,
+            raw=raw,
+            state=state,
+            structured=structured,
+            allow_repair_fallback=not structured,
+            output_dir=Path(self._settings.app.output_dir),
+        )
 
         language = str(state.get("meta", {}).get("language") or "")
         patch = _sanitize_script_writer_patch(
@@ -206,5 +182,4 @@ class ScriptWriterAgent:
             next_state,
             {"control": {"last_updated_by": "Script Writer"}},
         )
-        assert_plan_state_valid(next_state)
         return next_state

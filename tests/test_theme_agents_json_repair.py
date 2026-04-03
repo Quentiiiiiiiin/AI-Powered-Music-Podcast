@@ -8,6 +8,7 @@ import pytest
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.infra.config import AppConfig, Settings
+from podcast_ai.infra.config import LLMConfig
 from podcast_ai.modules.theme.critic_agent import CriticAgent
 from podcast_ai.modules.theme.music_curator_agent import MusicCuratorAgent
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
@@ -34,7 +35,14 @@ def _request(tmp_path: Path) -> EpisodeRequest:
 
 def _base_settings(tmp_path: Path) -> Settings:
     # Agent 用的是 settings.app.output_dir 写 debug dump
-    return Settings(app=AppConfig(output_dir=str(tmp_path)))
+    # v3.5：结构化主路径禁用 repair；此文件的用例是“repair 成功”场景，因此显式关闭 structured。
+    llm = LLMConfig(
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini",
+        structured_output=False,
+    )
+    return Settings(app=AppConfig(output_dir=str(tmp_path)), llm=llm)
 
 
 def test_planner_agent_json_repair_truncated_closing_braces(tmp_path: Path) -> None:

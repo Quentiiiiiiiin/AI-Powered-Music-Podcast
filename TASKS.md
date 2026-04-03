@@ -1,105 +1,110 @@
-## 版本 v3.4（迭代十二：OpenRouter 结构化输出 response_format）
+## 版本 v3.5（迭代十三：代码可读性与冗余校验清理）
 
-基于 PRD v3.4：在 **经 OpenRouter** 调用大模型时，请求体在 `messages` 之外携带 **`response_format`**（形态对齐仓库内 `openrouter_structured_output.json`：`type: json_schema`、`json_schema.strict: true`、内嵌 `schema`），使 Planner / Music Curator / Script Writer / Critic 各自按契约输出 JSON，降低后续对 v3.2/v3.3 修复链路的依赖（修复保留为可选兜底）。非 OpenRouter 或未启用结构化输出时，行为须与现状兼容、不强行附加 `response_format`。
+基于 PRD v3.5：清理“可维护性/可读性”问题，重点包括：
+1) 从四个 Agent 的主路径移除 `json repair`（仅在明确的可选兜底场景下启用，并有清晰注释/开关）。
+2) 精简 JSON/Schema 校验逻辑：尽量做到“解析一次、校验一次”，并把解析/校验职责集中到统一入口。
+3) 降低散落的 try/except、日志与 dump 的重复代码量；保证职责边界更清晰。
+4) 行为不回退：plan 生成成功率与稳定性不显著下降；在关键解析与校验工具函数上补充/完善少量单测。
 
 ---
 
-### Task 01 - 四份 Agent 输出 JSON Schema（strict 对齐契约）
-- **Task name**: v3.4 - Agent 专用 `response_format` 内联 schema
-- **目标**: 为四个 Agent 各定义一份与其 **sanitize / patch 契约**一致的 JSON Schema（字段名 snake_case、允许写的键与 `planner_agent` / `music_curator_agent` / `script_writer_agent` / `critic_agent` 中的越权校验一致），并满足 OpenRouter/OpenAI 系 **strict json_schema** 常见要求（如对象 `additionalProperties: false`、`required` 覆盖需约束的 property 等，按官方文档逐条自检）。
+### Task 01 - 统一 JSON 解析入口（主路径禁用 repair）
+- **Task name**: v3.5 - `parse_agent_json_response(...)`
+- **目标**: 新增一个小而清晰的解析工具函数，统一处理四个 Agent 的 raw -> JSON -> dict，并把“structured 主路径禁用 repair / 非 structured 可选 repair 兜底”的策略集中在一个地方。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 新增模块（建议）：`src/podcast_ai/modules/theme/agent_response_schemas.py`
-  - 导出例如：`PLANNER_RESPONSE_SCHEMA`、`CURATOR_RESPONSE_SCHEMA`、`SCRIPT_WRITER_RESPONSE_SCHEMA`、`CRITIC_RESPONSE_SCHEMA`，以及 `build_openrouter_response_format(name: str, schema: dict) -> dict`（返回 `openrouter_structured_output.json` 中与 `messages` 并列的 `response_format` 对象：`type`、`json_schema.name` / `strict` / `schema`）。
-  - 与 `state_schema.json`、PRD「6.3 Agent 契约」对照，避免字段冲突；**不要求**整份 state，仅覆盖各 Agent **增量 JSON** 的根结构。
-- **Input**: 现有 Agent sanitize 白名单与 PRD 契约
-- **Output**: 可被序列化进 HTTP body 的 schema 字典 + 组装好的 `response_format` 工厂函数
+  - 新增文件（建议）：`src/podcast_ai/modules/theme/agent_json_parser.py`
+  - 导出一个函数（示例签名）：
+    - `parse_agent_json_response(*, agent_label: str, raw: str, state: PlanState, structured: bool, allow_repair_fallback: bool) -> dict[str, Any]`
+  - 解析策略（与 v3.5 验收对齐）：
+    - `structured=True`（OpenRouter strict 主路径）：只做“轻量标准化”（例如 `.strip()`、必要的 code fence 去除/智能引号替换若仍需要），然后 **直接 `json.loads`**。
+    - `structured=False`：先直接 `json.loads`；仅在失败且 `allow_repair_fallback=True` 时才调用 `repair_and_standardize_json` 再解析。
+    - 若仍失败：抛 `AIServiceError`，错误信息包含 `agent_label` + `request_id`(来自 `state.meta`) + `iteration`(来自 `state.control`) + 失败原因；debug dump（raw 与 repaired 视情况）仍可保留，但只在兜底发生或解析完全失败时产出（避免 noise）。
+  - 让解析返回值保证：
+    - JSON 顶层必须是 `dict`（否则抛错）
+    - 不做 agent-specific 的字段 sanitize（由调用方继续做）
+  - 在函数内部给出明确注释：为什么 structured 主路径禁用 repair（v3.5 PRD）。
+- **Input**: raw + structured 标记 + state
+- **Output**: 解析后的 `dict`
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`（新增）
-  - 参考：`src/podcast_ai/modules/theme/{planner_agent,music_curator_agent,script_writer_agent,critic_agent}.py`
-  - 参考：`openrouter_structured_output.json`、`state_schema.json`
-- **Estimated complexity**: L（2-3 小时，strict 下 property 枚举需仔细对齐）
+  - `src/podcast_ai/modules/theme/agent_json_parser.py`（新增）
+  - 复用 `src/podcast_ai/modules/theme/json_repair.py` 中的标准化/repair/dump 能力
+- **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 02 - 配置与路由：何时对 OpenRouter 启用结构化输出
-- **Task name**: v3.4 - OpenRouter 检测 + `structured_output` 开关
-- **目标**: 明确仅在与 OpenRouter 集成时发送 `response_format`；避免对其它 OpenAI 兼容网关误发导致 400。支持显式配置覆盖「自动检测」。
+### Task 02 - 四个 Agent 接入统一解析入口，去冗余（去掉 repair 主路径调用）
+- **Task name**: v3.5 - Agent 解析逻辑精简
+- **目标**: 修改四个 Agent，使它们不再在主路径中直接调用 `repair_and_standardize_json` / `dump_json_repair_debug`；改为统一调用 Task 01 的解析入口，从而减少重复 try/except/log/dump 并满足 v3.5 第 1 条验收。
 - **类型**: backend
-- **依赖关系**: 无（可与 Task 01 并行）
+- **依赖关系**: Task 01
 - **Description**:
-  - 在 `src/podcast_ai/infra/config.py`（及 `config.yaml` / env 文档注释）增加例如：`llm.structured_output: bool | None`（`None` = 按 base_url 识别 OpenRouter，如 host 含 `openrouter.ai` 则启用；`true`/`false` 强制开/关）。
-  - 提供小函数：`def should_use_structured_output(cfg: LLMConfig) -> bool`，供 Agent 与 client 调用。
-  - 验收对齐 PRD：非 OpenRouter 或未开启时不带 `response_format`；**不得**因默认值误伤现有部署。
-- **Input**: `LLMConfig` / `Settings`
-- **Output**: 可复用的布尔判定与配置项
+  - 修改文件：
+    - `src/podcast_ai/modules/theme/planner_agent.py`
+    - `src/podcast_ai/modules/theme/music_curator_agent.py`
+    - `src/podcast_ai/modules/theme/script_writer_agent.py`
+    - `src/podcast_ai/modules/theme/critic_agent.py`
+  - 每个 Agent 的 `run` 解析段替换为：
+    - `structured = should_use_structured_output(self._settings.llm)`
+    - `data = parse_agent_json_response(... structured=structured, allow_repair_fallback=not structured)`
+    - 后续保持现有 `sanitize_*_patch` + `merge_plan_state` 流程不动（避免语义回退）
+  - 把四个 Agent 中高度重复的：
+    - `try: repaired = ...; data = json.loads(...) except ... dump/log raise`
+    - `request_id/iteration/so_note` 拼装
+    统一收敛到 Task 01 的解析入口里。
+  - 仅在 parser 触发兜底/失败时写 debug dump（避免所有失败都落太多噪音文件）。
+- **Input**: LLM raw 文本
+- **Output**: 更新后的状态（由 sanitize/merge 决定）
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-  - （可选）`config.yaml` 示例、`README.md` 一句说明
-- **Estimated complexity**: S（1 小时）
+  - 四个 agent 文件
+  - 新增的 `agent_json_parser.py`
+- **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 03 - 四个 Agent 在 `generate` 中附带 `response_format`
-- **Task name**: v3.4 - Agent `run` 接入 OpenRouter 结构化请求体
-- **目标**: 当 `should_use_structured_output` 为真时，Planner / Music Curator / Script Writer / Critic 调用 `self._llm.generate(messages, temperature=..., response_format=...)`，其中 `response_format` 由 Task 01 工厂按 Agent 类型生成；与 `openrouter_structured_output.json` 并列字段形态一致。
+### Task 03 - 去掉 Agent 内重复的 `PlanState` schema 校验（由 orchestrator 集中）
+- **Task name**: v3.5 - 校验职责集中到 orchestrator
+- **目标**: 减少冗余校验次数与代码噪音。因为当前 Agents 只由 `PlanOrchestrator` 调用且 orchestrator 在每个迭代轮次后会 `assert_plan_state_valid`，因此可移除 Agents 内部的重复 `assert_plan_state_valid(state)` / `assert_plan_state_valid(next_state)`，让职责更清晰。
+- **类型**: backend
+- **依赖关系**: Task 02（确保解析/合并后逻辑仍可靠）
+- **Description**:
+  - 修改四个 Agent：删除（或至少移除）这些调用：
+    - `assert_plan_state_valid(state)`（run 起始处）
+    - `assert_plan_state_valid(next_state)`（run 结束前）
+  - 在 `src/podcast_ai/modules/theme/orchestrator.py` 保持当前的：
+    - while 循环中每轮结束后的 `assert_plan_state_valid(state)`（以及 AIServiceError 情况下的状态合并后校验）
+  - 保留 agent-specific 的必要校验（例如 segments_count==0 等语义检查、sanitize 白名单校验、语言一致性启发式校验等），避免“只靠 orchestrator 兜底”导致语义缺失。
+- **Input**: PlanState
+- **Output**: 合并后的 PlanState（由 orchestrator 进行统一校验）
+- **Files involved**:
+  - 四个 agent 文件
+  - `src/podcast_ai/modules/theme/orchestrator.py`（只读确认）
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 04 - 单测：验证 structured 主路径不调用 repair，失败路径可定位
+- **Task name**: v3.5 - 解析器行为与回归测试
+- **目标**: 覆盖 v3.5 验收点中“解析/校验职责集中 + 不回退”的关键行为。
 - **类型**: backend
 - **依赖关系**: Task 01、Task 02
 - **Description**:
-  - 修改四个 Agent 文件：在 `generate(...)` 调用处按 Agent 选择对应 schema 名称与 `build_openrouter_response_format`。
-  - 保持：`OpenAICompatibleLLMClient.generate` 已通过 `payload.update(kwargs)` 合并额外字段，**无需**为 v3.4 强行改 client 签名；若需统一日志脱敏，确保 debug 日志不打印完整 schema（可选 truncate）。
-- **Input**: LLM messages + 配置
-- **Output**: API 请求体含 `messages` + `response_format`（启用时）
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/planner_agent.py`
-  - `src/podcast_ai/modules/theme/music_curator_agent.py`
-  - `src/podcast_ai/modules/theme/script_writer_agent.py`
-  - `src/podcast_ai/modules/theme/critic_agent.py`
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
-- **Estimated complexity**: M（1.5-2.5 小时）
-
----
-
-### Task 04 - 失败路径：不支持结构化或响应不符合约定
-- **Task name**: v3.4 - 结构化输出错误显式失败 + 可追踪日志
-- **目标**: 满足 PRD 验收 3：若 API 因 `response_format` 返回 4xx、或响应 `content` 无法解析为与契约一致的 JSON，须 **明确 `AIServiceError`**，日志/异常信息中包含 **可定位标识**（如 `request_id`、`meta.request_id`、iteration、Agent 名），**禁止静默继续**。
-- **类型**: backend
-- **依赖关系**: Task 03
-- **Description**:
-  - 审视 `OpenAICompatibleLLMClient`：对 HTTP 4xx 若 body 提示 schema/response_format 不支持，错误文案可简短附带 `resp.text` 前缀（已有 300 字截断可沿用）。
-  - Agent 侧：结构化主路径下若 `json.loads` 仍失败，沿用现有 `dump_json_repair_debug`（或与 v3.2 一致策略），并在 message 中标明 Agent 名称与「结构化输出仍解析失败」。
-  - **不做**自动降级重试整段无 schema 的请求（除非 PRD 后续迭代要求），以免掩盖配置错误。
-- **Input**: 失败 API 响应 / 异常 content
-- **Output**: 可读的失败原因 + debug 工件路径（如有）
-- **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`（按需收紧错误信息）
-  - `src/podcast_ai/modules/theme/{planner_agent,music_curator_agent,script_writer_agent,critic_agent}.py`
-- **Estimated complexity**: S（1 小时）
-
----
-
-### Task 05 - 单元测试：payload 形态与开关行为
-- **Task name**: v3.4 - 结构化输出请求与回归测试
-- **目标**: 自动化覆盖 PRD 验收 1、5：启用结构化时 POST body 含正确 `response_format`（`json_schema` + `strict: true`）；关闭或非 OpenRouter 时不含该字段；可对 `should_use_structured_output` 做参数化断言。
-- **类型**: backend
-- **依赖关系**: Task 01～04（至少 01～03 完成后编写）
-- **Description**:
-  - 使用 `httpx.MockTransport` 或 patch `httpx.Client.post` 捕获 JSON body，断言四个 Agent 在开启开关时各自传入对应 `json_schema.name` / 顶层 `type`。
-  - 可选：快照或最小断言 `schema.properties` 中含关键键（如 Planner 的 `segments` / Critic 的 `critic`+`control`）。
-- **Input**: mock LLM HTTP
+  - 新增/更新测试（建议新增一份小而聚焦的测试文件，例如 `tests/test_agent_json_parser.py`）：
+    1. `structured=True` 时：
+       - raw 是合法 JSON：应成功返回 dict，且不触发 `repair_and_standardize_json`（可用 monkeypatch 断言调用次数为 0）。
+       - raw 是非法 JSON：应抛 `AIServiceError`，错误信息包含 agent_label + request_id + iteration；并且同样断言 repair 未被调用。
+    2. `structured=False` 时：
+       - raw 是可由 `repair_and_standardize_json` 修复的 malformed JSON：应成功解析（验证兜底仍可用但不是主路径）。
+  - 现有的 `tests/test_theme_agents_json_repair.py` 可以保留其意义（大概率 structured=False 场景仍会走兜底），但需根据 Task 03 移除/调整 Agents 内部 assert 是否影响期望。
+  - 关键断言尽量聚焦在：
+    - 是否调用 repair（或不调用）
+    - 是否抛出正确异常与可定位字段
+- **Input**: 构造 raw + stub LLM
 - **Output**: `pytest` 通过
 - **Files involved**:
-  - `tests/test_llm_structured_output.py`（新建）或扩展现有 `tests/test_theme_*.py`
-- **Estimated complexity**: M（2 小时）
+  - 新增/更新 `tests/test_agent_json_parser.py`
+  - 必要时更新 `tests/test_theme_agents_json_repair.py`
+  - 可能复用 `tests/test_llm_structured_output.py` 的 stub/mock transport
+- **Estimated complexity**: M（2-3 小时）
 
----
-
-### Task 06（可选）- 文档与示例对齐
-- **Task name**: v3.4（可选）- README / PRD 侧配置说明
-- **目标**: 简短说明如何通过 `config.yaml` 使用 OpenRouter + 结构化输出，并指向 `openrouter_structured_output.json`。
-- **类型**: backend（文档）
-- **依赖关系**: Task 02
-- **Description**:
-  - 仅在需要时更新 `README.md` 一段；若团队约定不写文档则可跳过。
-- **Estimated complexity**: XS（≤0.5 小时）

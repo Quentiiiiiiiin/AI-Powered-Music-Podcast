@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.4  
+**文档版本**：v3.5  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.4）
+**产品阶段**：迭代验证中（进入 v3.5）
 
 ---
 
@@ -151,12 +151,31 @@
     4. Schema 与 `state_schema.json` 及 PRD 中 Agent 契约无冲突（字段名、必填项、禁止多写字段与编排逻辑一致）。
     5. 示例请求形态与 `openrouter_structured_output.json` 文档一致（`messages` + `response_format` 并列）。
 
-### 当前生效规则（v3.4）
+- **v3.5（迭代十三：代码可读性与冗余校验清理）**：
+   - **问题**：v3.4 已显著提升成功率，但代码侧仍存在可维护性问题：
+     1. 之前迭代实现的 `json repair` 逻辑已不再是主路径，保留带来理解与维护成本。
+     2. 当前存在大量与 JSON/Schema 校验相关的重复逻辑，为保证“过度一致性”而增加噪音与复杂度。
+   - **变更目标**：
+     1. 去除 `json repair` 相关的非必要代码路径（保留必要的错误处理即可）。
+     2. 精简 JSON/Schema 校验逻辑，保留必要校验、移除重复校验，让校验与解析职责更清晰集中。
+   - **其他可优化方向（供实现参考）**：
+     1. 将“解析 + 校验”封装为统一工具函数/服务，避免四个 agent 各自拷贝同类逻辑。
+     2. 统一错误类型与日志格式，减少散落的 try/except 和打印语句。
+   - **功能归类**：优化（可维护性、可读性、代码简洁度）。
+   - **User Story（用户视角）**：作为后续维护者，我希望代码更容易理解与扩展，减少无关校验/修复逻辑带来的耦合。
+   - **Acceptance Criteria（验收标准）**：
+     1. `json repair` 从四个 agent 的主路径中移除/不再调用；若保留也仅作为明确的可选兜底并有清晰注释与开关。
+     2. JSON/Schema 校验执行次数与位置更合理：尽量做到“解析一次、校验一次”，或集中在统一入口，减少重复逻辑。
+     3. 四个 agent 的职责边界更清晰（解析/校验集中，其余逻辑更短更易读）。
+     4. 行为不回退：在既有测试/可运行验证下，plan 生成仍保持“成功率与输出稳定性不显著下降”。
+     5. 相关关键路径拥有足够的可读性保障（例如新增/完善少量单测覆盖解析与 schema 校验工具函数）。
+
+### 当前生效规则（v3.5）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
 - 无论单 agent 还是多 agent，阶段一最终输出文件结构都与 `state_schema.json` 同构；单 agent 不涉及字段以 `null` 表达。
-- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；v3.2/v3.3 的 JSON 修复可作为可选兜底。
+- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
@@ -440,7 +459,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.4）
+### 6.4 当前版本成功指标（v3.5）
 
 | 指标 | 目标 |
 |------|------|

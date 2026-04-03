@@ -170,7 +170,7 @@ podcast-ai --log-level DEBUG plan-episode "主题" 30
 podcast-ai --log-level DEBUG create-episode plans/ep_xxx.json ./music
 
 # 将日志同时写入文件（追加，UTF-8）
-podcast-ai --log-level DEBUG --log-file ./logs/podcast.log plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mode multi_agent -l en
+podcast-ai --log-level DEBUG --log-file ./logs/podcast.log plan-episode "The Weeknd Songs" 60 --agent-mode multi_agent -l en
 ```
 
 ### 环境变量
