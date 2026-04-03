@@ -6,13 +6,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
-from podcast_ai.infra.config import Settings, load_settings
+from podcast_ai.infra.config import Settings, load_settings, should_use_structured_output
+from podcast_ai.modules.theme.agent_response_schemas import (
+    build_music_curator_response_schema,
+    build_openrouter_response_format,
+)
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.json_repair import dump_json_repair_debug, repair_and_standardize_json
 from podcast_ai.modules.theme.prompts import build_music_curator_agent_messages
 from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, merge_plan_state
 
 logger = logging.getLogger(__name__)
+
+AGENT_LABEL = "Music Curator Agent"
 
 _CURATOR_SEGMENT_ALLOWED_KEYS = {"segment_id", "playlist"}
 _PLAYLIST_ALLOWED_KEYS = {"track", "artist", "bpm"}
@@ -81,8 +87,16 @@ class MusicCuratorAgent:
 
         messages = build_music_curator_agent_messages(state)
 
+        gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
+        structured = should_use_structured_output(self._settings.llm)
+        if structured:
+            gen_kwargs["response_format"] = build_openrouter_response_format(
+                "podcast_music_curator_response",
+                build_music_curator_response_schema(segments_count),
+            )
+
         try:
-            raw = self._llm.generate(messages, temperature=0.4)
+            raw = self._llm.generate(messages, **gen_kwargs)
         except AIServiceError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -102,13 +116,20 @@ class MusicCuratorAgent:
                 repaired=locals().get("repaired", ""),
                 exc=exc,
             )
+            req_id = str((state.get("meta") or {}).get("request_id") or "unknown")
+            iter_s = str((state.get("control") or {}).get("iteration") or "na")
+            so_note = "；已启用 OpenRouter 结构化输出仍解析失败" if structured else ""
             logger.error(
-                "Music Curator Agent json.loads失败：%s；已保存 debug dump：%s",
+                "%s json.loads 失败 request_id=%s iteration=%s：%s；debug=%s%s",
+                AGENT_LABEL,
+                req_id,
+                iter_s,
                 str(exc),
                 dump_info.dump_path,
+                so_note,
             )
             raise AIServiceError(
-                f"Music Curator Agent 返回结果不是有效 JSON（已保存：{dump_info.dump_path}）。"
+                f"{AGENT_LABEL} 返回结果不是有效 JSON（request_id={req_id}, iteration={iter_s}{so_note}；已保存：{dump_info.dump_path}）。"
             ) from exc
 
         if not isinstance(data, dict):

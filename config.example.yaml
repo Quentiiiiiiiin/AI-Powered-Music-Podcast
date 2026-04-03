@@ -28,6 +28,8 @@ llm:
   model: "gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v3.4：省略或 null = 仅当 base_url 为 OpenRouter 时附带 response_format；true/false 可强制开关
+  # structured_output: false
 
 tts:
   # v1.4 默认 elevenlabs；可改为 edge_tts 使用 Edge TTS

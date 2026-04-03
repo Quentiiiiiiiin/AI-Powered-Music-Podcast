@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.3  
+**文档版本**：v3.4  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.3）
+**产品阶段**：迭代验证中（进入 v3.4）
 
 ---
 
@@ -138,12 +138,25 @@
     4. 修复成功后仍须通过后续 state schema 校验；校验失败则中断（与 v3.2 一致）。
     5. 四个 Agent 的 `run` 路径均统一走增强后的修复流程（与 v3.2 调用点一致）。
 
-### 当前生效规则（v3.3）
+- **v3.4（迭代十二：OpenRouter 结构化输出 response_format）**：
+  - **问题**：依赖纯 prompt + 事后 JSON 修复（v3.2/v3.3）效果不稳定，解析失败与结构错误仍频繁，维护成本高。
+  - **变更目标**：在经 **OpenRouter** 调用大模型时，于请求体中增加 **`response_format`**（参考仓库内 `openrouter_structured_output.json`：`type: json_schema`、`json_schema.strict: true`、`schema` 约束字段），**强制**四个 Agent（Planner / Music Curator / Script Writer / Critic）按各自所需的 JSON 结构输出；减少对事后修复的依赖。
+  - **实现要点**：除常规 `messages` 外携带 `response_format`；每个 Agent 使用与其**输出契约**对齐的 JSON Schema（`required`、`additionalProperties: false` 等按 OpenRouter 文档要求配置）；与 `state_schema.json` / Agent 增量字段保持一致性由实现侧保证。
+  - **功能归类**：新功能（平台结构化输出集成）+ 优化（Agent 输出可靠性）。
+  - **User Story（用户视角）**：作为内容创作者，我希望四个 Agent 的模型输出一开始就是合法、结构固定的 JSON，这样计划生成更稳定、更少因格式问题中断。
+  - **Acceptance Criteria（验收标准）**：
+    1. Planner / Music Curator / Script Writer / Critic 四处 OpenRouter 请求均携带各自正确的 `response_format`（`json_schema` + `strict`）。
+    2. 正常路径下返回体可直接解析为 JSON，且与对应 Agent 的约定结构一致，无需依赖修复链路即可进入后续状态合并与校验（修复可作为可选兜底，非主路径）。
+    3. 若 OpenRouter/API 不支持结构化输出或返回非约定结构：须明确报错并记录请求标识，不得静默继续。
+    4. Schema 与 `state_schema.json` 及 PRD 中 Agent 契约无冲突（字段名、必填项、禁止多写字段与编排逻辑一致）。
+    5. 示例请求形态与 `openrouter_structured_output.json` 文档一致（`messages` + `response_format` 并列）。
+
+### 当前生效规则（v3.4）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
 - 无论单 agent 还是多 agent，阶段一最终输出文件结构都与 `state_schema.json` 同构；单 agent 不涉及字段以 `null` 表达。
-- 多 agent 生成过程中，Agent raw 文本在 `json.load` 之前先执行 JSON 修复与标准化（含**结构闭合/完整性**处理）；失败则明确报错并中断。
+- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；v3.2/v3.3 的 JSON 修复可作为可选兜底。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
@@ -427,7 +440,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.3）
+### 6.4 当前版本成功指标（v3.4）
 
 | 指标 | 目标 |
 |------|------|
