@@ -2,28 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
+from podcast_ai.modules.theme.json_repair import dump_json_repair_debug, repair_and_standardize_json
 from podcast_ai.modules.theme.prompts import build_critic_agent_messages
 from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, merge_plan_state
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_llm_json_raw(raw: str) -> str:
-    text = raw.strip()
-    if not text.startswith("```"):
-        return text
-
-    lines = text.splitlines()
-    if lines and lines[0].strip().startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 class CriticAgent:
@@ -51,9 +40,25 @@ class CriticAgent:
         logger.debug("Critic Agent raw output (truncated): %s", raw[:1000])
 
         try:
-            data = json.loads(_normalize_llm_json_raw(raw))
+            repaired = repair_and_standardize_json(raw)
+            data = json.loads(repaired)
         except Exception as exc:  # noqa: BLE001
-            raise AIServiceError("Critic Agent 返回结果不是有效 JSON。") from exc
+            dump_info = dump_json_repair_debug(
+                output_dir=Path(self._settings.app.output_dir),
+                agent_name="Critic",
+                state=state,
+                raw=raw,
+                repaired=locals().get("repaired", ""),
+                exc=exc,
+            )
+            logger.error(
+                "Critic Agent json.loads失败：%s；已保存 debug dump：%s",
+                str(exc),
+                dump_info.dump_path,
+            )
+            raise AIServiceError(
+                f"Critic Agent 返回结果不是有效 JSON（已保存：{dump_info.dump_path}）。"
+            ) from exc
         if not isinstance(data, dict):
             raise AIServiceError("Critic Agent 返回的 JSON 顶层必须是对象。")
 

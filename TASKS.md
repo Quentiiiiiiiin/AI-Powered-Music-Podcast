@@ -1,127 +1,96 @@
-## 版本 v3.1（迭代九：阶段一模式可选 + 统一 state_schema.json 输出）
+## 版本 v3.2（迭代十：Agent 输出 JSON 修复与标准化）
 
-基于 PRD v3.1：
-1) 阶段一支持 `single_agent` / `multi_agent` 模式切换（默认值可由实现指定，但必须可切换）。
-2) 无论单/多 agent，阶段一最终输出文件均为 `state.json`，且与 `state_schema.json` **同结构**；单 agent 不涉及字段以 `null` 填充。
-3) 若 schema 校验失败，必须报错并阻断后续阶段。
+基于 PRD v3.2：在每个 Agent 的 `run` 返回后、进入 `json.loads` 之前，先对 raw 文本进行 JSON 修复与标准化；若仍无法合法解析，则明确报错并中断（不进入后续阶段）。
 
 ---
 
-### Task 01 - plan-episode 暴露模式选择（single_agent / multi_agent）
-- **Task name**: v3.1 CLI / pipeline 模式选择接入
-- **目标**: 让用户能够通过配置或命令参数选择 `single_agent` 或 `multi_agent`，并把选择结果贯通到阶段一生成逻辑。
-- **类型**: api
+### Task 01 - 新增共享 JSON 修复与标准化工具
+- **Task name**: v3.2 - `repair_and_standardize_json(raw)`
+- **目标**: 实现一个最小可用的 JSON 修复工具，用于将常见的 LLM raw 输出（多余前后文本、代码块包裹、智能引号、尾随逗号等）修复成“可被 `json.loads` 解析”的 JSON 字符串。
+- **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 在 `src/podcast_ai/cli.py` 的 `plan-episode` 命令增加一个参数（示例：`--agent-mode`，choices: `single_agent|multi_agent`）。
-  - 更新 `src/podcast_ai/core/pipeline.py::plan_episode` 增加入参（或读取同名配置），并将其映射到 `ThemePlanner.generate_plan(..., use_orchestrator=...)`。
-  - 保持外部接口默认值不破坏现有体验（未传入时走默认实现）。
-- **Input**:
-  - `EpisodeRequest`（topic/duration/language/output_dir）
-  - 用户选择的 `agent_mode`
-- **Output**:
-  - 阶段一可切换生成模式
-  - 后续任务能依此选择正确的 state 生成路径
+  - 新增文件：`src/podcast_ai/modules/theme/json_repair.py`
+  - 提供函数（示例命名）：
+    - `standardize_llm_json_text(raw: str) -> str`（统一去 code fence、替换智能引号、清理前后文本）
+    - `repair_and_standardize_json(raw: str) -> str`（在 standardize 基础上增加“提取 JSON 对象/数组子串、去尾随逗号”等修复步骤）
+  - 修复策略至少覆盖 PRD 提到的常见问题类别：
+    - 代码块/前后文本夹杂
+    - 引号不完整/智能引号（可做替换）
+    - 尾随逗号（可做正则移除）
+  - 当修复无法达到“可解析 JSON”时，返回修复后的文本并让调用方触发失败（不要静默吞错）。
+- **Input**: Agent 返回的 `raw: str`
+- **Output**: 修复后的 JSON `str`（调用方将继续执行 `json.loads`）
 - **Files involved**:
-  - `src/podcast_ai/cli.py`
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/modules/theme/llm_planner.py`
+  - `src/podcast_ai/modules/theme/json_repair.py`（新增）
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 02 - state.json 落盘路径与读写工具
-- **Task name**: episode 输出 state.json 的 storage 工具
-- **目标**: 提供 `state.json` 的稳定落盘路径与读写函数，供阶段一输出与阶段二读取使用。
+### Task 02 - 四个 Agent 接入 JSON 修复（run 级别，失败显式报错）
+- **Task name**: v3.2 - Planner/Curator/Writer/Critic JSON 修复集成
+- **目标**: 在每个 Agent `run` 中，raw 返回后、`json.loads` 之前执行 JSON 修复与标准化；修复后仍无法解析则抛出明确 `AIServiceError`（并建议保存 debug raw 供定位）。
 - **类型**: backend
-- **依赖关系**: Task 01（需要确定模式切换的阶段一输出流程）
+- **依赖关系**: Task 01
 - **Description**:
-  - 在 `src/podcast_ai/infra/storage/paths.py` 新增：
-    - `get_state_path(episode_root: Path) -> Path`（文件名明确为 `state.json`）
-    - `save_state_json(state: PlanState, output_dir/episode_id ...)`
-    - `load_state_json(path: Path) -> PlanState`
-  - 明确目录结构与现有 `plans/` 文件夹的关系（例如放在 `episodes/{episode_id}/plans/state.json`）。
-- **Input**:
-  - `PlanState`
-  - `episode_id` / `episode_root`
+  - 修改文件（四个 Agent）：
+    - `src/podcast_ai/modules/theme/planner_agent.py`
+    - `src/podcast_ai/modules/theme/music_curator_agent.py`
+    - `src/podcast_ai/modules/theme/script_writer_agent.py`
+    - `src/podcast_ai/modules/theme/critic_agent.py`
+  - 在各自 `run` 中替换/增强现有逻辑：
+    - raw -> `repair_and_standardize_json(raw)` -> `json.loads(...)`
+    - 对于脚本写入错误日志与 debug dump：统一到“所有 agent 同策略保存 raw + 修复前后文本/异常类型”，便于对齐排查（ScriptWriter 目前已有 dump，可把同样能力补齐到其他 agent）。
+  - 保持现有“越权字段 sanitize / patch 合法性校验”逻辑不变；JSON 修复只影响 json.loads 前的输入。
+- **Input**: LLM raw 文本
 - **Output**:
-  - `state.json` 能正确写入并在阶段二读取
+  - 修复成功：继续进入 patch sanitize + merge + schema 校验
+  - 修复失败：抛出清晰错误并阻断 plan_episode
 - **Files involved**:
-  - `src/podcast_ai/infra/storage/paths.py`
-  - `src/podcast_ai/modules/theme/state.py`（仅用于类型引用）
-- **Estimated complexity**: S（1-2 小时）
-
----
-
-### Task 03 - 阶段一统一输出 state.json（单 agent & 多 agent）
-- **Task name**: PlanState 生成与 EpisodePlan 转换解耦
-- **目标**: 无论 `single_agent` 还是 `multi_agent`，阶段一都返回并落盘 `state.json`；多 agent 走 Orchestrator 的 PlanState，单 agent 需要把 EpisodePlan 映射为 PlanState，并对不涉及字段填 null。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 02
-- **Description**:
-  - 让 `ThemePlanner`（或阶段一 pipeline 内部）同时支持两条路径：
-    - `multi_agent`: 直接调用 `PlanOrchestrator.run(request)` 获取 PlanState
-    - `single_agent`: 走现有单次 LLM 生成 EpisodePlan，然后映射成 PlanState（需要补齐 state_schema.json 要求的字段层级；不涉及的 `critic/control/...` 以 `null` 或不参与约束的默认形态填充）
-  - 在保存前做 schema 契约校验；失败则抛出明确错误并阻断。
-  - 同时保留 `playlist.md` 输出（不改动或最小调整）。
-- **Input**:
-  - `EpisodeRequest`
-  - `agent_mode`
-- **Output**:
-  - `state.json` 与 `playlist.md` 落盘成功
-  - schema 校验通过才允许返回给 CLI
-- **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/modules/theme/orchestrator.py`
-  - `src/podcast_ai/modules/theme/llm_planner.py`
-  - `src/podcast_ai/modules/theme/state.py`
-  - `src/podcast_ai/infra/storage/paths.py`
-- **Estimated complexity**: L（3 小时）
-
----
-
-### Task 04 - 与 state_schema.json 的结构一致校验（仅阶段一）
-- **Task name**: state_schema.json 同构校验与可定位错误
-- **目标**: 确保 state.json 真正与 `state_schema.json` 同结构，并在失败时给出可定位原因；同时允许单 agent 的“不涉及字段”为 null 的合法形态。
-- **类型**: backend
-- **依赖关系**: Task 03
-- **Description**:
-  - 在 `src/podcast_ai/modules/theme/state.py` 增加/强化校验逻辑：
-    - 读取 `state_schema.json` 作为结构模板（或以等价的深度 key/类型检查实现）
-    - 校验字段层级一致；数组/对象字段类型匹配；允许单 agent 模式下指定字段取 null（需要明确允许的字段集合）
-  - 对校验失败抛出清晰错误信息（字段路径 + 期望/实际）。
-- **Input**:
-  - PlanState
-  - state_schema.json 模板
-  - agent_mode（用于决定允许哪些 null）
-- **Output**:
-  - `validate_state_conforms_to_schema(...)`（或等价函数）
-  - 校验失败可读错误
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/state.py`
-  - `state_schema.json`
-- **Estimated complexity**: L（3 小时）
-
----
-
-### Task 05 - 单元测试：v3.1 阶段一模式切换 + state.json 生成/校验
-- **Task name**: v3.1 - 阶段一回归测试
-- **目标**: 自动化覆盖本次迭代的阶段一验收点：模式可切换、最终产物为 schema 同构 `state.json`，校验失败可定位并阻断。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 03, Task 04
-- **Description**:
-  - 新增/更新测试：
-    1) `single_agent` 与 `multi_agent` 两种模式下 `plan_episode` 都产出 `state.json`
-    2) `state.json` 可通过与 `state_schema.json` 的同构校验
-    3) 故意构造不合法字段的场景下，校验失败抛出可定位错误并阻断（不进入后续阶段；无需改 stage2 代码）
-- **Input**:
-  - mock LLM（单 agent）/ mock agents（multi agent）
-  - state_schema.json
-- **Output**:
-  - `pytest` 通过
-- **Files involved**:
-  - `tests/test_pipeline.py`（或新增测试文件）
-  - `tests/test_theme_state.py`
-  - （可选）`tests/test_theme_planner.py`
+  - `src/podcast_ai/modules/theme/{planner_agent,music_curator_agent,script_writer_agent,critic_agent}.py`
 - **Estimated complexity**: M（2-3 小时）
+
+---
+
+### Task 03 - 单测：覆盖 JSON 修复成功/失败与 Agent 解析路径
+- **Task name**: v3.2 - JSON 修复单测 + Agent 回归
+- **目标**: 用可控 stub LLM 覆盖两类情况：
+  1) raw 有常见格式问题但能被修复并成功进入后续解析与 schema 校验；
+  2) raw 修复后仍不合法时，Agent 抛出 `AIServiceError` 且错误信息可定位。
+- **类型**: backend
+- **依赖关系**: Task 01、Task 02
+- **Description**:
+  - 新增/更新测试文件：
+    - `tests/test_json_repair.py`：直接测试 `repair_and_standardize_json`
+    - `tests/test_theme_agents_json_repair.py`（或追加到现有主题测试文件）：
+      - 为每个 agent 准备最小 state（可复用 `initialize_plan_state`）
+      - 使用 stub LLM 返回“带前后文本 + code fence + 尾随逗号/智能引号”等坏 JSON
+      - 断言：成功路径不会抛错；失败路径抛 `AIServiceError`
+  - 测试断言尽量聚焦：
+    - `json.loads` 是否能成功（通过后续 state 合并结果来间接验证）
+    - 失败错误消息包含 agent 名称或“JSON 修复/解析失败”的关键字
+- **Input**: stub LLM 返回的 malformed JSON 示例
+- **Output**: `pytest` 通过
+- **Files involved**:
+  - `tests/test_json_repair.py`（新增）
+  - `tests/test_theme_agents_json_repair.py`（新增或追加）
+  - 可能复用：`tests/test_theme_state.py` 的 fixtures/工具
+- **Estimated complexity**: M（2-3 小时）
+
+---
+
+### Task 04（可选）- ThemePlanner single_agent 路径复用 JSON 修复工具
+- **Task name**: v3.2（可选）- `ThemePlanner.generate_plan` 也做 JSON 修复
+- **目标**: 保证 single_agent 模式下也能更鲁棒地处理 LLM raw 的 code fence/前后文本等格式问题（不改变契约与 schema）。
+- **类型**: backend
+- **依赖关系**: Task 01（复用工具）
+- **Description**:
+  - 在 `src/podcast_ai/modules/theme/llm_planner.py`：
+    - raw -> `repair_and_standardize_json(raw)` -> `json.loads`
+  - 若不需要额外回归可略过此 task。
+- **Input**: ThemePlanner raw 文本
+- **Output**: 更稳定的 JSON 解析
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/llm_planner.py`
+- **Estimated complexity**: XS（0.5-1 小时）
 

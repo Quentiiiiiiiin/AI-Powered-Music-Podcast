@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.1  
+**文档版本**：v3.2  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.1）
+**产品阶段**：迭代验证中（进入 v3.2）
 
 ---
 
@@ -115,11 +115,23 @@
     3. 多 agent 模式下生成结果可追踪到 Planner / Music Curator / Script Writer / Critic 的执行状态（至少在 state 的 control/meta 或日志中可定位）。
     4. 若输出 schema 校验失败，系统必须返回明确错误并阻断后续阶段，避免产生不可用 mix。
 
-### 当前生效规则（v3.1）
+- **v3.2（迭代十：Agent 输出 JSON 修复与标准化）**：
+  - **问题**：多 agent 模式下，各 Agent 的原始返回文本可能出现非严格 JSON 格式（如缺标点），导致在 `json.load` 前直接解析失败并中断整个流程。
+  - **变更目标**：在每个 Agent `run` 返回后、进入 `json.load` 之前，先对 raw 文本进行 JSON 修复与标准化，再进行解析；若修复后仍无法合法解析，则明确报错并退出（不进入后续混音）。
+  - **功能归类**：bug 修复（可靠性与容错提升）。
+  - **User Story（用户视角）**：作为内容创作者，我希望模型偶发的 JSON 格式错误不会导致整个计划生成失败，我能更稳定地获得可用 episode plan。
+  - **Acceptance Criteria（验收标准）**：
+    1. 在 Planner / Music Curator / Script Writer / Critic 的每次 `run` 返回后、`json.load` 之前，都执行一次 JSON 修复与标准化步骤。
+    2. 对常见的 JSON 格式问题（如缺少分隔符/引号不完整/多余前后文本）能够自动修复到可解析状态，并成功进入后续 state schema 校验。
+    3. 若修复无法得到合法 JSON：系统返回明确错误信息（包含哪一个 Agent、何时失败、失败原因），并立即终止该 episode plan 生成流程。
+    4. 成功修复后的 JSON 必须仍满足 state schema 的关键字段/层级要求；不满足则以 schema 校验失败方式中断。
+
+### 当前生效规则（v3.2）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
 - 无论单 agent 还是多 agent，阶段一最终输出文件结构都与 `state_schema.json` 同构；单 agent 不涉及字段以 `null` 表达。
+- 多 agent 生成过程中，Agent raw 文本在 `json.load` 之前先执行 JSON 修复与标准化；失败则明确报错并中断。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。

@@ -81,7 +81,7 @@ def plan_episode(
             request,
             agent_mode=agent_mode,
         )
-        # validate_state_conforms_to_schema(state, agent_mode=agent_mode)
+        validate_state_conforms_to_schema(state, agent_mode=agent_mode)
 
         episode_id = generate_episode_id()
         plan_id = generate_plan_id(episode_id)

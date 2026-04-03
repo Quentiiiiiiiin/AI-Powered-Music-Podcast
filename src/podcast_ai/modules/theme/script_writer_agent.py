@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
+from podcast_ai.modules.theme.json_repair import dump_json_repair_debug, repair_and_standardize_json
 from podcast_ai.modules.theme.prompts import build_script_writer_agent_messages
 from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, merge_plan_state
 
@@ -21,19 +22,6 @@ _BETWEEN_TRACK_ALLOWED_KEYS = {"after_track_index", "text"}
 
 _ZH_RE = re.compile(r"[\u4e00-\u9fff]")
 _EN_RE = re.compile(r"[A-Za-z]")
-
-
-def _normalize_llm_json_raw(raw: str) -> str:
-    text = raw.strip()
-    if not text.startswith("```"):
-        return text
-
-    lines = text.splitlines()
-    if lines and lines[0].strip().startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 def _text_matches_language(text: str, language: str) -> bool:
@@ -162,19 +150,25 @@ class ScriptWriterAgent:
         logger.debug("Script Writer Agent raw output (truncated): %s", raw[:1000])
 
         try:
-            data = json.loads(_normalize_llm_json_raw(raw))
+            repaired = repair_and_standardize_json(raw)
+            data = json.loads(repaired)
         except Exception as exc:  # noqa: BLE001
-            # json.loads 失败时持久化“完整 raw”（不要只看截断日志），便于定位模型输出为何不是合法 JSON。
-            request_id = str(state.get("meta", {}).get("request_id") or "unknown")
-            iteration = str((state.get("control") or {}).get("iteration") or "na")
-            out_dir = Path(self._settings.app.output_dir) / "debug"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            dump_path = out_dir / f"script_writer_jsondecode_error_{request_id}_iter{iteration}_{ts}.json"
-            dump_payload = {"error": {"type": exc.__class__.__name__, "message": str(exc)}, "raw": raw}
-            dump_path.write_text(json.dumps(dump_payload, ensure_ascii=False), encoding="utf-8")
-            logger.error("Script Writer Agent json.loads失败：%s；已保存失败raw到：%s", str(exc), dump_path)
-            raise AIServiceError("Script Writer Agent 返回结果不是有效 JSON。") from exc
+            dump_info = dump_json_repair_debug(
+                output_dir=Path(self._settings.app.output_dir),
+                agent_name="Script Writer",
+                state=state,
+                raw=raw,
+                repaired=locals().get("repaired", ""),
+                exc=exc,
+            )
+            logger.error(
+                "Script Writer Agent json.loads失败：%s；已保存 debug dump：%s",
+                str(exc),
+                dump_info.dump_path,
+            )
+            raise AIServiceError(
+                f"Script Writer Agent 返回结果不是有效 JSON（已保存：{dump_info.dump_path}）。"
+            ) from exc
 
         if not isinstance(data, dict):
             raise AIServiceError("Script Writer Agent 返回的 JSON 顶层必须是对象。")
