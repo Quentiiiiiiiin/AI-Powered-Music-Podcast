@@ -42,8 +42,6 @@ _PLANNER_SEGMENT_ITEM: dict[str, Any] = {
         "bpm_range": {
             "type": "array",
             "items": {"type": "integer"},
-            "minItems": 2,
-            "maxItems": 2,
         },
         "mood": {"type": "string"},
         "segment_design": {"type": "string"},
@@ -171,7 +169,8 @@ _PLAYLIST_ITEM: dict[str, Any] = {
     "properties": {
         "track": {"type": "string"},
         "artist": {"type": "string"},
-        "bpm": {"type": "integer"},
+        # 未知 BPM 时允许 null（与 Curator prompt / sanitize 一致）
+        "bpm": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
     },
     "required": ["track", "artist", "bpm"],
     "additionalProperties": False,
@@ -212,10 +211,9 @@ def build_music_curator_response_schema(segment_count: int) -> dict[str, Any]:
     segment_item: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "segment_id": {"type": "string"},
             "playlist": {"type": "array", "items": _PLAYLIST_ITEM},
         },
-        "required": ["segment_id", "playlist"],
+        "required": ["playlist"],
         "additionalProperties": False,
     }
     return {
@@ -224,8 +222,6 @@ def build_music_curator_response_schema(segment_count: int) -> dict[str, Any]:
             "segments": {
                 "type": "array",
                 "items": segment_item,
-                "minItems": segment_count,
-                "maxItems": segment_count,
             },
         },
         "required": ["segments"],
@@ -239,10 +235,9 @@ def build_script_writer_response_schema(segment_count: int) -> dict[str, Any]:
     segment_item: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "segment_id": {"type": "string"},
             "script": _SCRIPT_OBJECT,
         },
-        "required": ["segment_id", "script"],
+        "required": ["script"],
         "additionalProperties": False,
     }
     return {

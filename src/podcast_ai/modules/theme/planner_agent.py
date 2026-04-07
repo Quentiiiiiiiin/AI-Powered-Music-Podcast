@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -116,8 +115,8 @@ class PlannerAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState) -> PlanState:
-        messages = build_planner_agent_messages(state)
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:
+        messages = build_planner_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
         structured = should_use_structured_output(self._settings.llm)

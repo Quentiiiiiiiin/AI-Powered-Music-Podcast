@@ -139,10 +139,10 @@ class ScriptWriterAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState) -> PlanState:
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:
         segments_count = len(state.get("segments", []))
 
-        messages = build_script_writer_agent_messages(state)
+        messages = build_script_writer_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
         structured = should_use_structured_output(self._settings.llm)

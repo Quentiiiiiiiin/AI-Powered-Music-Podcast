@@ -57,6 +57,11 @@ def _sanitize_curator_patch(data: Dict[str, Any], *, expected_segments: int) -> 
                 raise AIServiceError(
                     f"segments[{idx}].playlist[{item_idx}] 越权字段：{', '.join(item_forbidden)}。",
                 )
+            bpm = item.get("bpm")
+            if bpm is not None and not isinstance(bpm, int):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].bpm 必须是整数或 null。",
+                )
             sanitized_playlist.append({k: item[k] for k in item.keys() if k in _PLAYLIST_ALLOWED_KEYS})
 
         segment_patch: Dict[str, Any] = {"playlist": sanitized_playlist}
@@ -78,12 +83,12 @@ class MusicCuratorAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState) -> PlanState:
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:
         segments_count = len(state.get("segments", []))
         if segments_count == 0:
             raise AIServiceError("Music Curator：state.segments 为空，无法生成 playlist。")
 
-        messages = build_music_curator_agent_messages(state)
+        messages = build_music_curator_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
         structured = should_use_structured_output(self._settings.llm)

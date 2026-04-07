@@ -83,6 +83,48 @@ def test_v30_music_curator_writes_playlist_only_and_preserves_segment_fields() -
     assert next_state["control"]["last_updated_by"] == "Music Curator"
 
 
+def test_v35_music_curator_accepts_null_bpm() -> None:
+    state = initialize_plan_state(_request())
+    state["segments"] = [
+        {
+            "segment_id": "seg_01",
+            "order": 1,
+            "name": "开场",
+            "target_duration_seconds": 600,
+            "bpm_range": [90, 105],
+            "mood": "舒缓",
+            "segment_design": "选曲思路",
+        },
+    ]
+    payload = {
+        "segments": [
+            {"playlist": [{"track": "Track A", "artist": "Artist X", "bpm": None}]},
+        ],
+    }
+    agent = MusicCuratorAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state)
+    assert next_state["segments"][0]["playlist"][0]["bpm"] is None
+
+
+def test_v35_music_curator_rejects_non_int_bpm() -> None:
+    state = initialize_plan_state(_request())
+    state["segments"] = [
+        {
+            "segment_id": "seg_01",
+            "order": 1,
+            "name": "开场",
+            "target_duration_seconds": 600,
+            "bpm_range": [90, 105],
+            "mood": "舒缓",
+            "segment_design": "选曲思路",
+        },
+    ]
+    payload = {"segments": [{"playlist": [{"track": "A", "artist": "B", "bpm": 98.5}]}]}
+    agent = MusicCuratorAgent(llm_client=_StubLLMClient(payload))
+    with pytest.raises(AIServiceError, match="bpm"):
+        agent.run(state)
+
+
 def test_v30_music_curator_rejects_forbidden_script_write() -> None:
     state = initialize_plan_state(_request())
     state["segments"] = [

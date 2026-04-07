@@ -103,7 +103,7 @@ def build_theme_planner_messages(request: EpisodeRequest, segments_hint: int) ->
     ]
 
 
-def build_planner_agent_messages(state: dict) -> list[dict[str, str]]:
+def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
     构造 v3.0 Planner Agent 的消息。
 
@@ -112,24 +112,39 @@ def build_planner_agent_messages(state: dict) -> list[dict[str, str]]:
     - plan.emotion_curve
     - segments[*].name/target_duration_seconds/bpm_range/mood/segment_design
     """
+    m = (mode or "").strip().lower()
     system = dedent(
         """
-        你是制作电台节目流程中的Planner Agent，
-        你的任务是根据用户提供的主题、目标时长和语言，规划一个音乐节目。
-        你必须严格输出 JSON 对象，不要输出任何解释文字。
+        You are the PLANNER agent for an AI podcast music show.
 
-        你只能写入以下字段：
+        Your responsibility:
+          - Design the overall episode structure
+          - Define segments, emotional flow, and constraints
+        based on the meta.theme.
+
+        You must follow STRICT field control:
+
+        WRITE SCOPE:
         - meta.theme_description
         - global_constraints.*
         - plan.segments_design
         - plan.emotion_curve
         - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design
 
-        禁止写入：
-        - segments[*].playlist
-        - segments[*].script
-        - critic.*
-        - control.*
+        GENERAL RULES:
+        - Do NOT generate playlist
+        - Do NOT generate script
+        - Maintain consistency with theme and emotion_curve
+
+        MODES:
+
+        [GENERATION MODE]:
+        - Create full segment structure from scratch
+
+        [REVISION MODE]:
+        - ONLY modify segments mentioned in actions
+        - Keep all other segments unchanged
+        - Do NOT redesign the entire plan
 
         输出示例（示意）：
         {
@@ -157,13 +172,38 @@ def build_planner_agent_messages(state: dict) -> list[dict[str, str]]:
             }
           ]
         }
+
         """
     ).strip()
 
+    if m == "generation":
+        task = dedent(
+            """
+            TASK:
+            - Create the full episode structure from the current state and the user intent embedded in it.
+            """
+        ).strip()
+    else:
+        task = dedent(
+            """
+            TASK:
+            - Apply ONLY the modifications required by critic.actions in the state.
+
+            VERBATIM RULE (hard requirement):
+            - For any segment that critic.actions does NOT target, copy that segment from the current state
+              **exactly** for every field in your WRITE SCOPE (verbatim; no rephrasing or reordering).
+            - For meta, global_constraints, and plan: copy from the current state **exactly** unless
+              critic.actions explicitly requires changing those fields.
+            """
+        ).strip()
+
     user = dedent(
         f"""
-        请基于当前 PlanState 生成 Planner 阶段产出。
-        当前 state（JSON）如下：
+        MODE: {mode}
+
+        {task}
+
+        Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
         """
     ).strip()
@@ -174,23 +214,41 @@ def build_planner_agent_messages(state: dict) -> list[dict[str, str]]:
     ]
 
 
-def build_music_curator_agent_messages(state: dict) -> list[dict[str, str]]:
+def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
     构造 v3.0 Music Curator Agent 的消息。
 
     Curator 只允许输出 segments[*].playlist，严禁越权写入 script/critic/control.max_iterations 等字段。
     """
+    m = (mode or "").strip().lower()
     system = dedent(
         """
-        你是制作电台节目流程中的 Music Curator Agent，
-        你的任务是根据Planner的计划，从网络中挑选合适的歌曲，并生成每个segment的playlist。
-        你必须严格输出 JSON 对象，不要输出任何解释文字。
+        You are the MUSIC CURATOR agent.
 
-        你只能写入以下字段：
+        Your responsibility:
+        - Select and arrange tracks for each segment based on the meta.theme.theme_description and the segments.segment_design
+        - The tracks should be selected from the internet and should be real, identifiable recordings (not invented titles).
+        - The tracks should be selected based on the mood and bpm_range of the segment.
+        - The tracks should be selected based on the emotion of the segment.
+
+        WRITE SCOPE:
         - segments[*].playlist[*].track/artist/bpm
 
-        禁止写入和输出：
-        - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design/script
+        GENERAL RULES:
+        - Do NOT modify segment structure
+        - Maintain BPM consistency within segment range
+        - Maintain emotional continuity
+
+        MODES:
+
+        [GENERATION MODE]
+        - Create playlists for all segments
+        - Follow segment mood and bpm_range
+
+        [REVISION MODE]
+        - ONLY modify tracks referenced in actions
+        - Keep all other tracks unchanged
+        - Prefer minimal edits over full replacement
 
         输出示例（示意）：
         {
@@ -203,17 +261,54 @@ def build_music_curator_agent_messages(state: dict) -> list[dict[str, str]]:
             }
           ]
         }
+
         """
     ).strip()
 
+    general_rules = dedent(
+        """
+        GENERAL RULES:
+        - Songs must be real, identifiable recordings (not invented titles).
+        - Consider lyrics and common interpretations; do not pick tracks by title alone.
+        - Align BPMs with each segment's bpm_range when possible; use **null** for bpm when unknown.
+        - Estimate how many tracks fit using target_duration_seconds and ~4 minutes per track when durations are unknown.
+        - Do not repeat the same track+artist pair across the episode unless already present in state.
+        """
+    ).strip()
+
+    if m == "generation":
+        task_block = dedent(
+            """
+            TASK:
+            - Build a complete playlist for every segment.
+            - Follow each segment's mood, bpm_range, and target_duration_seconds.
+            """
+        ).strip()
+        user_body = f"{task_block}\n\n{general_rules}"
+    else:
+        revision_header = dedent(
+            """
+            IMPORTANT (revision mode only):
+            - Change only playlist items (or segments) that critic.actions explicitly reference.
+            - Prefer minimal edits over replacing entire playlists unless the action demands a full rework.
+
+            VERBATIM RULE (hard requirement):
+            - For any segment that critic.actions does NOT ask you to change, copy segments[i].playlist from the
+              current state **exactly** (same tracks, order, artists, bpm values, including null).
+
+            TASK:
+            - Apply critic.actions; keep every untouched segment's playlist identical to state.
+            """
+        ).strip()
+        user_body = f"{revision_header}\n\n{general_rules}"
+
     user = dedent(
         f"""
-        请基于当前 PlanState，生成 Music Curator 阶段的可执行 playlist（每段 playlist 需要有顺序）。
-        【歌曲要求】：
-          - 歌曲必须是真实存在的歌曲。 
-          - 你必须要理解每一首音乐的含义（通过歌词或网络上其他人的理解）来筛选歌曲，不能只通过歌曲名来判断。 
-          - 你不仅要考虑歌曲的含义，也要考虑歌曲的BPM，每一个segment的歌曲的BPM尽量接近。如果你无法获得BPM就填null。
-        当前 state（JSON）如下：
+        MODE: {mode}
+
+        {user_body}
+
+        Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
         """
     ).strip()
@@ -224,7 +319,7 @@ def build_music_curator_agent_messages(state: dict) -> list[dict[str, str]]:
     ]
 
 
-def build_script_writer_agent_messages(state: dict) -> list[dict[str, str]]:
+def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
     构造 v3.0 Script Writer Agent 的消息。
 
@@ -232,22 +327,35 @@ def build_script_writer_agent_messages(state: dict) -> list[dict[str, str]]:
     - segments[*].script.segment_intro
     - segments[*].script.between_tracks
     """
+    m = (mode or "").strip().lower()
     system = dedent(
         """
-        你是制作电台节目流程中的Script Writer Agent。
-        你的任务是根据当前PlanState，为每个segment生成串词。
-        你必须严格输出 JSON 对象，保持json结构完整，不要输出任何解释文字。
+        You are the SCRIPT WRITER agent.
 
-        你只能写入以下字段：
+        Your responsibility:
+        - Write host narration as a host of Luma Hits based on the meta.theme.theme_description and the segments.
+        - The host is Nova, a passionate, friendly, and emotional host.
+
+        WRITE SCOPE:
         - segments[*].script.segment_intro
-        - segments[*].script.between_tracks[*].after_track_index
-        - segments[*].script.between_tracks[*].text
+        - segments[*].script.between_tracks
 
-        禁止写入和输出：
-        - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design/playlist
+        STYLE RULES:
+        - First-person narration
+        - Immersive, restrained, emotional
+        - Avoid preaching or over-commercial tone
 
-        语言一致性：
-        - 使用 state.meta.language 指定的语言写作。
+        GENERAL RULES:
+        - Write in the language given by state.meta.language.
+        - segments[*].script.between_tracks should be null where appropriate.
+
+        MODES:
+        [GENERATION MODE]
+        - Write full script for all segments
+
+        [REVISION MODE]
+        - ONLY modify script parts mentioned in actions
+        - Keep all other script parts unchanged
 
         输出示例（示意）：
         {
@@ -263,13 +371,48 @@ def build_script_writer_agent_messages(state: dict) -> list[dict[str, str]]:
             }
           ]
         }
+
+        """
+    ).strip()
+
+    if m == "generation":
+        task = dedent(
+            """
+            TASK:
+            - Write the full script for every segment (segment_intro and between_tracks as appropriate).
+            """
+        ).strip()
+    else:
+        task = dedent(
+            """
+            TASK:
+            - Apply ONLY what critic.actions requires; preserve tone and structure for everything else.
+
+            VERBATIM RULE (hard requirement):
+            - For any segment that critic.actions does NOT target, copy segments[i].script from the current state
+              **exactly** (verbatim segment_intro and between_tracks; same strings and nulls).
+            """
+        ).strip()
+
+    general_rules = dedent(
+        """
+        GENERAL RULES:
+        - Keep segment intros concise (about 40–50 words).
+        - between_tracks[*].text may be null where appropriate.
+        - Mention host name Nova and show name Luma Hits before the last track's narration where it fits.
+        - Write in the language given by state.meta.language.
         """
     ).strip()
 
     user = dedent(
         f"""
-        请基于当前 PlanState，生成 Script Writer 阶段的脚本（段前串词 + 段内过渡）。
-        当前 state（JSON）如下：
+        MODE: {mode}
+
+        {task}
+
+        {general_rules}
+
+        Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
         """
     ).strip()
@@ -293,23 +436,47 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
     """
     system = dedent(
         """
-        你是制作电台节目流程中的 Critic Agent。
-        你的任务是根据当前PlanState, 对Planner、Music Curator和Script Writer的输出进行评估, 并给出修复动作。
+        You are the CRITIC agent.
 
-        你必须严格输出 JSON 对象，不要输出任何解释文字。
+        Your responsibility:
+        - Evaluate the episode plan based on the meta.theme.theme_description, global_constraints, plan, and all segments (allowed fields only).
+        - Check if the episode plan is pass or not.
+        - Identify issues
+        - Generate actionable fixes
+        - Determine the next agent to be the one that can fix the issues.
 
-        你只能写入以下字段：
+        EVALUATION DIMENSIONS:
+        - coherence
+        - emotion_flow
+        - immersion
+
+        RULES:
+        pass = true if:
+          scores >= threshold
+          
+        1. Each issue MUST include:
+          - type
+          - location
+          - problem
+          - suggestion
+        
+        2. Actions is based on the issues and MUST include:
+          - target_agent
+          - instruction
+          and MUST be:
+          - specific
+          - executable
+          - single-decision (no multiple options)
+
+        3. DO NOT:
+          - give vague suggestions
+          - give multiple alternative actions
+        
+        WRITE SCOPE:
         - critic.*
         - control.next_agent
 
-        当 critic.pass=false：
-        - critic.actions 必须至少包含 1 条，并且每条 actions 都要指向一个明确的目标 agent 和可执行指令。
-
-        当 critic.pass=true:
-        - critic.actions 必须为空数组。
-        - critic.issues 必须为空数组。
-
-        禁止写入：
+        DO NOT WRITE:
         - meta
         - global_constraints
         - plan
@@ -318,22 +485,33 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         - critic.threshold
 
         输出示例（示意）：
-        {
+         {
           "critic": {
             "pass": false,
             "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
             "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
-            "actions": [{"target_agent": "Music Curator", "instruction": "调整 playlist 情绪曲线并减少 BPM 跳变"}]
+            "actions": [{"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"}]
           },
           "control": {"next_agent": "Music Curator"}
         }
+
         """
     ).strip()
 
     user = dedent(
         f"""
-        请基于当前 PlanState，对 Planner / Music Curator / Script Writer 的结构与内容进行结构化评估，并给出修复动作。
-        当前 state（JSON）如下：
+        Evaluate the current PlanState for Planner / Music Curator / Script Writer and produce structured scores,
+        issues, and executable actions.
+
+        Requirements:
+        - Do not be overly strict on BPM; rough alignment with each segment's bpm_range is enough.
+        - Check whether track counts and overall duration are plausible; if not, say so and propose fixes.
+        - Check whether tracks appear to be real recordings; flag likely invented or unidentifiable titles.
+        - Check overall emotional continuity across segments and playlists.
+        - Check whether song meanings fit the theme; flag clear mismatches.
+        - Check script coherence, emotional tone, spoken style, and pacing (single pass — do not repeat checks).
+
+        Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
         """
     ).strip()

@@ -30,7 +30,7 @@ class _PlannerStub(_TraceAgentBase, PlannerAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Planner")
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Planner"}})
 
@@ -39,7 +39,7 @@ class _CuratorStub(_TraceAgentBase, MusicCuratorAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Music Curator")
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Music Curator"}})
 
@@ -48,7 +48,7 @@ class _WriterStub(_TraceAgentBase, ScriptWriterAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Script Writer")
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Script Writer"}})
 

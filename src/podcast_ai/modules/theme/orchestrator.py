@@ -55,6 +55,7 @@ class PlanOrchestrator:
         control = state.get("control", {})
         max_iterations = int(control.get("max_iterations", 3) or 3)
         iteration = int(control.get("iteration", 1) or 1)
+        mode = str("generation")
 
         # 外层循环：一轮 = 至少执行到 Critic 一次
         while iteration <= max_iterations:
@@ -62,7 +63,7 @@ class PlanOrchestrator:
             logger.info("PlanOrchestrator iteration=%d, start_agent=%s", iteration, next_agent)
 
             try:
-                state = self._run_round_from(next_agent, state)
+                state = self._run_round_from(next_agent, state, mode)
                 assert_plan_state_valid(state)
             except AIServiceError as exc:
                 logger.error("PlanOrchestrator 在 iteration=%d 执行 %s 轮次时发生 AIServiceError：%s", iteration, next_agent, exc)
@@ -71,8 +72,6 @@ class PlanOrchestrator:
                     {
                         "control": {
                             "status": "error",
-                            "last_error_agent": next_agent,
-                            "last_error_message": str(exc),
                         },
                     },
                 )
@@ -94,6 +93,7 @@ class PlanOrchestrator:
 
             # 未通过：增加 iteration，准备下一轮（下一轮起点由 Critic 写入的 control.next_agent 决定）
             iteration += 1
+            mode = str("revision")
             state = merge_plan_state(state, {"control": {"iteration": iteration}})
             assert_plan_state_valid(state)
 
@@ -111,7 +111,7 @@ class PlanOrchestrator:
 
         return state
 
-    def _run_round_from(self, start_agent: str, state: PlanState) -> PlanState:
+    def _run_round_from(self, start_agent: str, state: PlanState, mode: str) -> PlanState:
         """
         从 start_agent 起步，按顺序执行到 Critic（含），返回更新后的 state。
         """
@@ -122,11 +122,11 @@ class PlanOrchestrator:
         for agent_name in _AGENT_ORDER[start_idx:]:
             logger.debug("PlanOrchestrator round: running agent=%s", agent_name)
             if agent_name == "Planner":
-                state = self._planner.run(state)
+                state = self._planner.run(state, mode)
             elif agent_name == "Music Curator":
-                state = self._curator.run(state)
+                state = self._curator.run(state, mode)
             elif agent_name == "Script Writer":
-                state = self._writer.run(state)
+                state = self._writer.run(state, mode)
             elif agent_name == "Critic":
                 state = self._critic.run(state)
             else:
