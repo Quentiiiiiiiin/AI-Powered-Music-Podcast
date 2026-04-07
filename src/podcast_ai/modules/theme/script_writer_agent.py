@@ -14,6 +14,7 @@ from podcast_ai.modules.theme.agent_response_schemas import (
 )
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_SCRIPT_WRITER, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_script_writer_agent_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
@@ -139,7 +140,14 @@ class ScriptWriterAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState, mode: str = "generation") -> PlanState:
+    def run(
+        self,
+        state: PlanState,
+        mode: str = "generation",
+        *,
+        audit_sink: PlanAuditSink | None = None,
+        round_iteration: int | None = None,
+    ) -> PlanState:
         segments_count = len(state.get("segments", []))
 
         messages = build_script_writer_agent_messages(state, mode)
@@ -169,6 +177,16 @@ class ScriptWriterAgent:
             allow_repair_fallback=not structured,
             output_dir=Path(self._settings.app.output_dir),
         )
+
+        if audit_sink is not None and round_iteration is not None:
+            audit_sink.write_agent_artifact(
+                iteration=round_iteration,
+                agent_slug=AUDIT_SLUG_SCRIPT_WRITER,
+                mode=mode,
+                request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                raw_llm_text=raw,
+                parsed_patch=data,
+            )
 
         language = str(state.get("meta", {}).get("language") or "")
         patch = _sanitize_script_writer_patch(

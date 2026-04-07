@@ -8,6 +8,7 @@ import pytest
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
+from podcast_ai.infra.config import AppConfig, Settings
 from podcast_ai.modules.theme.critic_agent import CriticAgent
 from podcast_ai.modules.theme.music_curator_agent import MusicCuratorAgent
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
@@ -30,7 +31,7 @@ class _PlannerStub(_TraceAgentBase, PlannerAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Planner")
 
-    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Planner"}})
 
@@ -39,7 +40,7 @@ class _CuratorStub(_TraceAgentBase, MusicCuratorAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Music Curator")
 
-    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Music Curator"}})
 
@@ -48,7 +49,7 @@ class _WriterStub(_TraceAgentBase, ScriptWriterAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Script Writer")
 
-    def run(self, state: PlanState, mode: str = "generation") -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(state, {"control": {"last_updated_by": "Script Writer"}})
 
@@ -59,7 +60,7 @@ class _CriticStubOncePass(_TraceAgentBase, CriticAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Critic")
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(
             state,
@@ -82,7 +83,7 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
         _TraceAgentBase.__init__(self, "Critic")
         self._call_count = 0
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
         self._call_count += 1
         state = self._append_trace(state)
         if self._call_count == 1:
@@ -132,7 +133,7 @@ class _CriticStubNeverPass(_TraceAgentBase, CriticAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Critic")
 
-    def run(self, state: PlanState) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         critic = {
             "pass": False,
@@ -157,7 +158,7 @@ def _request() -> EpisodeRequest:
     )
 
 
-def test_v30_orchestrator_single_round_completed() -> None:
+def test_v30_orchestrator_single_round_completed(tmp_path: Path) -> None:
     """正常路径：一轮 Planner→Curator→Writer→Critic 即通过，status=completed。"""
     state = initialize_plan_state(_request())
     orch = PlanOrchestrator(
@@ -165,6 +166,7 @@ def test_v30_orchestrator_single_round_completed() -> None:
         curator=_CuratorStub(),
         writer=_WriterStub(),
         critic=_CriticStubOncePass(),
+        settings=Settings(app=AppConfig(output_dir=str(tmp_path), multi_agent_audit_enabled=False)),
     )
 
     final_state = orch.run(_request(), initial_state=state)
@@ -175,7 +177,7 @@ def test_v30_orchestrator_single_round_completed() -> None:
     assert final_state["control"]["iteration"] == 2
 
 
-def test_v30_orchestrator_refinement_rounds_using_next_agent() -> None:
+def test_v30_orchestrator_refinement_rounds_using_next_agent(tmp_path: Path) -> None:
     """
     pass=false 路径：第一次 Critic 不通过并设置 next_agent=Planner，第二轮从 Planner 重新开始，第二次 Critic 通过。
     """
@@ -186,6 +188,7 @@ def test_v30_orchestrator_refinement_rounds_using_next_agent() -> None:
         curator=_CuratorStub(),
         writer=_WriterStub(),
         critic=critic,
+        settings=Settings(app=AppConfig(output_dir=str(tmp_path), multi_agent_audit_enabled=False)),
     )
 
     final_state = orch.run(_request(), initial_state=state)
@@ -206,7 +209,7 @@ def test_v30_orchestrator_refinement_rounds_using_next_agent() -> None:
     assert final_state["control"]["iteration"] == 3
 
 
-def test_v30_orchestrator_stops_at_max_iterations() -> None:
+def test_v30_orchestrator_stops_at_max_iterations(tmp_path: Path) -> None:
     """超过 max_iterations：永远 pass=false，最终 status=max_iterations_reached。"""
     state = initialize_plan_state(_request())
     # 设置 max_iterations 为 2，方便断言
@@ -217,6 +220,7 @@ def test_v30_orchestrator_stops_at_max_iterations() -> None:
         curator=_CuratorStub(),
         writer=_WriterStub(),
         critic=_CriticStubNeverPass(),
+        settings=Settings(app=AppConfig(output_dir=str(tmp_path), multi_agent_audit_enabled=False)),
     )
 
     final_state = orch.run(_request(), initial_state=state)

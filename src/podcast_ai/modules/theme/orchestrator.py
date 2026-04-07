@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.infra.config import Settings, load_settings
+from podcast_ai.infra.storage.paths import get_multi_agent_audit_run_dir
 from podcast_ai.modules.theme.critic_agent import CriticAgent
 from podcast_ai.modules.theme.music_curator_agent import MusicCuratorAgent
+from podcast_ai.modules.theme.plan_audit import FilePlanAuditSink, PlanAuditSink
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
 from podcast_ai.modules.theme.script_writer_agent import ScriptWriterAgent
 from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, initialize_plan_state, merge_plan_state
@@ -52,6 +56,13 @@ class PlanOrchestrator:
         state = initial_state or initialize_plan_state(request)
         assert_plan_state_valid(state)
 
+        audit_sink: PlanAuditSink | None = None
+        if self._settings.app.multi_agent_audit_enabled:
+            rid = str(state.get("meta", {}).get("request_id") or "unknown")
+            audit_sink = FilePlanAuditSink(
+                get_multi_agent_audit_run_dir(Path(self._settings.app.output_dir), rid),
+            )
+
         control = state.get("control", {})
         max_iterations = int(control.get("max_iterations", 3) or 3)
         iteration = int(control.get("iteration", 1) or 1)
@@ -62,11 +73,27 @@ class PlanOrchestrator:
             next_agent = str(state.get("control", {}).get("next_agent") or "Planner")
             logger.info("PlanOrchestrator iteration=%d, start_agent=%s", iteration, next_agent)
 
+            state_at_round_start = deepcopy(state)
             try:
-                state = self._run_round_from(next_agent, state, mode)
+                state = self._run_round_from(
+                    next_agent,
+                    state,
+                    mode,
+                    audit_sink=audit_sink,
+                    round_iteration=iteration,
+                )
                 assert_plan_state_valid(state)
+                if audit_sink is not None:
+                    # 与进入本轮 while 时的 iteration（业务轮次 i）对齐，勿用 Critic 通过后 merge 的 control.iteration
+                    audit_sink.write_state_snapshot(round_iteration=iteration, state=state)
             except AIServiceError as exc:
                 logger.error("PlanOrchestrator 在 iteration=%d 执行 %s 轮次时发生 AIServiceError：%s", iteration, next_agent, exc)
+                if audit_sink is not None:
+                    audit_sink.write_state_partial(
+                        round_iteration=iteration,
+                        state_before_round=state_at_round_start,
+                        error_message=str(exc),
+                    )
                 state = merge_plan_state(
                     state,
                     {
@@ -111,7 +138,15 @@ class PlanOrchestrator:
 
         return state
 
-    def _run_round_from(self, start_agent: str, state: PlanState, mode: str) -> PlanState:
+    def _run_round_from(
+        self,
+        start_agent: str,
+        state: PlanState,
+        mode: str,
+        *,
+        audit_sink: PlanAuditSink | None = None,
+        round_iteration: int,
+    ) -> PlanState:
         """
         从 start_agent 起步，按顺序执行到 Critic（含），返回更新后的 state。
         """
@@ -122,13 +157,32 @@ class PlanOrchestrator:
         for agent_name in _AGENT_ORDER[start_idx:]:
             logger.debug("PlanOrchestrator round: running agent=%s", agent_name)
             if agent_name == "Planner":
-                state = self._planner.run(state, mode)
+                state = self._planner.run(
+                    state,
+                    mode,
+                    audit_sink=audit_sink,
+                    round_iteration=round_iteration,
+                )
             elif agent_name == "Music Curator":
-                state = self._curator.run(state, mode)
+                state = self._curator.run(
+                    state,
+                    mode,
+                    audit_sink=audit_sink,
+                    round_iteration=round_iteration,
+                )
             elif agent_name == "Script Writer":
-                state = self._writer.run(state, mode)
+                state = self._writer.run(
+                    state,
+                    mode,
+                    audit_sink=audit_sink,
+                    round_iteration=round_iteration,
+                )
             elif agent_name == "Critic":
-                state = self._critic.run(state)
+                state = self._critic.run(
+                    state,
+                    audit_sink=audit_sink,
+                    round_iteration=round_iteration,
+                )
             else:
                 raise AIServiceError(f"未知的 Agent：{agent_name!r}")
 

@@ -84,6 +84,8 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
   - `output/episodes/<episode_id>/plans/state.json`（v3.1 统一 state_schema 同结构输出）
   - `output/episodes/<episode_id>/playlist.md`（人类可读目标歌单）
 
+**v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。其中 `iteration{i}` 与编排器本轮外层层级一致；`iteration{i}_{planner|music_curator|script_writer|critic}.json` 含该步原始 LLM 文本与解析后的 patch，`iteration{i}_state.json` 为该行结束后的完整 `PlanState`。写盘失败只记日志，不影响规划成功/失败判定。可在配置中关闭 `app.multi_agent_audit_enabled`。
+
 根据歌单到各平台搜索、下载歌曲，放入指定目录（如 `./music/本期节目`）。
 
 **plan-episode 示例输出：**

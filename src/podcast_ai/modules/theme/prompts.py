@@ -120,7 +120,8 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
         Your responsibility:
           - Design the overall episode structure
           - Define segments, emotional flow, and constraints
-        based on the meta.theme.
+        based on the meta.theme. and meta.language, meta.target_duration_seconds.
+
 
         You must follow STRICT field control:
 
@@ -149,26 +150,26 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
         输出示例（示意）：
         {
           "meta": {
-            "theme_description": "详细描述本期节目主题整体风格，设计理念，节目编排思路等"
+            "theme_description": "Describe the theme of the episode in detail, including the overall style, design concept, and program arrangement ideas."
           },
           "global_constraints": {
-            "tone": "深夜治愈",
-            "language_style": "第一人称，克制",
-            "avoid": ["说教", "浮夸"]
+            "tone": "The tone of the episode",
+            "language_style": "The style of the language",
+            "avoid": ["The topics to avoid"]
           },
           "plan": {
-            "segments_design": "结构说明",
-            "emotion_curve": ["平静", "抬升", "收束"]
+            "segments_design": "The structure of the episode",
+            "emotion_curve": ["The emotion curve of the episode"]
           },
           "segments": [
             {
               "segment_id": "seg_01",
               "order": 1,
-              "name": "开场",
+              "name": "The name of the segment",
               "target_duration_seconds": 600,
               "bpm_range": [90, 105],
-              "mood": "舒缓",
-              "segment_design": "根据meta.theme_description和global_constraints.tone 详细描述选曲思路"
+              "mood": "The mood of the segment",
+              "segment_design": "Describe the selection of the segment in detail, based on the meta.theme_description and global_constraints.tone"
             }
           ]
         }
@@ -226,7 +227,8 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
         You are the MUSIC CURATOR agent.
 
         Your responsibility:
-        - Select and arrange tracks for each segment based on the meta.theme.theme_description and the segments.segment_design
+        - Select and arrange tracks for each segment based on the meta.theme.theme_description and the segments.segment_design, segments.target_duration_seconds.
+        - Use 240 seconds per track to estimate the number of tracks to fit the target_duration_seconds.
         - The tracks should be selected from the internet and should be real, identifiable recordings (not invented titles).
         - The tracks should be selected based on the mood and bpm_range of the segment.
         - The tracks should be selected based on the emotion of the segment.
@@ -258,6 +260,12 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
                 {"track": "曲目 A", "artist": "艺术家 X", "bpm": 98},
                 {"track": "曲目 B", "artist": "艺术家 Y", "bpm": 105}
               ]
+            },
+            {
+              "playlist": [
+                {"track": "曲目 C", "artist": "艺术家 Z", "bpm": 110},
+                {"track": "曲目 D", "artist": "艺术家 W", "bpm": 115}
+              ]
             }
           ]
         }
@@ -271,8 +279,7 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
         - Songs must be real, identifiable recordings (not invented titles).
         - Consider lyrics and common interpretations; do not pick tracks by title alone.
         - Align BPMs with each segment's bpm_range when possible; use **null** for bpm when unknown.
-        - Estimate how many tracks fit using target_duration_seconds and ~4 minutes per track when durations are unknown.
-        - Do not repeat the same track+artist pair across the episode unless already present in state.
+        - NO duplicate tracks in the whole episode.
         """
     ).strip()
 
@@ -490,7 +497,10 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
             "pass": false,
             "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
             "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
-            "actions": [{"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"}]
+            "actions": [
+              {"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"},
+              {"target_agent": "Script Writer", "instruction": "调整 segments[1].script.segment_intro 以适合该段落的情绪"}
+              ]
           },
           "control": {"next_agent": "Music Curator"}
         }

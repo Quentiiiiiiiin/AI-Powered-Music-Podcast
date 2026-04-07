@@ -85,6 +85,8 @@ class CacheConfig(BaseModel):
 class AppConfig(BaseModel):
     music_dir: str = "./music"
     output_dir: str = "./output"
+    # v3.6：multi-agent 路径下按轮次落盘 audit（关闭则不写 audit/，避免 I/O 影响主流程）
+    multi_agent_audit_enabled: bool = Field(default=True, description="是否启用多 Agent 审计落盘")
 
 
 class _YamlSettingsSource(PydanticBaseSettingsSource):

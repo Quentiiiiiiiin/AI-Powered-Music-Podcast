@@ -10,7 +10,7 @@ from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 
 PLAN_STATE_SCHEMA_VERSION = "3.0"
-DEFAULT_MAX_ITERATIONS = 8
+DEFAULT_MAX_ITERATIONS = 5
 
 _TOP_LEVEL_KEYS = ("schema_version", "meta", "global_constraints", "plan", "segments", "critic", "control")
 _CONTROL_REQUIRED_KEYS = ("max_iterations", "iteration", "status", "next_agent", "last_updated_by")
@@ -141,6 +141,11 @@ def _merge_list_inplace(target_list: List[Any], patch_list: List[Any]) -> None:
             _merge_dict_inplace(target_list[idx], patch_item)
         else:
             target_list.append(deepcopy(patch_item))
+
+    # patch 比 target 更短时，表示上游明确“删除了尾部元素”（常见于 playlist 回修）。
+    # 若不截断会导致旧尾巴残留，出现如 ABCDE -> ACDEE 的重复伪像。
+    if len(patch_list) < len(target_list):
+        del target_list[len(patch_list) :]
 
 
 def get_missing_required_fields(state: PlanState) -> List[str]:

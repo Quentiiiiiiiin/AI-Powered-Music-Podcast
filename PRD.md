@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.5  
+**文档版本**：v3.6  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.5）
+**产品阶段**：迭代验证中（进入 v3.6）
 
 ---
 
@@ -170,7 +170,22 @@
      4. 行为不回退：在既有测试/可运行验证下，plan 生成仍保持“成功率与输出稳定性不显著下降”。
      5. 相关关键路径拥有足够的可读性保障（例如新增/完善少量单测覆盖解析与 schema 校验工具函数）。
 
-### 当前生效规则（v3.5）
+- **v3.6（迭代十四：多 Agent 可审计落盘）**：
+  - **问题**：多 agent 流程已能稳定跑通，但运行中难以核实 **Critic 给出的 `actions` 是否被对应 Agent 理解并体现在后续输出中**；缺少标准化、可按轮次检索的落盘产物。
+  - **变更目标**：
+    1. **按轮次、按 Agent** 将每一次 Agent 调用的可复查输出写入文件，文件名为 `iteration[i]_[agent]`（`i` 为 refinement 轮次序号，与 Orchestrator/`control.iteration` 计数一致；`agent` 为可识别的角色名，如 `planner`、`music_curator`、`script_writer`、`critic`，与实现命名对齐即可）。
+    2. **每一轮在 Critic 之后、系统完成对 state 的合并后**，将当前完整 state 快照写入文件，文件名为 `iteration[i]_state`（内容与 `state_schema.json` 同构的 JSON，便于对照 schema）。
+  - **输出位置**：具体目录由实现配置（建议单次 run 独占子目录，避免多任务覆盖）；PRD 约束为**命名规范与写入时机**，不要求固定绝对路径。
+  - **功能归类**：**优化**（可观测性、调试与人工验收）+ **对流程闭环的补强**（针对「建议是否被采纳」的验证缺口，不单独计为业务逻辑 bug 修复，以审计能力为主）。
+  - **User Story（用户视角）**：作为开发者或验收人员，我希望每次多 agent 计划生成时，系统自动按轮次保存各 Agent 的输出和合并后的 state，这样我能对照 Critic 的 `actions` 检查下游 Agent 是否落实修改。
+  - **Acceptance Criteria（验收标准）**：
+    1. 在每一轮 refinement 中，凡被 Orchestrator 调用的 Agent（Planner / Music Curator / Script Writer / Critic），在该次调用结束、结果进入合并流程前或合并所需的最晚节点，均生成对应 `iteration[i]_[agent]` 文件；内容为该次可复查输出（实现统一约定保存「模型原始文本」或「解析后的结构化 JSON」，并在代码/README 中简要说明）。
+    2. 每一轮在 Critic 完成且该轮 state 合并完成后，生成 `iteration[i]_state`，且可与同轮各 Agent 文件用相同 `i` 对齐。
+    3. 文件命名严格符合 `iteration[i]_[agent]` 与 `iteration[i]_state`；`i` 与轮次定义全局一致、可追溯（与 `control.iteration` 或编排层约定一致）。
+    4. 落盘失败须明确记录（日志或错误信息），不得静默吞掉；主流程错误与写盘错误应可区分。
+    5. 落盘为附加 I/O，不因写文件显著降低 plan 生成成功率或破坏既有 v3.1–v3.5 行为（结构化输出、schema 校验等）。
+
+### 当前生效规则（v3.6）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
@@ -180,6 +195,7 @@
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
 - TTS 当前主路径为 ElevenLabs。
+- **多 agent 模式（v3.6）**：每一轮 refinement 须按约定落盘 `iteration[i]_[agent]` 与各轮合并后的 `iteration[i]_state`，便于审计 Critic 建议与后续 Agent 输出是否一致。
 
 ### 已完成迭代（v3.0）
 
@@ -459,7 +475,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.5）
+### 6.4 当前版本成功指标（v3.6）
 
 | 指标 | 目标 |
 |------|------|
@@ -467,6 +483,7 @@
 | **输出质量** | 生成音频可直接试听，听感基本可用 |
 | **时长准确度** | 当前阶段不作为强约束（以 plan 一致性与可听性为优先）；后续迭代可回收为规划侧目标。 |
 | **流程完整性** | 从输入到输出全流程自动化，无需人工干预核心环节 |
+| **多 Agent 可审计性** | 每次 refinement 可按轮次检索各 Agent 落盘文件与合并后 `state`，支撑对 Critic `actions` 与下游产出的人工核对 |
 
 ---
 

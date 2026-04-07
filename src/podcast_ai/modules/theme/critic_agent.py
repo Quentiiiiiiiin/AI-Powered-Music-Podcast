@@ -12,6 +12,7 @@ from podcast_ai.modules.theme.agent_response_schemas import (
     build_openrouter_response_format,
 )
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_CRITIC, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_critic_agent_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
@@ -31,7 +32,13 @@ class CriticAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState) -> PlanState:
+    def run(
+        self,
+        state: PlanState,
+        *,
+        audit_sink: PlanAuditSink | None = None,
+        round_iteration: int | None = None,
+    ) -> PlanState:
         messages = build_critic_agent_messages(state)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.2}
@@ -59,6 +66,16 @@ class CriticAgent:
             allow_repair_fallback=not structured,
             output_dir=Path(self._settings.app.output_dir),
         )
+
+        if audit_sink is not None and round_iteration is not None:
+            audit_sink.write_agent_artifact(
+                iteration=round_iteration,
+                agent_slug=AUDIT_SLUG_CRITIC,
+                mode=None,
+                request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                raw_llm_text=raw,
+                parsed_patch=data,
+            )
 
         patch = _sanitize_critic_patch(data)
         next_state = merge_plan_state(state, patch)

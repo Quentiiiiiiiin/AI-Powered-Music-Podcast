@@ -12,6 +12,7 @@ from podcast_ai.modules.theme.agent_response_schemas import (
 )
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_MUSIC_CURATOR, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_music_curator_agent_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
@@ -83,7 +84,14 @@ class MusicCuratorAgent:
         self._settings = settings or load_settings()
         self._llm = llm_client or get_default_llm_client(self._settings)
 
-    def run(self, state: PlanState, mode: str = "generation") -> PlanState:
+    def run(
+        self,
+        state: PlanState,
+        mode: str = "generation",
+        *,
+        audit_sink: PlanAuditSink | None = None,
+        round_iteration: int | None = None,
+    ) -> PlanState:
         segments_count = len(state.get("segments", []))
         if segments_count == 0:
             raise AIServiceError("Music Curator：state.segments 为空，无法生成 playlist。")
@@ -115,6 +123,16 @@ class MusicCuratorAgent:
             allow_repair_fallback=not structured,
             output_dir=Path(self._settings.app.output_dir),
         )
+
+        if audit_sink is not None and round_iteration is not None:
+            audit_sink.write_agent_artifact(
+                iteration=round_iteration,
+                agent_slug=AUDIT_SLUG_MUSIC_CURATOR,
+                mode=mode,
+                request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                raw_llm_text=raw,
+                parsed_patch=data,
+            )
 
         patch = _sanitize_curator_patch(data, expected_segments=segments_count)
         next_state = merge_plan_state(state, patch)

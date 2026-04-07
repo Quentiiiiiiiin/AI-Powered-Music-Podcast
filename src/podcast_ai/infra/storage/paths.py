@@ -157,3 +157,29 @@ def load_state_json(path: Path) -> PlanState:
         raise ValueError(f"state.json 格式错误：期望 object，但得到 {type(raw).__name__}")
     return raw
 
+
+def get_multi_agent_audit_run_dir(base_output_dir: Path, run_id: str) -> Path:
+    """
+    v3.6：单次 multi-agent 规划独占审计目录，避免多次运行互相覆盖。
+
+    约定：``{output_dir}/audit/multi_agent/{run_id}/``
+    ``run_id`` 通常取 ``state[\"meta\"][\"request_id\"]``。
+    """
+    safe = (run_id or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return Path(base_output_dir).expanduser() / "audit" / "multi_agent" / safe
+
+
+def format_audit_agent_filename(iteration: int, agent_slug: str) -> str:
+    """``iteration{i}_{agent_slug}.json``；agent_slug 为 planner | music_curator | script_writer | critic。"""
+    return f"iteration{int(iteration)}_{agent_slug}.json"
+
+
+def format_audit_state_filename(iteration: int) -> str:
+    """完整 state 快照：``iteration{i}_state.json``。"""
+    return f"iteration{int(iteration)}_state.json"
+
+
+def format_audit_state_partial_filename(iteration: int) -> str:
+    """失败时可查：``iteration{i}_state_partial.json``（内容含 error 与本轮开始前的 state 等元数据）。"""
+    return f"iteration{int(iteration)}_state_partial.json"
+
