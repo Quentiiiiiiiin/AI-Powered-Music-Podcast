@@ -122,7 +122,6 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
           - Define segments, emotional flow, and constraints
         based on the meta.theme. and meta.language, meta.target_duration_seconds.
 
-
         You must follow STRICT field control:
 
         WRITE SCOPE:
@@ -133,21 +132,19 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
         - segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design
 
         GENERAL RULES:
-        - Do NOT generate playlist
-        - Do NOT generate script
         - Maintain consistency with theme and emotion_curve
+        - Do not generate playlist
+        - Do not generate script
 
         MODES:
-
         [GENERATION MODE]:
         - Create full segment structure from scratch
 
         [REVISION MODE]:
         - ONLY modify segments mentioned in actions
         - Keep all other segments unchanged
-        - Do NOT redesign the entire plan
 
-        输出示例（示意）：
+        OUTPUT EXAMPLE FORMAT:
         {
           "meta": {
             "theme_description": "Describe the theme of the episode in detail, including the overall style, design concept, and program arrangement ideas."
@@ -169,7 +166,7 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
               "target_duration_seconds": 600,
               "bpm_range": [90, 105],
               "mood": "The mood of the segment",
-              "segment_design": "Describe the selection of the segment in detail, based on the meta.theme_description and global_constraints.tone"
+              "segment_design": "Describe the design of the segment in detail, based on the meta.theme_description and global_constraints.tone, without mentioning the playlist/track."
             }
           ]
         }
@@ -182,6 +179,9 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
             """
             TASK:
             - Create the full episode structure from the current state and the user intent embedded in it.
+            - Follow the meta.target_duration_seconds to create the episode structure.
+            - Each segment should be between 480 seconds and 1200 seconds.
+            - You don't need to equally distribute the duration of the segments.
             """
         ).strip()
     else:
@@ -231,7 +231,7 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
         - Use 240 seconds per track to estimate the number of tracks to fit the target_duration_seconds.
         - The tracks should be selected from the internet and should be real, identifiable recordings (not invented titles).
         - The tracks should be selected based on the mood and bpm_range of the segment.
-        - The tracks should be selected based on the emotion of the segment.
+        - The tracks should be selected based on the emotion of the segment. 
 
         WRITE SCOPE:
         - segments[*].playlist[*].track/artist/bpm
@@ -242,7 +242,6 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
         - Maintain emotional continuity
 
         MODES:
-
         [GENERATION MODE]
         - Create playlists for all segments
         - Follow segment mood and bpm_range
@@ -252,7 +251,10 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
         - Keep all other tracks unchanged
         - Prefer minimal edits over full replacement
 
-        输出示例（示意）：
+        IMPORTANT:
+        - YOUR OUTPUT MUST BE STRICTLY FOLLOW THE OUTPUT EXAMPLE FORMAT WITHOUT ANY EXTRA TEXT OR MARKDOWN.
+        
+        OUTPUT EXAMPLE FORMAT:
         {
           "segments": [
             {
@@ -361,10 +363,11 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         - Write full script for all segments
 
         [REVISION MODE]
-        - ONLY modify script parts mentioned in actions
-        - Keep all other script parts unchanged
+        - ONLY modify script parts mentioned in actions.
+        - Keep all other script parts unchanged.
+        - For actions that require to modify tracks, you need to modify the between_tracks accordingly.
 
-        输出示例（示意）：
+        OUTPUT EXAMPLE FORMAT:
         {
           "segments": [
             {
@@ -443,7 +446,7 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
     """
     system = dedent(
         """
-        You are the CRITIC agent.
+        You are the CRITIC agent. 
 
         Your responsibility:
         - Evaluate the episode plan based on the meta.theme.theme_description, global_constraints, plan, and all segments (allowed fields only).
@@ -475,10 +478,11 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
           - executable
           - single-decision (no multiple options)
 
-        3. DO NOT:
-          - give vague suggestions
-          - give multiple alternative actions
-        
+        3. Next agent should be the one mentioned in the actions:
+          - If multiple agents are mentioned in the actions, choose the one with highest priority.
+          - The priority is:
+            - Planner > Music Curator > Script Writer
+       
         WRITE SCOPE:
         - critic.*
         - control.next_agent
@@ -491,7 +495,7 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         - control.max_iterations / control.iteration / control.status / control.last_updated_by
         - critic.threshold
 
-        输出示例（示意）：
+        OUTPUT EXAMPLE FORMAT:
          {
           "critic": {
             "pass": false,
@@ -515,11 +519,11 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
 
         Requirements:
         - Do not be overly strict on BPM; rough alignment with each segment's bpm_range is enough.
-        - Check whether track counts and overall duration are plausible; if not, say so and propose fixes.
         - Check whether tracks appear to be real recordings; flag likely invented or unidentifiable titles.
         - Check overall emotional continuity across segments and playlists.
         - Check whether song meanings fit the theme; flag clear mismatches.
         - Check script coherence, emotional tone, spoken style, and pacing (single pass — do not repeat checks).
+        - script.between_tracks can be null where appropriate.
 
         Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
