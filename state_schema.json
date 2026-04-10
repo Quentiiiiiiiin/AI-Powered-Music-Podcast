@@ -52,9 +52,9 @@
       "immersion": 0
     },
     "threshold": {
-      "coherence": 7,
-      "emotion_flow": 7,
-      "immersion": 7
+      "coherence": 28,
+      "emotion_flow": 28,
+      "immersion": 24
     },
     "issues": [
       {

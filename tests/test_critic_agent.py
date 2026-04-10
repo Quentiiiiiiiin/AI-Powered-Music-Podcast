@@ -83,7 +83,7 @@ def test_v30_critic_agent_rejects_forbidden_plan_write() -> None:
         "plan": {"segments_design": "bad"},
         "critic": {
             "pass": True,
-            "scores": {"coherence": 7, "emotion_flow": 7, "immersion": 7},
+            "scores": {"coherence": 28, "emotion_flow": 28, "immersion": 24},
             "issues": [],
             "actions": [],
         },

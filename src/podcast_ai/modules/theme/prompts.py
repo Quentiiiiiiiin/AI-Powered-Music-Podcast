@@ -198,14 +198,43 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
             """
         ).strip()
 
+    actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+        if a.get("target_agent") == "Planner"
+    ]
+
     user = dedent(
         f"""
         MODE: {mode}
 
         {task}
 
-        Current state (JSON):
-        {json.dumps(state, ensure_ascii=False)}
+        THEME: {state.get("meta", {}).get("theme", "")}
+
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+
+        TARGET DURATION: {state.get("meta", {}).get("target_duration_seconds", "")}
+
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+
+        PLAN: {state.get("plan")}
+
+        SEGMENTS (structure only):
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "bpm_range": s.get("bpm_range"),
+            "mood": s.get("mood"),
+            "segment_design": s.get("segment_design")
+          }
+          for s in state.get("segments", [])
+        ]}
+
+        CRITIC ACTIONS:
+        {actions}
         """
     ).strip()
 
@@ -228,7 +257,6 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
 
         Your responsibility:
         - Select and arrange tracks for each segment based on the meta.theme.theme_description and the segments.segment_design, segments.target_duration_seconds.
-        - Use 240 seconds per track to estimate the number of tracks to fit the target_duration_seconds.
         - The tracks should be selected from the internet and should be real, identifiable recordings (not invented titles).
         - The tracks should be selected based on the mood and bpm_range of the segment.
         - The tracks should be selected based on the emotion of the segment. 
@@ -278,6 +306,7 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
     general_rules = dedent(
         """
         GENERAL RULES:
+        - Use 240 seconds per track to estimate the number of tracks to fit the target_duration_seconds.
         - Songs must be real, identifiable recordings (not invented titles).
         - Consider lyrics and common interpretations; do not pick tracks by title alone.
         - Align BPMs with each segment's bpm_range when possible; use **null** for bpm when unknown.
@@ -310,6 +339,12 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
             """
         ).strip()
         user_body = f"{revision_header}\n\n{general_rules}"
+    
+    # 只取 curator actions
+    actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+        if a.get("target_agent") == "Music Curator"
+    ]
 
     user = dedent(
         f"""
@@ -317,8 +352,28 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
 
         {user_body}
 
-        Current state (JSON):
-        {json.dumps(state, ensure_ascii=False)}
+        THEME: {state.get("meta", {}).get("theme", "")}
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        SEGMENTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "bpm_range": s.get("bpm_range"),
+            "mood": s.get("mood"),
+            "segment_design": s.get("segment_design"),
+            "playlist": s.get("playlist")
+          }
+          for s in state.get("segments", [])
+        ]}
+
+        CRITIC ACTIONS:
+        {actions}
+
         """
     ).strip()
 
@@ -365,7 +420,6 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         [REVISION MODE]
         - ONLY modify script parts mentioned in actions.
         - Keep all other script parts unchanged.
-        - For actions that require to modify tracks, you need to modify the between_tracks accordingly.
 
         OUTPUT EXAMPLE FORMAT:
         {
@@ -385,6 +439,17 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         """
     ).strip()
 
+    # 只取 script writer actions
+    writer_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+        if a.get("target_agent") == "Script Writer"
+    ]
+
+    curator_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+        if a.get("target_agent") == "Music Curator"
+    ]
+
     if m == "generation":
         task = dedent(
             """
@@ -396,10 +461,11 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         task = dedent(
             """
             TASK:
-            - Apply ONLY what critic.actions requires; preserve tone and structure for everything else.
+            - Apply what writer_actions requires; preserve tone and structure for everything else.
+            - For curator_actions that require to modify tracks, you need to modify the between_tracks accordingly.
 
             VERBATIM RULE (hard requirement):
-            - For any segment that critic.actions does NOT target, copy segments[i].script from the current state
+            - For any segment that writer_actions does NOT target, copy segments[i].script from the current state
               **exactly** (verbatim segment_intro and between_tracks; same strings and nulls).
             """
         ).strip()
@@ -422,8 +488,34 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
 
         {general_rules}
 
-        Current state (JSON):
-        {json.dumps(state, ensure_ascii=False)}
+        WRITER ACTIONS:
+        {writer_actions}
+
+        CURATOR ACTIONS:
+        {curator_actions}
+
+        THEME: {state.get("meta", {}).get("theme", "")}
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        CURRENT PLAYLISTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "playlist": s.get("playlist")
+          }
+          for s in state.get("segments", [])
+        ]}
+
+        CURRENT SCRIPT:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "script": s.get("script")
+          }
+          for s in state.get("segments", [])
+        ]}
+
         """
     ).strip()
 
@@ -446,7 +538,10 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
     """
     system = dedent(
         """
-        You are the CRITIC agent. 
+        You are a stable and disciplined CRITIC agent.
+        Your role is to evaluate the quality of a program using a FIXED RUBRIC.
+        You must NOT introduce new evaluation criteria under any circumstances.
+        Your goal is to help the system CONVERGE, not to endlessly criticize.
 
         Your responsibility:
         - Evaluate the episode plan based on the meta.theme.theme_description, global_constraints, plan, and all segments (allowed fields only).
@@ -455,15 +550,79 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         - Generate actionable fixes
         - Determine the next agent to be the one that can fix the issues.
 
+        ====================
+        RUBRIC (FIXED)
+        ====================
+
+        Total Score: 100
+
+        1. Coherence (0-35)
+        Definition:
+        Consistency and logical alignment across structure, music selection, and script.
+
+        Evaluation Criteria:
+        - Clear program structure (beginning, transitions, ending)
+        - Logical ordering of music (not random)
+        - Script matches and supports the music
+
+        Scoring Anchors:
+        - 30-35: Highly coherent, smooth transitions, strong alignment
+        - 20-29: Mostly coherent, minor inconsistencies
+        - 10-19: Noticeable disconnections or weak structure
+        - 0-9: Lacks structure, feels random or conflicting
+
+        --------------------
+
+        2. Emotion Flow (0-35)
+        Definition:
+        The progression and transition of emotional tone לאורך time.
+
+        Evaluation Criteria:
+        - Clear emotional arc (e.g., build-up, climax, resolution)
+        - Smooth transitions between adjacent segments
+        - No abrupt emotional jumps unless clearly justified
+
+        Scoring Anchors:
+        - 30-35: Smooth, intentional emotional progression
+        - 20-29: Generally smooth with minor abrupt moments
+        - 10-19: Multiple emotional inconsistencies
+        - 0-9: Emotionally chaotic or random
+
+        --------------------
+
+        3. Immersion (0-30)
+        Definition:
+        The listener's ability to stay engaged without being pulled out of the experience.
+
+        STRICT RULE:
+        Do NOT penalize for lack of creativity or “could be more interesting”.
+        ONLY penalize if immersion is actively broken.
+
+        Evaluation Criteria:
+        - No immersion-breaking elements (awkward transitions, mismatched tone)
+        - Consistent atmosphere
+        - Script enhances rather than distracts
+
+        Scoring Anchors:
+        - 25-30: Strong immersion, no disruptions
+        - 15-24: Mostly immersive, minor disruptions
+        - 5-14: Frequent breaks in immersion
+        - 0-4: Cannot maintain immersion
+
+        ====================
         EVALUATION DIMENSIONS:
         - coherence
         - emotion_flow
         - immersion
-
+        ====================
         RULES:
         pass = true if:
           scores >= threshold
-          
+          and there are no critical issues
+
+        ====================
+        ISSUE & ACTION RULES:
+        ====================
         1. Each issue MUST include:
           - type
           - location
@@ -506,11 +665,17 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
               {"target_agent": "Script Writer", "instruction": "调整 segments[1].script.segment_intro 以适合该段落的情绪"}
               ]
           },
-          "control": {"next_agent": "Music Curator"}
+          "control": {"next_agent": "highest priority agent name (Planner / Music Curator / Script Writer)."}
         }
 
         """
     ).strip()
+
+    state["critic"]["actions"] = []
+    state["critic"]["issues"] = []
+    state["critic"]["pass"] = False
+    state["critic"]["scores"] = {"coherence": 0, "emotion_flow": 0, "immersion": 0}
+    state["critic"]["threshold"] = {"coherence": 35, "emotion_flow": 35, "immersion": 30}
 
     user = dedent(
         f"""
