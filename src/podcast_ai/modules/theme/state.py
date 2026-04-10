@@ -13,6 +13,7 @@ PLAN_STATE_SCHEMA_VERSION = "3.0"
 DEFAULT_MAX_ITERATIONS = 5
 
 _TOP_LEVEL_KEYS = ("schema_version", "meta", "global_constraints", "plan", "segments", "critic", "control")
+_SINGLE_AGENT_TOP_LEVEL_KEYS = ("schema_version", "meta", "global_constraints", "plan", "segments")
 _CONTROL_REQUIRED_KEYS = ("max_iterations", "iteration", "status", "next_agent", "last_updated_by")
 _META_REQUIRED_KEYS = ("request_id", "theme", "theme_description", "language", "target_duration_seconds", "overall_bpm_range")
 _PLAN_REQUIRED_KEYS = ("segments_design", "emotion_curve")
@@ -350,7 +351,16 @@ def validate_state_conforms_to_schema(
         ("segments", "*", "script", "between_tracks", "*", "text"): (str,),
     }
     if agent_mode == "single_agent":
-        nullable_paths |= {("critic",), ("control",)}
+        expected_keys = set(_SINGLE_AGENT_TOP_LEVEL_KEYS)
+        actual_keys = set(state.keys())
+        if actual_keys != expected_keys:
+            missing = sorted(expected_keys - actual_keys)
+            extra = sorted(actual_keys - expected_keys)
+            raise AIServiceError(
+                f"single_agent state 顶层字段不匹配：missing={missing}, extra={extra}",
+            )
+        # single_agent 只允许 state 子集（不含 critic/control）
+        template = {k: template[k] for k in _SINGLE_AGENT_TOP_LEVEL_KEYS}
 
     errors: List[str] = []
 
@@ -460,3 +470,8 @@ def validate_state_conforms_to_schema(
         # 只取前 N 条，避免错误太多时淹没关键信息
         head = errors[:10]
         raise AIServiceError("state.json schema 校验失败：" + "；".join(head))
+
+
+def validate_state_subset_for_single_agent(state: PlanState) -> None:
+    """v3.7：单 Agent 子集校验入口（仅允许五个顶层键，不含 critic/control）。"""
+    validate_state_conforms_to_schema(state, agent_mode="single_agent")

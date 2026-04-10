@@ -89,7 +89,8 @@ def plan_episode_cli(
     ),
 ) -> None:
     """
-    阶段一：根据主题与时长生成 EpisodePlan 与目标歌单规划。
+    阶段一：根据主题与时长生成规划结果；state 统一落盘为 state.json。
+    single_agent 输出为 PlanState 子集（不含 critic/control）。
     """
     settings = load_settings()
     effective_output_dir = Path(output_dir) if output_dir is not None else Path(settings.app.output_dir)

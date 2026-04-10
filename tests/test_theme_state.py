@@ -102,8 +102,8 @@ def test_v30_merge_list_of_dict_merges_by_index() -> None:
 
 def test_v31_validate_state_conforms_to_schema_allows_critic_control_null_in_single_agent() -> None:
     state = initialize_plan_state(_request())
-    state["critic"] = None
-    state["control"] = None
+    state.pop("critic")
+    state.pop("control")
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
 
 
@@ -113,6 +113,12 @@ def test_v31_validate_state_conforms_to_schema_rejects_critic_control_null_in_mu
     state["control"] = None
     with pytest.raises(AIServiceError):
         validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+
+def test_v37_validate_state_conforms_to_schema_rejects_critic_control_presence_in_single_agent() -> None:
+    state = initialize_plan_state(_request())
+    with pytest.raises(AIServiceError, match="single_agent state 顶层字段不匹配"):
+        validate_state_conforms_to_schema(state, agent_mode="single_agent")
 
 
 def test_v31_validate_state_conforms_to_schema_allows_between_tracks_text_string() -> None:

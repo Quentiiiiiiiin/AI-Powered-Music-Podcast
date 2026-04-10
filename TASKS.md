@@ -1,105 +1,139 @@
-## 版本 v3.6（迭代十四：多 Agent 可审计落盘）
+## 版本 v3.7（迭代十五：单 Agent 输出对齐 State Schema 子集）
 
-基于 PRD v3.6：在多 agent（`PlanOrchestrator`）路径上，按 **refinement 轮次 `i`** 与 **Agent 角色** 落盘可复查产物；每轮在 **Critic 完成且该轮 state 合并完成后** 再写入完整 `iteration[i]_state`。`i` 与编排层 **`control.iteration`**（进入该轮 while 时的值）全局一致。落盘为附加 I/O：**写失败须可观测且与 LLM/schema 主流程错误可区分**，默认不应因写盘失败导致整次 plan 生成失败（可选提供“严格模式”开关，若有再实现）。
+基于 PRD v3.7：阶段一 `single_agent` 不再输出 EpisodePlan 风格 JSON，而是直接输出 State 子集结构，顶层仅包含：
+`schema_version`、`meta`、`global_constraints`、`plan`、`segments`（不包含 `critic`、`control`）。
+同时单 agent 也对齐结构化输出主路径（`response_format/json_schema`），阶段一产物文件名统一为 `state.json`。
 
 ---
 
-### Task 01 - 审计目录与文件命名工具（paths / 小模块）
-- **Task name**: v3.6 - 多 Agent 审计落盘路径约定
-- **目标**: 在 `infra/storage` 或 `modules/theme` 下提供稳定、可测试的路径与文件名规则，满足 PRD：`iteration[i]_[agent]`、`iteration[i]_state`；单次运行使用独占子目录，避免多次调用互相覆盖。
+### Task 01 - 定义单 Agent 的 State 子集 Schema（结构化输出契约）
+- **Task name**: v3.7 - single_agent `response_format` schema
+- **目标**: 为单 agent 的 Theme Planner 定义严格 JSON Schema，确保模型直接按 State 子集输出，禁止 `critic/control` 与额外顶层字段。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 在 `src/podcast_ai/infra/storage/paths.py`（或新增 `src/podcast_ai/modules/theme/plan_audit.py`，二选一，避免双份逻辑）提供：
-    - `get_multi_agent_audit_run_dir(base_output_dir: Path, run_id: str) -> Path`  
-      建议：`{output_dir}/audit/multi_agent/{run_id}/`（`run_id` 优先取 `state["meta"]["request_id"]`，与现有 state 可追踪字段一致）。
-    - `format_audit_agent_filename(iteration: int, agent_slug: str) -> str` → `iteration{iteration}_{agent_slug}.json`  
-      **`agent_slug` 固定四值**：`planner` / `music_curator` / `script_writer` / `critic`（与 PRD「可识别角色名」一致；编排层展示名 `Planner` 等仅作映射）。
-    - `format_audit_state_filename(iteration: int) -> str` → `iteration{iteration}_state.json`
-  - 约定 **审计 JSON 内容结构**（写入 README 或模块 docstring 一行即可）：
-    - 推荐单文件字段：`iteration`、`agent_slug`、`mode`（若已有）、`request_id`、`raw_llm_text`（模型 `content` 原文）、`parsed_patch`（解析后的 dict，即 merge 前 patch）、`ts_utc`（可选）。
-    - `iteration[i]_state`：**完整 `PlanState` 快照**，与 `state_schema.json` 同构（即与内存 state 一致 JSON）。
-  - 写文件使用 `utf-8`，`indent=2`，`ensure_ascii=False`。
-- **Input**: `output_dir`、`run_id`、`iteration`、`agent_slug`、payload
-- **Output**: 路径辅助函数 + 统一序列化约定说明
+  - 在 `src/podcast_ai/modules/theme/agent_response_schemas.py` 新增单 agent 专用 schema（如 `SINGLE_AGENT_STATE_SUBSET_SCHEMA`）：
+    - 顶层 required：`schema_version/meta/global_constraints/plan/segments`
+    - `additionalProperties: false`
+    - `critic/control` 不在 properties 中（即不允许输出）
+  - 复用现有 `build_openrouter_response_format(...)`，为单 agent 生成 `response_format`。
+  - 与 `state_schema.json` 对齐字段命名/层级；仅裁剪顶层，不引入新字段。
+- **Input**: `state_schema.json` 与现有多 agent schema 约束
+- **Output**: 可直接用于 single agent 调用的 strict schema
 - **Files involved**:
-  - `src/podcast_ai/infra/storage/paths.py` 和/或 `src/podcast_ai/modules/theme/plan_audit.py`（新增）
+  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
+  - 参考：`state_schema.json`
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 02 - 四个 Agent 在「解析成功后」写入 `iteration[i]_[agent]`
-- **Task name**: v3.6 - Agent 侧审计钩子（raw + parsed）
-- **目标**: 在 Planner / Music Curator / Script Writer / Critic 每次 LLM 返回且 **JSON 解析成功、进入 sanitize/merge 前或紧邻 merge**，写入对应审计文件；保证同一次调用只有一份落盘，便于对照 Critic `actions` 与下游 patch。
+### Task 02 - 调整单 Agent Prompt 与解析目标（从 EpisodePlan 转为 State 子集）
+- **Task name**: v3.7 - `build_theme_planner_messages` 输出契约升级
+- **目标**: 让单 agent 提示词与解析逻辑都面向 State 子集，而非 EpisodePlan 风格字段（如 `host_script/target_playlist`）。
 - **类型**: backend
 - **依赖关系**: Task 01
 - **Description**:
-  - 为四个 Agent 增加可选依赖（推荐构造注入）：`audit_sink: PlanAuditSink | None`（协议或抽象：仅 `write_agent_artifact(...)`）。
-  - 映射：`Planner` → `planner`，`Music Curator` → `music_curator`，`Script Writer` → `script_writer`，`Critic` → `critic`。
-  - **写入用 iteration**：使用调用瞬间 `state["control"]["iteration"]` 的整型值，须与 `PlanOrchestrator` 外层循环本轮 `i` 一致（若发现 Agent 内已被改掉，改为由 Orchestrator 传入 `round_iteration: int` — 仅在不一致时做）。
-  - **错误处理**：写盘异常 **捕获**；`logger.error(...)` 含路径与 `request_id`；**不包装为 AIServiceError**（避免与 LLM 失败混淆），除非后续显式实现“严格写盘模式”。
-- **Input**: `raw`、解析后 `dict`、`PlanState` 片段信息
-- **Output**: 磁盘上的 `iteration[i]_[agent].json`
+  - 更新 `src/podcast_ai/modules/theme/prompts.py` 中 `build_theme_planner_messages(...)`：
+    - 明确要求输出 State 子集 JSON；
+    - 明确禁止 `critic/control`；
+    - 强调字段与层级（snake_case、required）。
+  - 在 `src/podcast_ai/modules/theme/llm_planner.py` 的单 agent 路径中：
+    - 解析目标改为 `PlanState` 子集 dict，而不是先解析 EpisodePlan 风格再转换；
+    - 去掉/收敛仅服务 EpisodePlan 风格的解析分支（避免双轨心智）。
+  - 保持 `EpisodePlan` 对外兼容：需要返回 `EpisodePlan` 的地方由统一转换函数从 State 子集构造，而不是反向拼装。
+- **Input**: EpisodeRequest、single_agent 模式
+- **Output**: 单 agent 直接产出 State 子集内存对象
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/planner_agent.py`
-  - `src/podcast_ai/modules/theme/music_curator_agent.py`
-  - `src/podcast_ai/modules/theme/script_writer_agent.py`
-  - `src/podcast_ai/modules/theme/critic_agent.py`
-  - `src/podcast_ai/modules/theme/plan_audit.py`（或等价）
+  - `src/podcast_ai/modules/theme/prompts.py`
+  - `src/podcast_ai/modules/theme/llm_planner.py`
 - **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 03 - Orchestrator 在每轮 Critic 结束后写入 `iteration[i]_state`
-- **Task name**: v3.6 - 按轮次 state 快照落盘
-- **目标**: 在 `PlanOrchestrator.run` 中，每轮执行完 `_run_round_from`（即本轮 **Critic 已跑完**）且 `merge` / `assert_plan_state_valid` 成功后，写入 `iteration[i]_state.json`，其中 `i` 为本轮进入 while 时的 `iteration` 变量（与 PRD「与 control.iteration 计数一致」对齐）。
+### Task 03 - 单 Agent 接入结构化输出（response_format/json_schema）
+- **Task name**: v3.7 - ThemePlanner single_agent structured output
+- **目标**: 单 agent 调用与多 agent 对齐，启用 `response_format` 严格约束，降低格式漂移与解析失败。
 - **类型**: backend
-- **依赖关系**: Task 01、Task 02（Task 02 可与本任务并行，但集成测试建议 Task 02 完成后一起做）
+- **依赖关系**: Task 01、Task 02
 - **Description**:
-  - 修改 `src/podcast_ai/modules/theme/orchestrator.py`：
-    - 在 `try` 块内 `_run_round_from` 返回且 `assert_plan_state_valid(state)` 通过后，调用 `audit_sink.write_state_snapshot(round_iteration=i, state=state)`。
-    - 在 `AIServiceError` 分支：可选写入 `iteration{i}_state_partial.json` 或仅打日志（**不要静默**）；若实现 partial，须在 docstring 说明与 PRD 验收 4 对齐。
-    - 将 `audit_sink` 与 `audit_run_dir` 在 `PlanOrchestrator.__init__` 或 `run()` 内构造（推荐 `run()` 内用 `initialize_plan_state` 后的 `request_id` 创建目录，保证目录早存在）。
-  - **注意**：当 `critic.pass` 为 true 时，`control.iteration` 会被 merge 为 `iteration + 1`；**state 快照仍应对齐本轮业务轮次 `i`**（使用外层变量 `i`，不要用合并后的 `control.iteration`）。
-- **Input**: 本轮合并后的 `PlanState`
-- **Output**: `iteration[i]_state.json`
+  - 在 `llm_planner.py` 的 single_agent 调用中，按 `should_use_structured_output(...)` 判定是否附带 `response_format`；
+  - 启用时传入 Task 01 的 schema（`json_schema.strict=true`）；
+  - 保持错误处理：若结构化输出不可用/返回非约定结构，抛清晰错误（含请求标识），不静默回退。
+- **Input**: LLMConfig、single_agent messages
+- **Output**: 单 agent 正常路径可直接解析为约定 State 子集
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/orchestrator.py`
-  - `src/podcast_ai/modules/theme/plan_audit.py`
+  - `src/podcast_ai/modules/theme/llm_planner.py`
+  - `src/podcast_ai/infra/config.py`（只读复用 `should_use_structured_output`）
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 04 - State 校验拆分：支持“单 Agent 子集”专用验证
+- **Task name**: v3.7 - single_agent subset schema validation
+- **目标**: 将当前 `validate_state_conforms_to_schema(..., agent_mode="single_agent")` 的“critic/control 可为 null”逻辑，调整为“single_agent 子集不含 critic/control 也合法”的显式校验语义。
+- **类型**: backend
+- **依赖关系**: Task 02
+- **Description**:
+  - 在 `src/podcast_ai/modules/theme/state.py` 增加单 agent 子集校验入口（示例）：
+    - `validate_state_subset_for_single_agent(state)` 或在现有函数增加 `schema_variant="single_agent_subset"` 参数；
+  - 校验规则：
+    - 顶层必须且仅允许 `schema_version/meta/global_constraints/plan/segments`
+    - 不允许出现 `critic/control`
+    - 子结构类型仍与 `state_schema.json` 对应节点一致
+  - 保持多 agent 校验行为不变（避免影响 v3.6）。
+- **Input**: single_agent state dict
+- **Output**: 单 agent 子集校验通过/失败（可定位错误）
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/state.py`
+  - 参考：`state_schema.json`
 - **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 04 - 配置开关与文档（可选但推荐）
-- **Task name**: v3.6 - `multi_agent_audit.enabled` 与输出目录说明
-- **目标**: 满足「不显著增加失败率」：允许关闭审计落盘（默认开启）；在 `README.md` 用 3～5 句说明目录结构、`i` 的含义、文件内字段约定。
-- **类型**: backend（+ 少量文档）
-- **依赖关系**: Task 02 或 Task 03（实现开关时需在 Orchestrator 构造 sink 处读取）
+### Task 05 - 阶段一链路同步：plan_episode / 落盘 / 调用契约
+- **Task name**: v3.7 - stage1 single_agent contract sync
+- **目标**: 同步阶段一受影响路径，保证 single_agent 产物与文件命名契约一致（`state.json`），且不破坏 multi_agent。
+- **类型**: api
+- **依赖关系**: Task 02、Task 03、Task 04
 - **Description**:
-  - 在 `src/podcast_ai/infra/config.py` 增加 `AppConfig` 或独立小块配置，例如：`multi_agent_audit_enabled: bool = True`。
-  - Orchestrator：若关闭，则不注入 `audit_sink`，Agent 不写审计文件。
-- **Input**: Settings
-- **Output**: 可配置行为 + 简短用户说明
+  - `src/podcast_ai/core/pipeline.py`：
+    - single_agent 下调用新的 single-agent state 生成与校验入口；
+    - 保持落盘文件名 `state.json`（现有 `save_state_json` 复用即可）；
+    - 若仍需返回 `EpisodePlan` 给 CLI 展示，使用统一转换函数从 state 子集生成。
+  - `src/podcast_ai/cli.py`：
+    - 文案与帮助信息同步（说明 single_agent 输出已是 state 子集，统一落 `state.json`）。
+  - 若阶段二仍读取 plan JSON，本次迭代不强行改阶段二；仅保证阶段一契约自洽并可独立验证。
+- **Input**: `plan-episode --agent-mode single_agent`
+- **Output**: 阶段一输出 `state.json`（单 agent 子集），并可返回/展示必要路径信息
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-  - `README.md`（少量）
-- **Estimated complexity**: S（1 小时）
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/cli.py`
+  - `src/podcast_ai/infra/storage/paths.py`（通常无需改，仅确认）
+- **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 05 - 单测：命名、轮次对齐、写盘失败不拖垮主流程
-- **Task name**: v3.6 - 审计落盘回归测试
-- **目标**: 覆盖 PRD 验收 1～5 的核心点：文件存在、命名正确、`i` 与 orchestrator 轮次一致；写盘失败时主路径仍成功（若按默认非严格实现）。
+### Task 06 - 测试与回归：单 Agent 子集契约 + 不破坏多 Agent
+- **Task name**: v3.7 - single_agent subset e2e regression
+- **目标**: 覆盖 v3.7 核心验收点，并回归 multi_agent 行为不受影响。
 - **类型**: backend
-- **依赖关系**: Task 01～03
+- **依赖关系**: Task 01-05
 - **Description**:
-  - 新增 `tests/test_plan_audit.py`（或扩展现有 `test_theme_orchestrator.py`）：
-    - 使用 `tmp_path`、`stub LLM`、注入 `PlanOrchestrator`，跑 1～2 轮；断言存在 `iteration1_planner.json`、`iteration1_critic.json`、`iteration1_state.json` 等。
-    - 可选：monkeypatch `Path.write_text` 抛 `OSError`，断言 plan 仍返回/或仅告警日志（与实现策略一致）。
-  - **注意**：`single_agent` 模式不写此类审计（或明确不写），避免误测。
-- **Input**: stub agents / mock LLM
-- **Output**: `pytest` 通过
+  - 新增/更新测试：
+    1) `single_agent` 生成的 state 顶层仅含五个 key（无 `critic/control`）；
+    2) single_agent 调用在启用结构化输出时携带正确 `response_format`；
+    3) 阶段一落盘文件名为 `state.json`；
+    4) `multi_agent` 现有测试继续通过（特别是 `critic/control` 仍存在、orchestrator 流程不变）。
+  - 优先复用现有：
+    - `tests/test_llm_structured_output.py`
+    - `tests/test_pipeline.py`
+    - `tests/test_theme_state.py`
+- **Input**: stub LLM / mock transport / tmp_path
+- **Output**: `pytest` 通过，v3.7 契约受控
 - **Files involved**:
-  - `tests/test_plan_audit.py`（新建）
-  - 可能复用：`tests/test_theme_orchestrator.py`、`tests/conftest.py`
+  - `tests/test_llm_structured_output.py`
+  - `tests/test_pipeline.py`
+  - `tests/test_theme_state.py`
+  - （可选）新增 `tests/test_single_agent_state_subset.py`
 - **Estimated complexity**: M（2-3 小时）
+

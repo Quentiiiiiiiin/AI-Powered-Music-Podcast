@@ -180,7 +180,6 @@ class PlanOrchestrator:
             elif agent_name == "Critic":
                 state = self._critic.run(
                     state,
-                    mode,
                     audit_sink=audit_sink,
                     round_iteration=round_iteration,
                 )

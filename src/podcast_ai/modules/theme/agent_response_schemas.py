@@ -204,6 +204,98 @@ _SCRIPT_OBJECT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# v3.7：single_agent 直接输出 PlanState 子集（仅五个顶层键）
+SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "string"},
+        "meta": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "theme": {"type": "string"},
+                "theme_description": {"type": "string"},
+                "language": {"type": "string"},
+                "target_duration_seconds": {"type": "integer"},
+                "overall_bpm_range": {
+                    "anyOf": [
+                        {"type": "null"},
+                        {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                    ],
+                },
+            },
+            "required": [
+                "request_id",
+                "theme",
+                "theme_description",
+                "language",
+                "target_duration_seconds",
+                "overall_bpm_range",
+            ],
+            "additionalProperties": False,
+        },
+        "global_constraints": {
+            "type": "object",
+            "properties": {
+                "tone": {"type": "string"},
+                "language_style": {"type": "string"},
+                "avoid": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["tone", "language_style", "avoid"],
+            "additionalProperties": False,
+        },
+        "plan": {
+            "type": "object",
+            "properties": {
+                "segments_design": {"type": "string"},
+                "emotion_curve": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["segments_design", "emotion_curve"],
+            "additionalProperties": False,
+        },
+        "segments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "segment_id": {"type": "string"},
+                    "order": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "target_duration_seconds": {"type": "integer"},
+                    "bpm_range": {
+                        "anyOf": [
+                            {"type": "null"},
+                            {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                        ],
+                    },
+                    "mood": {"type": "string"},
+                    "segment_design": {"type": "string"},
+                    "playlist": {
+                        "type": "array",
+                        "items": _PLAYLIST_ITEM,
+                    },
+                    "script": _SCRIPT_OBJECT,
+                },
+                "required": [
+                    "segment_id",
+                    "order",
+                    "name",
+                    "target_duration_seconds",
+                    "bpm_range",
+                    "mood",
+                    "segment_design",
+                    "playlist",
+                    "script",
+                ],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+        },
+    },
+    "required": ["schema_version", "meta", "global_constraints", "plan", "segments"],
+    "additionalProperties": False,
+}
+
 
 def build_music_curator_response_schema(segment_count: int) -> dict[str, Any]:
     if segment_count < 0:
@@ -222,6 +314,8 @@ def build_music_curator_response_schema(segment_count: int) -> dict[str, Any]:
             "segments": {
                 "type": "array",
                 "items": segment_item,
+                "minItems": segment_count,
+                "maxItems": segment_count,
             },
         },
         "required": ["segments"],

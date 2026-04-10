@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.6  
+**文档版本**：v3.7  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.6）
+**产品阶段**：迭代验证中（进入 v3.7）
 
 ---
 
@@ -185,12 +185,30 @@
     4. 落盘失败须明确记录（日志或错误信息），不得静默吞掉；主流程错误与写盘错误应可区分。
     5. 落盘为附加 I/O，不因写文件显著降低 plan 生成成功率或破坏既有 v3.1–v3.5 行为（结构化输出、schema 校验等）。
 
-### 当前生效规则（v3.6）
+- **v3.7（迭代十五：单 Agent 输出对齐 State Schema 子集）**：
+  - **问题**：单 agent 模式当前仍输出 EpisodePlan 风格结果，与多 agent 模式使用的 `state_schema.json` 结构不一致，导致阶段一下游处理、调试与验收口径分叉。
+  - **变更目标**：
+    1. 单 agent 模式输出从 EpisodePlan 统一为 **State 风格结构**，字段限定为：`schema_version`、`meta`、`global_constraints`、`plan`、`segments`；**不包含** `critic` 与 `control`。
+    2. 除 `prompts.py` 中 `build_theme_planner_messages` 的提示词约束外，单 agent 也需对齐多 agent 的结构化输出策略（如 `response_format/json_schema` 严格约束），降低格式漂移。
+    3. 单 agent 阶段一产物文件名统一为 **`state.json`**。
+    4. 同步修改阶段一单 agent 路径上受影响代码（解析、校验、写盘、调用方读取契约），确保链路一致。
+  - **功能归类**：优化（数据契约一致性、稳定性与可维护性提升）。
+  - **User Story（用户视角）**：作为使用单 agent 模式的创作者，我希望输出与多 agent 的 state 结构保持同一口径（精简子集），并稳定写为 `state.json`，这样我在后续处理与排查时不需要维护两套格式心智模型。
+  - **Acceptance Criteria（验收标准）**：
+    1. 单 agent 模式阶段一输出 JSON 顶层仅包含 `schema_version/meta/global_constraints/plan/segments`，且不出现 `critic/control` 字段。
+    2. 单 agent 模式模型调用采用结构化输出强约束（与多 agent 同类机制），正常路径下返回可直接按约定结构解析与校验。
+    3. 单 agent 阶段一默认输出文件名为 `state.json`，并被后续流程按该命名正确读取。
+    4. 受影响代码路径完成同步改造后，单 agent 端到端流程可运行，且不破坏多 agent 既有行为。
+    5. 若模型返回结构不符合约定，系统给出明确错误并中断，不静默降级为旧 EpisodePlan 格式。
+
+### 当前生效规则（v3.7）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
-- 无论单 agent 还是多 agent，阶段一最终输出文件结构都与 `state_schema.json` 同构；单 agent 不涉及字段以 `null` 表达。
+- 无论单 agent 还是多 agent，阶段一最终输出契约都对齐 `state_schema` 体系；其中单 agent 输出为精简子集（`schema_version/meta/global_constraints/plan/segments`），不包含 `critic/control`。
+- 单 agent 模式阶段一输出文件名固定为 `state.json`。
 - 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
+- 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
@@ -475,7 +493,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.6）
+### 6.4 当前版本成功指标（v3.7）
 
 | 指标 | 目标 |
 |------|------|
@@ -484,6 +502,7 @@
 | **时长准确度** | 当前阶段不作为强约束（以 plan 一致性与可听性为优先）；后续迭代可回收为规划侧目标。 |
 | **流程完整性** | 从输入到输出全流程自动化，无需人工干预核心环节 |
 | **多 Agent 可审计性** | 每次 refinement 可按轮次检索各 Agent 落盘文件与合并后 `state`，支撑对 Critic `actions` 与下游产出的人工核对 |
+| **单 Agent 契约一致性** | 单 agent 阶段一稳定输出 `state.json`，且结构限定为 state 子集（无 `critic/control`） |
 
 ---
 

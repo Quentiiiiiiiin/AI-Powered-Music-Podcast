@@ -16,6 +16,7 @@ from podcast_ai.modules.theme.critic_agent import CriticAgent
 from podcast_ai.modules.theme.music_curator_agent import MusicCuratorAgent
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
 from podcast_ai.modules.theme.script_writer_agent import ScriptWriterAgent
+from podcast_ai.modules.theme.llm_planner import ThemePlanner
 from podcast_ai.modules.theme.state import initialize_plan_state
 
 
@@ -245,3 +246,57 @@ def test_llm_client_400_hints_response_format_when_body_mentions_schema(
     )
     with pytest.raises(AIServiceError, match="response_format"):
         client.generate([{"role": "user", "content": "hi"}], response_format={"type": "json_schema"})
+
+
+def test_single_agent_planner_posts_state_subset_response_format(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bodies: list[dict[str, Any]] = []
+
+    reply = {
+        "schema_version": "v3.0",
+        "meta": {
+            "request_id": "req-single",
+            "theme": "T",
+            "theme_description": "desc",
+            "language": "zh-CN",
+            "target_duration_seconds": 3600,
+            "overall_bpm_range": [90, 120],
+        },
+        "global_constraints": {"tone": "克制", "language_style": "第一人称", "avoid": []},
+        "plan": {"segments_design": "三段", "emotion_curve": ["平静", "抬升", "收束"]},
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "order": 1,
+                "name": "开场",
+                "target_duration_seconds": 1200,
+                "bpm_range": [90, 104],
+                "mood": "舒缓",
+                "segment_design": "开场铺垫",
+                "playlist": [{"track": "A", "artist": "X", "bpm": 96}],
+                "script": {"segment_intro": "欢迎来到节目。", "between_tracks": [{"after_track_index": 0, "text": None}]},
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(reply, ensure_ascii=False)}}]},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    llm_cfg = LLMConfig(api_key="k", base_url="https://openrouter.ai/api/v1", model="m")
+    settings = Settings(app=AppConfig(output_dir=str(tmp_path)), llm=llm_cfg)
+    planner = ThemePlanner(llm_client=OpenAICompatibleLLMClient(llm_cfg), settings=settings)
+
+    state = planner.generate_plan_state(_episode_request(tmp_path), agent_mode="single_agent")
+
+    rf = bodies[0]["response_format"]
+    assert rf["json_schema"]["name"] == "podcast_single_agent_state_subset"
+    top_keys = set(rf["json_schema"]["schema"]["properties"].keys())
+    assert top_keys == {"schema_version", "meta", "global_constraints", "plan", "segments"}
+    assert set(state.keys()) == {"schema_version", "meta", "global_constraints", "plan", "segments"}

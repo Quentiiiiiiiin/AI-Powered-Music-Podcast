@@ -183,23 +183,37 @@ def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> N
 
 
 def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() -> None:
-    """v3.1：single_agent 生成的 PlanState（state.json）应与 state_schema.json 同构，并将 critic/control 置 null。"""
+    """v3.7：single_agent 生成的 PlanState 为子集结构，不包含 critic/control。"""
     payload = {
-        "style_description": "late-night test flow",
-        "overall_bpm_range": [90, 120],
+        "schema_version": "v3.0",
+        "meta": {
+            "request_id": "req_001",
+            "theme": "Late Night Chill",
+            "theme_description": "late-night test flow",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+            "overall_bpm_range": [90, 120],
+        },
+        "global_constraints": {
+            "tone": "克制",
+            "language_style": "第一人称",
+            "avoid": [],
+        },
+        "plan": {
+            "segments_design": "开场->中段->收束",
+            "emotion_curve": ["平静", "抬升", "收束"],
+        },
         "segments": [
             {
+                "segment_id": "seg_01",
+                "order": 1,
                 "name": "开场",
                 "target_duration_seconds": 300,
                 "bpm_range": [90, 105],
                 "mood": "chill",
-                "host_script": "欢迎来到 Luma Hits。",
-                "target_playlist": [
-                    {
-                        "recommended_tracks": ["Track A - Artist X"],
-                        "search_hints": {"bpm": 98},
-                    }
-                ],
+                "segment_design": "开场铺垫",
+                "playlist": [{"track": "Track A", "artist": "Artist X", "bpm": 98}],
+                "script": {"segment_intro": "欢迎来到 Luma Hits。", "between_tracks": [{"after_track_index": 0, "text": None}]},
             }
         ],
     }
@@ -213,6 +227,6 @@ def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() ->
 
     plan, state = planner.generate_plan_and_state(request, agent_mode="single_agent")
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
-    assert state["critic"] is None
-    assert state["control"] is None
+    assert "critic" not in state
+    assert "control" not in state
     assert len(state["segments"]) == len(plan.segments)

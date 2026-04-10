@@ -4,15 +4,21 @@ import json
 import logging
 import uuid
 from math import ceil
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodePlan, EpisodeRequest, EpisodeSegment, PlaylistItem
-from podcast_ai.infra.config import Settings, load_settings
+from podcast_ai.infra.config import Settings, load_settings, should_use_structured_output
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
+from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.agent_response_schemas import (
+    SINGLE_AGENT_STATE_SUBSET_SCHEMA,
+    build_openrouter_response_format,
+)
 from podcast_ai.modules.theme.json_repair import repair_and_standardize_json
 from podcast_ai.modules.theme.prompts import build_theme_planner_messages
-from podcast_ai.modules.theme.state import PlanState
+from podcast_ai.modules.theme.state import PlanState, validate_state_subset_for_single_agent
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +196,8 @@ class ThemePlanner:
             state = self._generate_plan_state_v3_orchestrator(request)
             return _episode_plan_from_state(state), state
 
-        plan = self.generate_plan(request, use_orchestrator=False)
-        return plan, _state_from_episode_plan_single_agent(request, plan)
+        state = self._generate_plan_state_single_agent_subset(request)
+        return _episode_plan_from_state(state), state
 
     def generate_plan_state(
         self,
@@ -202,8 +208,7 @@ class ThemePlanner:
         """仅生成 PlanState。通常由 pipeline 保存为 state.json。"""
         if agent_mode == "multi_agent":
             return self._generate_plan_state_v3_orchestrator(request)
-        plan = self.generate_plan(request, use_orchestrator=False)
-        return _state_from_episode_plan_single_agent(request, plan)
+        return self._generate_plan_state_single_agent_subset(request)
 
     def _generate_plan_state_v3_orchestrator(self, request: EpisodeRequest) -> PlanState:
         """v3.0：通过 PlanOrchestrator.run() 直接返回 PlanState。"""
@@ -221,6 +226,48 @@ class ThemePlanner:
         orchestrator = PlanOrchestrator(settings=self._settings)
         state = orchestrator.run(request)
         return _episode_plan_from_state(state)
+
+    def _generate_plan_state_single_agent_subset(self, request: EpisodeRequest) -> PlanState:
+        """
+        v3.7：single_agent 直接产出 PlanState 子集（无 critic/control）。
+        """
+        segments_hint = _suggest_segment_count(request.duration_minutes)
+        messages = build_theme_planner_messages(request, segments_hint)
+        request_id = str(uuid.uuid4())
+
+        seed_state: PlanState = {
+            "meta": {"request_id": request_id},
+            "control": {"iteration": 1},
+        }
+
+        gen_kwargs: Dict[str, Any] = {"temperature": 0.7}
+        structured = should_use_structured_output(self._settings.llm)
+        if structured:
+            gen_kwargs["response_format"] = build_openrouter_response_format(
+                "podcast_single_agent_state_subset",
+                SINGLE_AGENT_STATE_SUBSET_SCHEMA,
+            )
+
+        try:
+            raw = self._llm.generate(messages, **gen_kwargs)
+        except AIServiceError as exc:
+            raise AIServiceError(f"single_agent 规划调用失败（request_id={request_id}）：{exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise AIServiceError(f"single_agent 调用 LLM 失败（request_id={request_id}）：{exc!r}") from exc
+
+        data = parse_agent_json_response(
+            agent_label="Theme Planner(single_agent)",
+            raw=raw,
+            state=seed_state,
+            structured=structured,
+            allow_repair_fallback=not structured,
+            output_dir=Path(self._settings.app.output_dir),
+        )
+        try:
+            validate_state_subset_for_single_agent(data)
+        except AIServiceError as exc:
+            raise AIServiceError(f"single_agent state 子集校验失败（request_id={request_id}）：{exc}") from exc
+        return data
 
 
 def _episode_plan_from_state(state: PlanState) -> EpisodePlan:
@@ -327,120 +374,4 @@ def _episode_plan_from_state(state: PlanState) -> EpisodePlan:
         generation_trace=generation_trace or None,
     )
 
-
-def _parse_recommended_track_text(rec_text: str) -> tuple[str, str]:
-    """
-    粗略拆分推荐字符串为 track/artist，适配 `Track A - Artist X`。
-    """
-    raw = (rec_text or "").strip()
-    if not raw:
-        return "", ""
-
-    normalized = raw.replace("—", "-")
-    if " - " in normalized:
-        left, right = normalized.split(" - ", 1)
-        return left.strip(), right.strip()
-    return raw, ""
-
-
-def _extract_bpm_from_search_hints(search_hints: Dict[str, object]) -> int:
-    """
-    从 search_hints 尽量提取 bpm：
-    - 存在 `bpm` 则解析为 int
-    - 存在 `bpm_range`（长度 2）则取均值
-    - 未提供返回 0（用于保证 schema 的 bpm int 类型）
-    """
-    bpm_val = (search_hints or {}).get("bpm")
-    if bpm_val is not None:
-        try:
-            return int(float(bpm_val))
-        except Exception:  # noqa: BLE001
-            return 0
-
-    bpm_range = (search_hints or {}).get("bpm_range")
-    if isinstance(bpm_range, list) and len(bpm_range) == 2:
-        try:
-            lo = int(float(bpm_range[0]))
-            hi = int(float(bpm_range[1]))
-            return (lo + hi) // 2
-        except Exception:  # noqa: BLE001
-            return 0
-
-    return 0
-
-
-def _state_from_episode_plan_single_agent(request: EpisodeRequest, plan: EpisodePlan) -> PlanState:
-    """
-    映射 EpisodePlan -> PlanState（single_agent）。
-
-    约定：
-    - critic/control 不参与 single_agent：按 v3.1 填 null
-    - segments[*].playlist 根据 recommended_tracks 映射 {track, artist, bpm}
-    """
-    request_id = str(uuid.uuid4())
-    language = "zh-CN" if request.language == "zh" else "en-US"
-
-    overall_bpm_range = None
-    if plan.overall_bpm_range:
-        lo, hi = plan.overall_bpm_range
-        overall_bpm_range = [int(lo), int(hi)]
-
-    segments: List[Dict[str, Any]] = []
-    for idx, seg in enumerate(plan.segments):
-        bpm_range = None
-        if seg.bpm_range:
-            lo, hi = seg.bpm_range
-            bpm_range = [int(lo), int(hi)]
-
-        playlist: List[Dict[str, Any]] = []
-        for item in seg.target_playlist or []:
-            bpm = _extract_bpm_from_search_hints(item.search_hints or {})
-            for rec in item.recommended_tracks or []:
-                track, artist = _parse_recommended_track_text(rec)
-                playlist.append({"track": track, "artist": artist, "bpm": bpm})
-
-        if not playlist:
-            playlist = [{"track": "", "artist": "", "bpm": 0}]
-
-        segments.append(
-            {
-                "segment_id": f"seg_{idx + 1:02d}",
-                "order": idx + 1,
-                "name": seg.name,
-                "target_duration_seconds": int(seg.target_duration_seconds),
-                "bpm_range": bpm_range,
-                "mood": seg.mood or "",
-                "segment_design": "",
-                "playlist": playlist,
-                "script": {
-                    "segment_intro": seg.host_script or "",
-                    # single_agent 不生成段内过渡串词：使用默认占位保证字段存在
-                    "between_tracks": [{"after_track_index": 0, "text": None}],
-                },
-            },
-        )
-
-    return {
-        "schema_version": "v3.0",
-        "meta": {
-            "request_id": request_id,
-            "theme": request.topic,
-            "theme_description": plan.style_description or "",
-            "language": language,
-            "target_duration_seconds": int(request.duration_minutes * 60),
-            "overall_bpm_range": overall_bpm_range,
-        },
-        "global_constraints": {
-            "tone": "",
-            "language_style": "",
-            "avoid": [],
-        },
-        "plan": {
-            "segments_design": plan.style_description or "",
-            "emotion_curve": [],
-        },
-        "segments": segments,
-        "critic": None,
-        "control": None,
-    }
 

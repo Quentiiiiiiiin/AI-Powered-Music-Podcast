@@ -112,12 +112,8 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
     mock_generate_and_state: object,
     tmp_path: Path,
 ) -> None:
-    from podcast_ai.core.exceptions import PodcastAIError
     from podcast_ai.core.models import EpisodeSegment
-    from podcast_ai.modules.theme.state import (
-        initialize_plan_state,
-        validate_state_conforms_to_schema,
-    )
+    from podcast_ai.modules.theme.state import validate_state_conforms_to_schema
 
     request = EpisodeRequest(topic="Test Single", duration_minutes=10, language="zh", output_dir=tmp_path)
 
@@ -138,9 +134,42 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
         plan_id="plan_single",
     )
 
-    state = initialize_plan_state(request)
-    state["critic"] = None
-    state["control"] = None
+    state = {
+        "schema_version": "v3.0",
+        "meta": {
+            "request_id": "req_single",
+            "theme": "Test Single",
+            "theme_description": "single agent plan",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+            "overall_bpm_range": [90, 120],
+        },
+        "global_constraints": {
+            "tone": "克制",
+            "language_style": "第一人称",
+            "avoid": [],
+        },
+        "plan": {
+            "segments_design": "单段结构",
+            "emotion_curve": ["平静"],
+        },
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "order": 1,
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "bpm_range": [90, 100],
+                "mood": "chill",
+                "segment_design": "开场暖场",
+                "playlist": [{"track": "Track A", "artist": "Artist A", "bpm": 95}],
+                "script": {
+                    "segment_intro": "欢迎来到节目。",
+                    "between_tracks": [{"after_track_index": 0, "text": None}],
+                },
+            }
+        ],
+    }
 
     # pipeline 内部会做 schema 校验；这里直接确保返回的 state 处于合法 single_agent 形态
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
@@ -152,8 +181,8 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
     raw = json.loads(state_path.read_text(encoding="utf-8"))
     validate_state_conforms_to_schema(raw, agent_mode="single_agent")
 
-    assert raw["critic"] is None
-    assert raw["control"] is None
+    assert "critic" not in raw
+    assert "control" not in raw
 
 
 @patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
