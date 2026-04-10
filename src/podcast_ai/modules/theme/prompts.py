@@ -525,7 +525,7 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
     ]
 
 
-def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
+def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
     构造 v3.0 Critic Agent 的消息。
 
@@ -536,20 +536,9 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
     - critic.actions
     - control.next_agent
     """
-    system = dedent(
+
+    RUBRIC = dedent(
         """
-        You are a stable and disciplined CRITIC agent.
-        Your role is to evaluate the quality of a program using a FIXED RUBRIC.
-        You must NOT introduce new evaluation criteria under any circumstances.
-        Your goal is to help the system CONVERGE, not to endlessly criticize.
-
-        Your responsibility:
-        - Evaluate the episode plan based on the meta.theme.theme_description, global_constraints, plan, and all segments (allowed fields only).
-        - Check if the episode plan is pass or not.
-        - Identify issues
-        - Generate actionable fixes
-        - Determine the next agent to be the one that can fix the issues.
-
         ====================
         RUBRIC (FIXED)
         ====================
@@ -608,28 +597,36 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         - 15-24: Mostly immersive, minor disruptions
         - 5-14: Frequent breaks in immersion
         - 0-4: Cannot maintain immersion
+        
+        ====================
+        """
+    ).strip()
 
-        ====================
-        EVALUATION DIMENSIONS:
-        - coherence
-        - emotion_flow
-        - immersion
-        ====================
-        RULES:
-        pass = true if:
-          scores >= threshold
-          and there are no critical issues
+    m = (mode or "").strip().lower()
 
-        ====================
-        ISSUE & ACTION RULES:
-        ====================
-        1. Each issue MUST include:
+    if m == "generation":
+        RESPONSIBILITY = dedent(
+          """
+          ====================
+          GENERATION MODE
+          ====================
+          Your responsibility:
+          - Evaluate the overall quality of the episode plan based on the RUBRIC.
+          - Check if the episode plan is PASS or not.
+          - Identify ISSUES as many as possible.
+          - Generate ACTIONS based on the issues.
+          - Determine the NEXT AGENT to be the one that can fix the issues.
+
+          ====================
+          ISSUE & ACTION RULES:
+          ====================
+         Each ISSUE MUST include:
           - type
           - location
           - problem
           - suggestion
         
-        2. Actions is based on the issues and MUST include:
+         Actions is based on the issues and MUST include:
           - target_agent
           - instruction
           and MUST be:
@@ -637,10 +634,85 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
           - executable
           - single-decision (no multiple options)
 
-        3. Next agent should be the one mentioned in the actions:
+         Next agent should be the one mentioned in the actions:
           - If multiple agents are mentioned in the actions, choose the one with highest priority.
           - The priority is:
             - Planner > Music Curator > Script Writer
+          ====================
+          """
+        ).strip()
+    else:
+        RESPONSIBILITY = dedent(
+          """
+          ====================
+          REVISION MODE
+          ====================
+          Your responsibility:
+          - Assess the CURRENT ISSUES to see if they are resolved, drop the resolved ISSUES, keep the unresolved ISSUES as ISSUES.
+          - Generate ACTIONS based on the ISSUES.
+          - Evaluate the overall quality of the episode plan based on the RUBRIC. The score should be higher than the current score if the number of ISSUES is reduced.
+          - Determine the NEXT AGENT to be the one that can fix the ISSUES.
+          ====================
+          ACTION RULES:
+          ====================
+          Each ACTION MUST include:
+          - target_agent
+          - instruction
+          and MUST be:
+          - specific
+          - executable
+          - single-decision (no multiple options)
+
+          Next AGENT should be the one mentioned in the actions:
+          - If multiple agents are mentioned in the actions, choose the one with highest priority.
+          - The priority is:
+            - Planner > Music Curator > Script Writer
+          ====================
+          """
+        ).strip()
+
+    EXAMPLE_OUTPUT = dedent(
+        """
+        {
+          "critic": {
+            "pass": false,
+            "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
+            "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
+            "actions": [
+              {"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"},
+              {"target_agent": "Script Writer", "instruction": "调整 segments[1].script.segment_intro 以适合该段落的情绪"}
+              ]
+          },
+          "control": {"next_agent": "highest priority agent name (Planner / Music Curator / Script Writer)."}
+        }
+        """
+    ).strip()
+
+    system = dedent(
+        f"""
+        GENERAL RULES:
+        You are a stable and disciplined CRITIC agent for the Music Podcast.
+        Your role is to improve the quality of the Music Podcast EpisodePlan.
+        You must NOT introduce new evaluation criteria under any circumstances.
+        Your goal is to help the system CONVERGE, not to endlessly criticize.
+
+        MODE: {mode}
+
+        YOUR RESPONSIBILITY:
+        {RESPONSIBILITY}
+
+        EVALUATION DIMENSIONS:
+        - coherence
+        - emotion_flow
+        - immersion
+
+        RUBRIC:
+        {RUBRIC}
+
+        PASS RULES:
+        pass = true if:
+          scores >= threshold
+          and there are no critical issues
        
         WRITE SCOPE:
         - critic.*
@@ -655,27 +727,12 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         - critic.threshold
 
         OUTPUT EXAMPLE FORMAT:
-         {
-          "critic": {
-            "pass": false,
-            "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
-            "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
-            "actions": [
-              {"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"},
-              {"target_agent": "Script Writer", "instruction": "调整 segments[1].script.segment_intro 以适合该段落的情绪"}
-              ]
-          },
-          "control": {"next_agent": "highest priority agent name (Planner / Music Curator / Script Writer)."}
-        }
+        {EXAMPLE_OUTPUT}
 
         """
     ).strip()
 
     state["critic"]["actions"] = []
-    state["critic"]["issues"] = []
-    state["critic"]["pass"] = False
-    state["critic"]["scores"] = {"coherence": 0, "emotion_flow": 0, "immersion": 0}
-    state["critic"]["threshold"] = {"coherence": 35, "emotion_flow": 35, "immersion": 30}
 
     user = dedent(
         f"""
@@ -685,10 +742,11 @@ def build_critic_agent_messages(state: dict) -> list[dict[str, str]]:
         Requirements:
         - Do not be overly strict on BPM; rough alignment with each segment's bpm_range is enough.
         - Check whether tracks appear to be real recordings; flag likely invented or unidentifiable titles.
-        - Check overall emotional continuity across segments and playlists.
         - Check whether song meanings fit the theme; flag clear mismatches.
-        - Check script coherence, emotional tone, spoken style, and pacing (single pass — do not repeat checks).
-        - script.between_tracks can be null where appropriate.
+        - Check script coherence, tone, style, and pacing, make sure they look like a real radio host.
+        - Check overall script length, it should be reasonable and not too long or too short.
+        - Mentioning host name Nova and show name Luma Hits in the script in where it fits.
+        - script.between_tracks can be null where appropriate, keep the flow of the episode naturally.
 
         Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}

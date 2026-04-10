@@ -35,11 +35,12 @@ class CriticAgent:
     def run(
         self,
         state: PlanState,
+        mode: str = "generation",
         *,
         audit_sink: PlanAuditSink | None = None,
         round_iteration: int | None = None,
     ) -> PlanState:
-        messages = build_critic_agent_messages(state)
+        messages = build_critic_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.2}
         structured = should_use_structured_output(self._settings.llm)

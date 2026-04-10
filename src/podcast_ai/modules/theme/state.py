@@ -82,7 +82,7 @@ def initialize_plan_state(
         "critic": {
             "pass": False,
             "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
-            "threshold": {"coherence": 35, "emotion_flow": 35, "immersion": 30},
+            "threshold": {"coherence": 28, "emotion_flow": 28, "immersion": 24},
             "issues": [],
             "actions": [],
         },
