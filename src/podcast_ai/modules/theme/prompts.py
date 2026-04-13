@@ -154,6 +154,7 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
 
         GENERAL RULES:
         - Maintain consistency with theme and emotion_curve
+        - No ASCII " inside any JSON string. Use 「」 instead.
         - Do not generate playlist
         - Do not generate script
 
@@ -287,6 +288,7 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
 
         GENERAL RULES:
         - Do NOT modify segment structure
+        - No ASCII " inside any JSON string. Use 「」 instead.
         - Maintain BPM consistency within segment range
         - Maintain emotional continuity
 
@@ -430,6 +432,7 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
 
         GENERAL RULES:
         - Write in the language given by state.meta.language.
+        - No ASCII " inside any JSON string. Use 「」 instead.
         - segments[*].script.between_tracks should be null where appropriate.
 
         MODES:
@@ -714,6 +717,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         Your role is to improve the quality of the Music Podcast EpisodePlan.
         You must NOT introduce new evaluation criteria under any circumstances.
         Your goal is to help the system CONVERGE, not to endlessly criticize.
+        No ASCII " inside any JSON string. Use 「」 instead.
 
         MODE: {mode}
 

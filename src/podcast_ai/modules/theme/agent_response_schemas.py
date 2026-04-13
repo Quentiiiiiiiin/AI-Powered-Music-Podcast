@@ -138,9 +138,9 @@ CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
                 "scores": {
                     "type": "object",
                     "properties": {
-                        "coherence": {"type": "integer"},
-                        "emotion_flow": {"type": "integer"},
-                        "immersion": {"type": "integer"},
+                        "coherence": {"type": "integer", "minimum": 0, "maximum": 35},
+                        "emotion_flow": {"type": "integer", "minimum": 0, "maximum": 35},
+                        "immersion": {"type": "integer", "minimum": 0, "maximum": 30},
                     },
                     "required": ["coherence", "emotion_flow", "immersion"],
                     "additionalProperties": False,
