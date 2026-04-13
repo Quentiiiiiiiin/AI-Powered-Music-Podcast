@@ -17,12 +17,11 @@ from podcast_ai.infra.tts_client import TTSClient
 from podcast_ai.infra.storage.paths import (
     generate_episode_id,
     generate_plan_id,
-    get_episode_root,
     get_final_audio_path,
     get_mix_output_path,
-    get_playlist_markdown_path,
     load_episode_plan,
     save_episode_plan,
+    save_episode_state_snapshot,
     save_state_json,
 )
 from podcast_ai.modules.exporter.exporter import Exporter
@@ -65,11 +64,13 @@ def plan_episode(
     request: EpisodeRequest,
     settings: Settings | None = None,
     agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
-) -> Tuple[EpisodePlan, Path, Path, Path]:
+) -> Tuple[EpisodePlan, Path, Path]:
     """
-    阶段一：调用 ThemePlanner 生成 EpisodePlan，并落盘 JSON + playlist Markdown。
+    阶段一：调用 ThemePlanner 生成 EpisodePlan（内存对象），并落盘 state.json + {episode_id}.json。
 
-    返回：(plan, plan_json_path, playlist_markdown_path, state_json_path)
+    不再落盘 ``plans/<plan_id>.json``；阶段二仍可通过 ``save_plan_to_disk`` 等路径单独生成 EpisodePlan JSON。
+
+    返回：(plan, state_json_path, episode_snapshot_json_path)
     """
     effective_settings = settings or load_settings()
     with log_timing(logger, "plan_episode"):
@@ -86,53 +87,12 @@ def plan_episode(
         episode_id = generate_episode_id()
         plan_id = generate_plan_id(episode_id)
 
-        # 将 plan_id 写回模型（保持持久化与内存一致）
+        # 内存中保留 plan_id，便于 CLI 摘要与后续若需单独落盘 EpisodePlan
         plan = plan.model_copy(update={"plan_id": plan_id})
 
-        plan_json_path = save_episode_plan(
-            plan=plan,
-            output_dir=output_dir,
-            episode_id=episode_id,
-            plan_id=plan_id,
-        )
-
-        episode_root = get_episode_root(output_dir, episode_id)
         state_json_path = save_state_json(state=state, output_dir=output_dir, episode_id=episode_id)
-        playlist_md_path = get_playlist_markdown_path(episode_root)
-        playlist_md_path.parent.mkdir(parents=True, exist_ok=True)
-
-        lines: list[str] = []
-        lines.append(f"# Episode Plan - {request.topic}")
-        lines.append("")
-        lines.append(f"- 目标时长：{request.duration_minutes} 分钟")
-        lines.append(f"- 语言：{request.language}")
-        lines.append(f"- Episode ID：{episode_id}")
-        lines.append(f"- Plan ID：{plan_id}")
-        lines.append("")
-
-        for idx, seg in enumerate(plan.segments, start=1):
-            lines.append(f"## 段落 {idx} - {seg.name}")
-            lines.append("")
-            lines.append(f"- 目标时长（秒）：{seg.target_duration_seconds}")
-            if seg.bpm_range:
-                lines.append(f"- BPM 区间：{seg.bpm_range[0]}–{seg.bpm_range[1]}")
-            if seg.mood:
-                lines.append(f"- 情绪：{seg.mood}")
-            lines.append("")
-            lines.append("### 目标歌单建议")
-            if not seg.target_playlist:
-                lines.append("- （无推荐条目）")
-            else:
-                for item in seg.target_playlist:
-                    rec = "; ".join(item.recommended_tracks) if item.recommended_tracks else "（未给出曲目名称）"
-                    lines.append(f"- 推荐：{rec}")
-                    if item.search_hints:
-                        lines.append(f"  - 搜索提示：{item.search_hints}")
-            lines.append("")
-
-        playlist_md_path.write_text("\n".join(lines), encoding="utf-8")
-
-        return plan, plan_json_path, playlist_md_path, state_json_path
+        snapshot_json_path = save_episode_state_snapshot(state=state, output_dir=output_dir, episode_id=episode_id)
+        return plan, state_json_path, snapshot_json_path
 
 
 def create_episode(

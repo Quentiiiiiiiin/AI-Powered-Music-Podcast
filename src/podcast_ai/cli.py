@@ -103,7 +103,7 @@ def plan_episode_cli(
     )
 
     try:
-        plan, plan_path, playlist_path, state_path = pipeline_plan_episode(
+        plan, state_path, snapshot_path = pipeline_plan_episode(
             request,
             settings=settings,
             agent_mode=agent_mode,
@@ -113,10 +113,10 @@ def plan_episode_cli(
         raise typer.Exit(code=1) from exc
 
     typer.echo("规划完成：")
-    typer.echo(f"- Episode ID: {plan.plan_id}")
-    typer.echo(f"- 规划文件（JSON）：{plan_path}")
-    typer.echo(f"- 目标歌单（Markdown）：{playlist_path}")
+    typer.echo(f"- Episode ID: {snapshot_path.stem}")
+    typer.echo(f"- Plan ID（内存标识，未单独落盘）：{plan.plan_id}")
     typer.echo(f"- state.json（统一状态）：{state_path}")
+    typer.echo(f"- {snapshot_path.name}（阶段一快照）：{snapshot_path}")
 
 
 _INIT_CONFIG_YAML = """app:

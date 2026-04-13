@@ -80,9 +80,8 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 
 - 调用 LLM 生成节目结构与目标歌单规划
 - 输出：
-  - `output/episodes/<episode_id>/plans/<plan_id>.json`（兼容阶段二读取）
-  - `output/episodes/<episode_id>/plans/state.json`（v3.1 统一 state_schema 同结构输出）
-  - `output/episodes/<episode_id>/playlist.md`（人类可读目标歌单）
+  - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态）
+  - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 state 快照，文件名与 `episode_id` 一致）
 
 **v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。其中 `iteration{i}` 与编排器本轮外层层级一致；`iteration{i}_{planner|music_curator|script_writer|critic}.json` 含该步原始 LLM 文本与解析后的 patch，`iteration{i}_state.json` 为该行结束后的完整 `PlanState`。写盘失败只记日志，不影响规划成功/失败判定。可在配置中关闭 `app.multi_agent_audit_enabled`。
 
@@ -93,15 +92,16 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 ```
 规划完成：
 - Episode ID: ep_20250309T120000Z_abc12345
-- 规划文件（JSON）：output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json
+- Plan ID（内存标识，未单独落盘）：ep_xxx_plan_yyyyyy
 - state.json（统一状态）：output/episodes/ep_xxx/plans/state.json
-- 目标歌单（Markdown）：output/episodes/ep_xxx/playlist.md
+- ep_xxx.json（阶段一快照）：output/episodes/ep_xxx/plans/ep_xxx.json
 ```
 
 ### 阶段二：制作（从规划继续）
 
 ```bash
-podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json D:/Music/本期节目
+# 阶段二仍读取 EpisodePlan 格式的 JSON（可由测试/工具单独落盘，或由后续迭代从 state 生成）
+podcast-ai create-episode path/to/episode_plan.json D:/Music/本期节目
 ```
 
 - 扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出
@@ -122,7 +122,7 @@ podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx_plan_xxx.json D:/M
 podcast-ai scan-library D:/Music          # 扫描音乐库并缓存元数据
 podcast-ai init-config --force            # 强制覆盖配置文件
 podcast-ai plan-episode "主题" 30 -l en   # 英文规划
-podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生成（critic/control 置 null）
+podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生成（输出 state 子集）
 ```
 
 ---
@@ -150,12 +150,11 @@ podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生�
 output/
   episodes/
     ep_YYYYMMDDTHHMMSSZ_xxxxxxxx/
-      plans/           # v3.1 统一规划目录
-        state.json     # 与 state_schema.json 同结构的统一状态（阶段一产物）
-        <plan_id>.json # 规划文件（阶段二兼容读取）
+      plans/           # 阶段一统一规划目录
+        state.json     # 与 state_schema.json 同结构的统一状态
+        <episode_id>.json  # 与 state 内容一致的快照（文件名 = episode_id）
       mix/             # 中间混音 wav
       final/           # 最终 MP3、Show Notes
-      playlist.md      # 目标歌单（阶段一产出）
 ```
 
 ---

@@ -201,6 +201,22 @@
     4. 受影响代码路径完成同步改造后，单 agent 端到端流程可运行，且不破坏多 agent 既有行为。
     5. 若模型返回结构不符合约定，系统给出明确错误并中断，不静默降级为旧 EpisodePlan 格式。
 
+- **v3.8（迭代十六：阶段一统一新文件产物）**：
+  - **问题**：当前两种模式在阶段一输出产物不一致：单 agent 额外产出 `playlist` 文件，而多 agent 不产出该文件，导致消费端与验收口径分叉。
+  - **变更目标**：
+    1. 阶段一统一两种模式输出：保留 `state` 文件，并统一新增以 `episode_id` 命名的新版 JSON（简称“新文件”）。
+    2. 去除单 agent 模式下独有的 `playlist` 文件产物。
+    3. 新文件结构以 `Sample_EpisodePlan_NEW.json` 为准，基于 state 简化，仅保留必要字段：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    4. 本轮仅覆盖阶段一输出契约与写盘，不要求阶段二立即消费该新文件（后续迭代再适配）。
+  - **功能归类**：优化（阶段一产物契约统一、可维护性与对接稳定性提升）。
+  - **User Story（用户视角）**：作为使用单/多 agent 两种模式的创作者，我希望阶段一产物命名和结构统一，这样我在查看结果或接入后续流程时只需要维护一套输出认知。
+  - **Acceptance Criteria（验收标准）**：
+    1. 单 agent 与多 agent 在阶段一均输出两类文件：`state` 文件 + 以 `episode_id` 命名的新文件；不再输出 `playlist` 文件。
+    2. 新文件字段严格对齐 `Sample_EpisodePlan_NEW.json` 的约定子集：仅含 `schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    3. 新文件命名稳定且可追溯（以 `episode_id` 命名），两种模式行为一致。
+    4. 阶段一相关代码（生成、映射、校验、写盘）完成同步改造后，单/多 agent 路径均可正常结束并产出统一文件集。
+    5. 当新文件映射或字段缺失导致不满足约定时，系统返回明确错误，不静默回退旧产物格式。
+
 ### 当前生效规则（v3.7）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
@@ -209,6 +225,8 @@
 - 单 agent 模式阶段一输出文件名固定为 `state.json`。
 - 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
 - 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
+- 阶段一在单/多 agent 两种模式下统一输出：`state` 文件 + 以 `episode_id` 命名的新 JSON 文件；单 agent 历史 `playlist` 文件已移除。
+- 以 `episode_id` 命名的新文件为 state 的简化视图，字段仅保留：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
@@ -503,6 +521,7 @@
 | **流程完整性** | 从输入到输出全流程自动化，无需人工干预核心环节 |
 | **多 Agent 可审计性** | 每次 refinement 可按轮次检索各 Agent 落盘文件与合并后 `state`，支撑对 Critic `actions` 与下游产出的人工核对 |
 | **单 Agent 契约一致性** | 单 agent 阶段一稳定输出 `state.json`，且结构限定为 state 子集（无 `critic/control`） |
+| **阶段一产物统一性** | 单/多 agent 均产出一致文件集（`state` + `episode_id` 新文件），且不再产出 `playlist` 文件 |
 
 ---
 

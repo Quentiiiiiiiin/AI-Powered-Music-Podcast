@@ -52,7 +52,7 @@ def _mock_plan_json() -> str:
 
 @patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
 def test_plan_episode_with_mock_llm(mock_generate_and_state: object, tmp_path: Path) -> None:
-    """plan_episode 在 mock 下应正常完成并落盘（含 state.json）。"""
+    """plan_episode 在 mock 下应正常完成并落盘（state.json + episode_id.json）。"""
     plan = EpisodePlan(
         segments=[
             EpisodeSegment(
@@ -82,14 +82,19 @@ def test_plan_episode_with_mock_llm(mock_generate_and_state: object, tmp_path: P
 
     mock_generate_and_state.return_value = (plan, initialize_plan_state(request))
 
-    result_plan, plan_path, playlist_path, state_path = plan_episode(request)
+    result_plan, state_path, snapshot_path = plan_episode(request)
 
     assert result_plan.plan_id
-    assert plan_path.exists()
-    assert plan_path.suffix == ".json"
-    assert playlist_path.exists()
-    assert "Test" in playlist_path.read_text(encoding="utf-8")
     assert state_path.exists()
+    assert state_path.name == "state.json"
+    assert snapshot_path.exists()
+    assert snapshot_path.name.endswith(".json")
+    assert snapshot_path.name != "state.json"
+    assert snapshot_path.stem == state_path.parent.parent.name
+    assert json.loads(state_path.read_text(encoding="utf-8")) == json.loads(snapshot_path.read_text(encoding="utf-8"))
+    plans_dir = state_path.parent
+    assert {p.name for p in plans_dir.glob("*.json")} == {"state.json", snapshot_path.name}
+    assert not (state_path.parent.parent / "playlist.md").exists()
 
 
 def test_save_and_load_plan_roundtrip(tmp_path: Path, sample_plan: EpisodePlan) -> None:
@@ -175,11 +180,15 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
     mock_generate_and_state.return_value = (plan, state)
 
-    _, _, _, state_path = plan_episode(request, agent_mode="single_agent")
+    _, state_path, snapshot_path = plan_episode(request, agent_mode="single_agent")
     assert state_path.exists()
+    assert snapshot_path.exists()
+    assert not (state_path.parent.parent / "playlist.md").exists()
 
     raw = json.loads(state_path.read_text(encoding="utf-8"))
     validate_state_conforms_to_schema(raw, agent_mode="single_agent")
+    snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot_raw == raw
 
     assert "critic" not in raw
     assert "control" not in raw
@@ -218,11 +227,15 @@ def test_v31_plan_episode_multi_agent_outputs_valid_state_json(
     validate_state_conforms_to_schema(state, agent_mode="multi_agent")
     mock_generate_and_state.return_value = (plan, state)
 
-    _, _, _, state_path = plan_episode(request, agent_mode="multi_agent")
+    _, state_path, snapshot_path = plan_episode(request, agent_mode="multi_agent")
     assert state_path.exists()
+    assert snapshot_path.exists()
+    assert not (state_path.parent.parent / "playlist.md").exists()
 
     raw = json.loads(state_path.read_text(encoding="utf-8"))
     validate_state_conforms_to_schema(raw, agent_mode="multi_agent")
+    snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot_raw == raw
 
     assert isinstance(raw["critic"], dict)
     assert isinstance(raw["control"], dict)

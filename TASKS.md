@@ -1,139 +1,131 @@
-## 版本 v3.7（迭代十五：单 Agent 输出对齐 State Schema 子集）
+## 版本 v3.8（迭代十六：阶段一统一新文件产物）
 
-基于 PRD v3.7：阶段一 `single_agent` 不再输出 EpisodePlan 风格 JSON，而是直接输出 State 子集结构，顶层仅包含：
-`schema_version`、`meta`、`global_constraints`、`plan`、`segments`（不包含 `critic`、`control`）。
-同时单 agent 也对齐结构化输出主路径（`response_format/json_schema`），阶段一产物文件名统一为 `state.json`。
+基于 PRD v3.8：阶段一在 `single_agent` 与 `multi_agent` 下统一输出文件集：
+1) 保留 `state` 文件（当前为 `state.json`）；
+2) 新增一个以 `episode_id` 命名的新版 JSON 文件（简称“新文件”）；
+3) 移除单 agent 历史 `playlist` 文件产物；
+4) 本轮仅改阶段一生成/映射/校验/写盘契约，不要求阶段二立即消费该新文件。
 
 ---
 
-### Task 01 - 定义单 Agent 的 State 子集 Schema（结构化输出契约）
-- **Task name**: v3.7 - single_agent `response_format` schema
-- **目标**: 为单 agent 的 Theme Planner 定义严格 JSON Schema，确保模型直接按 State 子集输出，禁止 `critic/control` 与额外顶层字段。
+### Task 01 - 明确“新文件”命名与路径规范（storage 层）
+- **Task name**: v3.8 - 新文件路径工具与命名规则
+- **目标**: 在存储层明确并固化“以 `episode_id` 命名的新 JSON 文件”路径，避免各处拼路径导致不一致。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 在 `src/podcast_ai/modules/theme/agent_response_schemas.py` 新增单 agent 专用 schema（如 `SINGLE_AGENT_STATE_SUBSET_SCHEMA`）：
-    - 顶层 required：`schema_version/meta/global_constraints/plan/segments`
-    - `additionalProperties: false`
-    - `critic/control` 不在 properties 中（即不允许输出）
-  - 复用现有 `build_openrouter_response_format(...)`，为单 agent 生成 `response_format`。
-  - 与 `state_schema.json` 对齐字段命名/层级；仅裁剪顶层，不引入新字段。
-- **Input**: `state_schema.json` 与现有多 agent schema 约束
-- **Output**: 可直接用于 single agent 调用的 strict schema
+  - 在 `src/podcast_ai/infra/storage/paths.py` 新增（或补充）路径函数，例如：
+    - `get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path`
+  - 文件名规则固定为：`{episode_id}.json`
+  - 放置目录与 `state.json` 的关系需一次性约定（推荐同在 `plans/` 下，便于阶段一产物聚合）。
+  - 增加读写 helper（可选但推荐）：
+    - `save_episode_state_snapshot(...)`
+    - `load_episode_state_snapshot(...)`
+- **Input**: `output_dir`、`episode_id`、state 数据
+- **Output**: 稳定的新文件路径与写盘入口
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
-  - 参考：`state_schema.json`
+  - `src/podcast_ai/infra/storage/paths.py`
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 02 - 调整单 Agent Prompt 与解析目标（从 EpisodePlan 转为 State 子集）
-- **Task name**: v3.7 - `build_theme_planner_messages` 输出契约升级
-- **目标**: 让单 agent 提示词与解析逻辑都面向 State 子集，而非 EpisodePlan 风格字段（如 `host_script/target_playlist`）。
-- **类型**: backend
+### Task 02 - 阶段一写盘统一：输出 `state.json` + `episode_id.json`
+- **Task name**: v3.8 - `plan_episode` 统一文件产物
+- **目标**: 在 `plan_episode` 中，无论单/多 agent 都统一产出两份 JSON（`state.json` 与新文件），并确保内容一致性可追溯。
+- **类型**: api
 - **依赖关系**: Task 01
 - **Description**:
-  - 更新 `src/podcast_ai/modules/theme/prompts.py` 中 `build_theme_planner_messages(...)`：
-    - 明确要求输出 State 子集 JSON；
-    - 明确禁止 `critic/control`；
-    - 强调字段与层级（snake_case、required）。
-  - 在 `src/podcast_ai/modules/theme/llm_planner.py` 的单 agent 路径中：
-    - 解析目标改为 `PlanState` 子集 dict，而不是先解析 EpisodePlan 风格再转换；
-    - 去掉/收敛仅服务 EpisodePlan 风格的解析分支（避免双轨心智）。
-  - 保持 `EpisodePlan` 对外兼容：需要返回 `EpisodePlan` 的地方由统一转换函数从 State 子集构造，而不是反向拼装。
-- **Input**: EpisodeRequest、single_agent 模式
-- **Output**: 单 agent 直接产出 State 子集内存对象
+  - 修改 `src/podcast_ai/core/pipeline.py::plan_episode`：
+    - 保持现有 `save_state_json(...)`；
+    - 新增写盘 `episode_id.json`（由 Task 01 的路径函数生成）；
+    - 两个文件均来自同一份内存 state（避免双源漂移）。
+  - 返回值同步更新（如需）：让调用方拿到新文件路径，避免 CLI 重新推导。
+  - 保持多 agent 行为不变；single agent 与 multi agent 仅在 state 内容上不同，不在文件集合上分叉。
+- **Input**: `EpisodeRequest`、`agent_mode`
+- **Output**: 阶段一统一 JSON 产物集合
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/llm_planner.py`
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 03 - 单 Agent 接入结构化输出（response_format/json_schema）
-- **Task name**: v3.7 - ThemePlanner single_agent structured output
-- **目标**: 单 agent 调用与多 agent 对齐，启用 `response_format` 严格约束，降低格式漂移与解析失败。
-- **类型**: backend
-- **依赖关系**: Task 01、Task 02
-- **Description**:
-  - 在 `llm_planner.py` 的 single_agent 调用中，按 `should_use_structured_output(...)` 判定是否附带 `response_format`；
-  - 启用时传入 Task 01 的 schema（`json_schema.strict=true`）；
-  - 保持错误处理：若结构化输出不可用/返回非约定结构，抛清晰错误（含请求标识），不静默回退。
-- **Input**: LLMConfig、single_agent messages
-- **Output**: 单 agent 正常路径可直接解析为约定 State 子集
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/llm_planner.py`
-  - `src/podcast_ai/infra/config.py`（只读复用 `should_use_structured_output`）
-- **Estimated complexity**: S（1-2 小时）
-
----
-
-### Task 04 - State 校验拆分：支持“单 Agent 子集”专用验证
-- **Task name**: v3.7 - single_agent subset schema validation
-- **目标**: 将当前 `validate_state_conforms_to_schema(..., agent_mode="single_agent")` 的“critic/control 可为 null”逻辑，调整为“single_agent 子集不含 critic/control 也合法”的显式校验语义。
-- **类型**: backend
-- **依赖关系**: Task 02
-- **Description**:
-  - 在 `src/podcast_ai/modules/theme/state.py` 增加单 agent 子集校验入口（示例）：
-    - `validate_state_subset_for_single_agent(state)` 或在现有函数增加 `schema_variant="single_agent_subset"` 参数；
-  - 校验规则：
-    - 顶层必须且仅允许 `schema_version/meta/global_constraints/plan/segments`
-    - 不允许出现 `critic/control`
-    - 子结构类型仍与 `state_schema.json` 对应节点一致
-  - 保持多 agent 校验行为不变（避免影响 v3.6）。
-- **Input**: single_agent state dict
-- **Output**: 单 agent 子集校验通过/失败（可定位错误）
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/state.py`
-  - 参考：`state_schema.json`
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/infra/storage/paths.py`
 - **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 05 - 阶段一链路同步：plan_episode / 落盘 / 调用契约
-- **Task name**: v3.7 - stage1 single_agent contract sync
-- **目标**: 同步阶段一受影响路径，保证 single_agent 产物与文件命名契约一致（`state.json`），且不破坏 multi_agent。
+### Task 03 - 移除阶段一 `playlist` 文件产物与相关文案
+- **Task name**: v3.8 - 清理历史 playlist 产物
+- **目标**: 去除单 agent 历史 `playlist` 文件写盘逻辑，避免与 v3.8 统一产物目标冲突。
 - **类型**: api
-- **依赖关系**: Task 02、Task 03、Task 04
+- **依赖关系**: Task 02
 - **Description**:
-  - `src/podcast_ai/core/pipeline.py`：
-    - single_agent 下调用新的 single-agent state 生成与校验入口；
-    - 保持落盘文件名 `state.json`（现有 `save_state_json` 复用即可）；
-    - 若仍需返回 `EpisodePlan` 给 CLI 展示，使用统一转换函数从 state 子集生成。
-  - `src/podcast_ai/cli.py`：
-    - 文案与帮助信息同步（说明 single_agent 输出已是 state 子集，统一落 `state.json`）。
-  - 若阶段二仍读取 plan JSON，本次迭代不强行改阶段二；仅保证阶段一契约自洽并可独立验证。
-- **Input**: `plan-episode --agent-mode single_agent`
-- **Output**: 阶段一输出 `state.json`（单 agent 子集），并可返回/展示必要路径信息
+  - 在 `pipeline.plan_episode` 删除 `playlist` 生成与写入代码（当前使用 `get_playlist_markdown_path` + markdown 组装）。
+  - 更新 CLI 输出文案，删除“目标歌单（Markdown）”相关输出，改为展示两份 JSON 路径。
+  - 清理未使用 import（`get_playlist_markdown_path` 等）与注释，提升可读性。
+- **Input**: `plan_episode` 结果
+- **Output**: 无 `playlist.md` 产物的统一阶段一输出
 - **Files involved**:
   - `src/podcast_ai/core/pipeline.py`
   - `src/podcast_ai/cli.py`
-  - `src/podcast_ai/infra/storage/paths.py`（通常无需改，仅确认）
+  - `src/podcast_ai/infra/storage/paths.py`（仅清理引用）
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 04 - 阶段一契约同步：校验/映射/读取接口一致
+- **Task name**: v3.8 - 统一阶段一内部契约
+- **目标**: 确保阶段一涉及的“生成、映射、校验、写盘”链路在单/多 agent 下都能按统一文件契约结束，不引入分支特判。
+- **类型**: backend
+- **依赖关系**: Task 02、Task 03
+- **Description**:
+  - 保持 `validate_state_conforms_to_schema(...)` 在写盘前统一执行；
+  - 如 `ThemePlanner.generate_plan_and_state(...)` / `generate_plan_state(...)` 的返回契约受影响，做最小同步（不引入新模型层）；
+  - 明确调用方读取契约：阶段一标准入口应优先面向 `state.json` / `episode_id.json`，避免继续依赖历史 `playlist`。
+  - 本轮不改阶段二消费，仅确保阶段一产物契约清晰且可被后续迭代接入。
+- **Input**: single/multi agent 阶段一输出
+- **Output**: 阶段一统一契约稳定运行
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/llm_planner.py`
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/modules/theme/state.py`
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 05 - 测试回归：统一文件集与模式一致性
+- **Task name**: v3.8 - 文件产物统一回归测试
+- **目标**: 自动化验证 v3.8 验收点：单/多 agent 都输出相同文件类型集合（`state.json` + `episode_id.json`），且不再输出 `playlist.md`。
+- **类型**: backend
+- **依赖关系**: Task 01-04
+- **Description**:
+  - 更新/新增测试：
+    1) `plan_episode(single_agent)`：存在 `state.json` 与 `episode_id.json`，不存在 `playlist.md`；
+    2) `plan_episode(multi_agent)`：同样文件集合；
+    3) 新文件命名与 `episode_id` 一致；
+    4) 两文件内容字段契约符合预期（至少校验顶层结构与关键字段）。
+  - 优先扩展：
+    - `tests/test_pipeline.py`
+    - 必要时新增 `tests/test_stage1_outputs.py`
+- **Input**: stub LLM / tmp_path / 两种 agent_mode
+- **Output**: `pytest` 通过，v3.8 产物契约受控
+- **Files involved**:
+  - `tests/test_pipeline.py`
+  - （可选）`tests/test_stage1_outputs.py`
 - **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 06 - 测试与回归：单 Agent 子集契约 + 不破坏多 Agent
-- **Task name**: v3.7 - single_agent subset e2e regression
-- **目标**: 覆盖 v3.7 核心验收点，并回归 multi_agent 行为不受影响。
-- **类型**: backend
-- **依赖关系**: Task 01-05
+### Task 06（可选）- README 与命令行帮助同步
+- **Task name**: v3.8（可选）- 产物说明文档对齐
+- **目标**: 避免文档继续描述旧的 `playlist` 产物，降低使用误解成本。
+- **类型**: backend（文档）
+- **依赖关系**: Task 03
 - **Description**:
-  - 新增/更新测试：
-    1) `single_agent` 生成的 state 顶层仅含五个 key（无 `critic/control`）；
-    2) single_agent 调用在启用结构化输出时携带正确 `response_format`；
-    3) 阶段一落盘文件名为 `state.json`；
-    4) `multi_agent` 现有测试继续通过（特别是 `critic/control` 仍存在、orchestrator 流程不变）。
-  - 优先复用现有：
-    - `tests/test_llm_structured_output.py`
-    - `tests/test_pipeline.py`
-    - `tests/test_theme_state.py`
-- **Input**: stub LLM / mock transport / tmp_path
-- **Output**: `pytest` 通过，v3.7 契约受控
+  - 更新 `README.md` 的阶段一输出说明：
+    - 删除 `playlist.md`
+    - 增加 `state.json` + `episode_id.json` 说明与示例路径
+  - 同步 `cli.py` 子命令 help 文案。
+- **Input**: v3.8 新产物契约
+- **Output**: 文档与实际行为一致
 - **Files involved**:
-  - `tests/test_llm_structured_output.py`
-  - `tests/test_pipeline.py`
-  - `tests/test_theme_state.py`
-  - （可选）新增 `tests/test_single_agent_state_subset.py`
-- **Estimated complexity**: M（2-3 小时）
+  - `README.md`
+  - `src/podcast_ai/cli.py`
+- **Estimated complexity**: XS（0.5-1 小时）
 

@@ -72,14 +72,6 @@ def get_show_notes_path(episode_root: Path, episode_id: str) -> Path:
     return episode_root.joinpath("final", f"{episode_id}_show_notes.md")
 
 
-def get_playlist_markdown_path(episode_root: Path) -> Path:
-    """
-    人类可读的目标歌单 Markdown 路径：
-      {episode_root}/playlist.md
-    """
-    return episode_root.joinpath("playlist.md")
-
-
 def get_tts_cache_dir(output_dir: Path) -> Path:
     """
     TTS 缓存目录（全局共享，而不是按 episode 拆分）：
@@ -155,6 +147,32 @@ def load_state_json(path: Path) -> PlanState:
     raw: Any = json.loads(text)
     if not isinstance(raw, dict):
         raise ValueError(f"state.json 格式错误：期望 object，但得到 {type(raw).__name__}")
+    return raw
+
+
+def get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path:
+    """
+    v3.8：阶段一新增的快照文件路径：
+      {episode_root}/plans/{episode_id}.json
+    """
+    return episode_root.joinpath("plans", f"{episode_id}.json")
+
+
+def save_episode_state_snapshot(state: PlanState, output_dir: Path, episode_id: str) -> Path:
+    """将 PlanState 写入 {episode_id}.json，并返回文件路径。"""
+    episode_root = get_episode_root(output_dir, episode_id)
+    snapshot_path = get_episode_state_snapshot_path(episode_root, episode_id)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return snapshot_path
+
+
+def load_episode_state_snapshot(path: Path) -> PlanState:
+    """从 {episode_id}.json 加载 PlanState。"""
+    text = path.read_text(encoding="utf-8")
+    raw: Any = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} 格式错误：期望 object，但得到 {type(raw).__name__}")
     return raw
 
 
