@@ -116,7 +116,7 @@ def plan_episode_cli(
     typer.echo(f"- Episode ID: {snapshot_path.stem}")
     typer.echo(f"- Plan ID（内存标识，未单独落盘）：{plan.plan_id}")
     typer.echo(f"- state.json（统一状态）：{state_path}")
-    typer.echo(f"- {snapshot_path.name}（阶段一快照）：{snapshot_path}")
+    typer.echo(f"- {snapshot_path.name}（阶段一对接子集文件，v3.8）：{snapshot_path}")
 
 
 _INIT_CONFIG_YAML = """app:

@@ -67,7 +67,11 @@
     "actions": [
       {
         "target_agent": "Music Curator",
-        "instruction": "调整 playlist 情绪曲线并减少 BPM 跳变"
+        "instruction": "替换segments[1].playlist[2] 为更平缓的歌曲"
+      },
+      {
+        "target_agent": "Music Curator",
+        "instruction": "删除segments[1].playlist[4] 以缩短时长"
       }
     ]
   },

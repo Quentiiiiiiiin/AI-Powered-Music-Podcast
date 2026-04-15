@@ -701,8 +701,8 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
             "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
             "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
             "actions": [
-              {"target_agent": "Music Curator", "instruction": "更换 segments[1].playlist[2] 以适合该段落的情绪"},
-              {"target_agent": "Script Writer", "instruction": "调整 segments[1].script.segment_intro 以适合该段落的情绪"}
+              {"target_agent": "Music Curator", "instruction": "替换segments[1].playlist[2] 为更平缓的歌曲"},
+              {"target_agent": "Music Curator", "instruction": "删除segments[1].playlist[4] 以缩短时长"}
               ]
           },
           "control": {"next_agent": "highest priority agent name (Planner / Music Curator / Script Writer)."}
@@ -735,7 +735,6 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         PASS RULES:
         pass = true if:
           scores >= threshold
-          and there are no critical issues
        
         WRITE SCOPE:
         - critic.*

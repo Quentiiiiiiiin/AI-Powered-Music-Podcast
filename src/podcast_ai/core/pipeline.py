@@ -15,6 +15,7 @@ from podcast_ai.core.models import (
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.tts_client import TTSClient
 from podcast_ai.infra.storage.paths import (
+    build_episode_snapshot_from_state,
     generate_episode_id,
     generate_plan_id,
     get_final_audio_path,
@@ -30,7 +31,7 @@ from podcast_ai.modules.mastering.processor import MasteringService
 from podcast_ai.modules.mixing.mixer import Mixer
 from podcast_ai.modules.selection.selector import compute_segment_boundaries, select_tracks_by_plan
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
-from podcast_ai.modules.theme.state import validate_state_conforms_to_schema
+from podcast_ai.modules.theme.state import validate_episode_snapshot_subset, validate_state_conforms_to_schema
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,8 @@ def plan_episode(
 
     不再落盘 ``plans/<plan_id>.json``；阶段二仍可通过 ``save_plan_to_disk`` 等路径单独生成 EpisodePlan JSON。
 
-    返回：(plan, state_json_path, episode_snapshot_json_path)
+    返回：(plan, state_json_path, episode_snapshot_json_path)。
+    其中 `state_json_path` 为完整 state；`episode_snapshot_json_path` 为 v3.8 子集文件（非完整副本）。
     """
     effective_settings = settings or load_settings()
     with log_timing(logger, "plan_episode"):
@@ -91,7 +93,14 @@ def plan_episode(
         plan = plan.model_copy(update={"plan_id": plan_id})
 
         state_json_path = save_state_json(state=state, output_dir=output_dir, episode_id=episode_id)
-        snapshot_json_path = save_episode_state_snapshot(state=state, output_dir=output_dir, episode_id=episode_id)
+        snapshot = build_episode_snapshot_from_state(state)
+        validate_episode_snapshot_subset(snapshot)
+        snapshot_json_path = save_episode_state_snapshot(
+            state=state,
+            output_dir=output_dir,
+            episode_id=episode_id,
+            snapshot=snapshot,
+        )
         return plan, state_json_path, snapshot_json_path
 
 

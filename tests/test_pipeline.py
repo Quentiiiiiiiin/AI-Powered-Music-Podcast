@@ -23,6 +23,7 @@ from podcast_ai.infra.audio_backend import is_ffmpeg_available, load_audio
 from podcast_ai.infra.storage.paths import get_mix_output_path
 from podcast_ai.infra.tts_client import TTSClient
 from podcast_ai.modules.mastering.processor import MasteringService
+from podcast_ai.modules.theme.state import validate_episode_snapshot_subset
 
 _ffmpeg_required = pytest.mark.skipif(not is_ffmpeg_available(), reason="FFmpeg required")
 
@@ -91,7 +92,12 @@ def test_plan_episode_with_mock_llm(mock_generate_and_state: object, tmp_path: P
     assert snapshot_path.name.endswith(".json")
     assert snapshot_path.name != "state.json"
     assert snapshot_path.stem == state_path.parent.parent.name
-    assert json.loads(state_path.read_text(encoding="utf-8")) == json.loads(snapshot_path.read_text(encoding="utf-8"))
+    state_raw = json.loads(state_path.read_text(encoding="utf-8"))
+    snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    validate_episode_snapshot_subset(snapshot_raw)
+    assert set(snapshot_raw.keys()) == {"schema", "meta", "segments"}
+    assert set(snapshot_raw["meta"].keys()) == {"request_id", "theme", "language", "target_duration_seconds"}
+    assert snapshot_raw["schema"] == state_raw["schema_version"]
     plans_dir = state_path.parent
     assert {p.name for p in plans_dir.glob("*.json")} == {"state.json", snapshot_path.name}
     assert not (state_path.parent.parent / "playlist.md").exists()
@@ -188,7 +194,9 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
     raw = json.loads(state_path.read_text(encoding="utf-8"))
     validate_state_conforms_to_schema(raw, agent_mode="single_agent")
     snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert snapshot_raw == raw
+    validate_episode_snapshot_subset(snapshot_raw)
+    assert set(snapshot_raw.keys()) == {"schema", "meta", "segments"}
+    assert set(snapshot_raw["meta"].keys()) == {"request_id", "theme", "language", "target_duration_seconds"}
 
     assert "critic" not in raw
     assert "control" not in raw
@@ -235,7 +243,11 @@ def test_v31_plan_episode_multi_agent_outputs_valid_state_json(
     raw = json.loads(state_path.read_text(encoding="utf-8"))
     validate_state_conforms_to_schema(raw, agent_mode="multi_agent")
     snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert snapshot_raw == raw
+    validate_episode_snapshot_subset(snapshot_raw)
+    assert set(snapshot_raw.keys()) == {"schema", "meta", "segments"}
+    assert set(snapshot_raw["meta"].keys()) == {"request_id", "theme", "language", "target_duration_seconds"}
+    assert "global_constraints" not in snapshot_raw
+    assert "plan" not in snapshot_raw
 
     assert isinstance(raw["critic"], dict)
     assert isinstance(raw["control"], dict)
@@ -281,6 +293,41 @@ def test_v31_plan_episode_schema_validation_failure_blocks_output(
     # schema 校验失败应阻断写入，不创建 state.json
     episodes_root = tmp_path / "episodes"
     assert not episodes_root.exists()
+
+
+@patch("podcast_ai.core.pipeline.build_episode_snapshot_from_state")
+@patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
+def test_v38_plan_episode_snapshot_validation_failure_blocks_output(
+    mock_generate_and_state: object,
+    mock_build_snapshot: object,
+    tmp_path: Path,
+) -> None:
+    from podcast_ai.core.exceptions import AIServiceError
+    from podcast_ai.modules.theme.state import initialize_plan_state
+
+    request = EpisodeRequest(topic="Bad Snapshot", duration_minutes=10, language="zh", output_dir=tmp_path)
+    state = initialize_plan_state(request)
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=300,
+                bpm_range=(90, 100),
+                mood="chill",
+                host_script="欢迎。",
+                target_playlist=[],
+            )
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="bad snapshot",
+        plan_id="plan_bad_snapshot",
+    )
+    mock_generate_and_state.return_value = (plan, state)
+    mock_build_snapshot.return_value = {"schema": "v3.0", "meta": {}, "segments": []}
+
+    with pytest.raises(AIServiceError, match="snapshot.meta 字段不匹配"):
+        plan_episode(request, agent_mode="multi_agent")
 
 
 # ---------- v1.3 验收测试 ----------

@@ -129,3 +129,92 @@
   - `src/podcast_ai/cli.py`
 - **Estimated complexity**: XS（0.5-1 小时）
 
+---
+
+## v3.8 代码评审后补充任务（最小修改版）
+
+> 说明：以下任务为对当前已提交代码的增量修正。保留现有产物路径与接口形态，重点修复“`episode_id.json` 字段过多、不符合 PRD 子集契约”的问题，避免大范围重构。
+
+### Task 07 - 修复新文件映射：`episode_id.json` 只保留 PRD 子集字段
+- **Task name**: v3.8 fix - snapshot 子集字段裁剪
+- **目标**: 将 `{episode_id}.json` 从“完整 PlanState 复制”修正为 PRD 指定子集：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+- **类型**: backend
+- **依赖关系**: 无（可直接修改现有 `save_episode_state_snapshot` 入口）
+- **Description**:
+  - 在 `src/podcast_ai/infra/storage/paths.py` 中新增映射函数（示例）：
+    - `build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]`
+  - `save_episode_state_snapshot(...)` 改为写入该映射结果，而不是原始 `state`。
+  - 字段映射口径（防误解）：
+    - 顶层 `schema`：由 `state.schema_version` 映射（如无则报错，不静默填默认）
+    - `meta`：仅保留 `request_id/theme/language/target_duration_seconds`
+    - `segments[*]`：仅保留 `segment_id/name/target_duration_seconds/playlists/script`
+    - `playlists`：由 `state.segments[*].playlist` 映射（命名按 PRD/sample，避免继续写 `playlist` 单数）
+    - `script`：沿用 `state.segments[*].script`，仅做最小结构透传
+- **Input**: 内存 `PlanState`
+- **Output**: 字段受控的 `{episode_id}.json`
+- **Files involved**:
+  - `src/podcast_ai/infra/storage/paths.py`
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 08 - 增加新文件专用校验并在写盘前执行
+- **Task name**: v3.8 fix - snapshot schema guard
+- **目标**: 满足 PRD 验收 5：若新文件映射缺字段或结构不符，必须明确报错并中断，不静默回退。
+- **类型**: backend
+- **依赖关系**: Task 07
+- **Description**:
+  - 在 `src/podcast_ai/modules/theme/state.py` 新增轻量校验函数（示例）：
+    - `validate_episode_snapshot_subset(snapshot: dict[str, Any]) -> None`
+  - 校验最小必需项：
+    - 顶层仅 `schema/meta/segments`
+    - `meta` 仅含 `request_id/theme/language/target_duration_seconds`
+    - `segments[*]` 至少含 `segment_id/name/target_duration_seconds/playlists/script`
+  - 在 `pipeline.plan_episode` 中写入 `{episode_id}.json` 前调用该校验；失败直接抛 `AIServiceError`（或统一业务异常），并包含可定位字段路径。
+- **Input**: snapshot dict
+- **Output**: 失败早暴露，避免错误产物落盘
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/state.py`
+  - `src/podcast_ai/core/pipeline.py`
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 09 - 接口同步（最小影响）：明确 `plan_episode` 返回值语义与 CLI 展示
+- **Task name**: v3.8 fix - stage1 输出接口对齐
+- **目标**: 防止工程师误解返回路径含义：`state_path` 是完整 state，`snapshot_path` 是子集新文件；CLI 与函数注释保持一致。
+- **类型**: api
+- **依赖关系**: Task 07
+- **Description**:
+  - 更新 `src/podcast_ai/core/pipeline.py::plan_episode` docstring 和返回说明，明确两文件内容差异（不是等价副本）。
+  - 更新 `src/podcast_ai/cli.py` 输出文案：将 `{episode_id}.json` 标注为“阶段一对接子集文件（v3.8）”。
+  - 若现有调用方有“`snapshot == state`”假设，需在注释中显式禁止该假设（不改阶段二逻辑）。
+- **Input**: `plan_episode` 调用结果
+- **Output**: 输出契约可读且不歧义
+- **Files involved**:
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/cli.py`
+- **Estimated complexity**: XS（0.5-1 小时）
+
+---
+
+### Task 10 - 回归测试修正：从“内容相等”改为“子集结构正确”
+- **Task name**: v3.8 fix - snapshot subset tests
+- **目标**: 修正当前错误测试假设（`snapshot_raw == state_raw`），改为验证 `{episode_id}.json` 的子集契约与字段白名单。
+- **类型**: backend
+- **依赖关系**: Task 07、Task 08
+- **Description**:
+  - 更新 `tests/test_pipeline.py` 相关断言：
+    - 删除 `snapshot_raw == raw` 断言；
+    - 新增断言：顶层只含 `schema/meta/segments`；
+    - `meta` 只含四个 key；
+    - `segments[*]` 含 `playlists/script`，且不含 `critic/control/global_constraints/plan` 等非约定字段。
+  - 新增负例测试（可放 `tests/test_pipeline.py` 或新文件）：
+    - 构造缺失关键字段的 state，断言 snapshot 校验失败并抛出明确错误。
+- **Input**: single/multi agent 的 mock state
+- **Output**: v3.8 子集契约由测试锁定
+- **Files involved**:
+  - `tests/test_pipeline.py`
+  - （可选）`tests/test_stage1_outputs.py`
+- **Estimated complexity**: S（1-2 小时）
+

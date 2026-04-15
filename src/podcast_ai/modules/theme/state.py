@@ -475,3 +475,68 @@ def validate_state_conforms_to_schema(
 def validate_state_subset_for_single_agent(state: PlanState) -> None:
     """v3.7：单 Agent 子集校验入口（仅允许五个顶层键，不含 critic/control）。"""
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
+
+
+def validate_episode_snapshot_subset(snapshot: dict[str, Any]) -> None:
+    """
+    v3.8 fix：校验 `{episode_id}.json` 子集结构。
+
+    顶层仅允许：schema/meta/segments。
+    """
+    if not isinstance(snapshot, dict):
+        raise AIServiceError("snapshot：期望 object")
+
+    top_expected = {"schema", "meta", "segments"}
+    top_actual = set(snapshot.keys())
+    if top_actual != top_expected:
+        raise AIServiceError(
+            f"snapshot 顶层字段不匹配：missing={sorted(top_expected - top_actual)}, extra={sorted(top_actual - top_expected)}"
+        )
+
+    schema = snapshot.get("schema")
+    if not isinstance(schema, str) or not schema.strip():
+        raise AIServiceError("snapshot.schema：期望非空 string")
+
+    meta = snapshot.get("meta")
+    if not isinstance(meta, dict):
+        raise AIServiceError("snapshot.meta：期望 object")
+    meta_expected = {"request_id", "theme", "language", "target_duration_seconds"}
+    meta_actual = set(meta.keys())
+    if meta_actual != meta_expected:
+        raise AIServiceError(
+            f"snapshot.meta 字段不匹配：missing={sorted(meta_expected - meta_actual)}, extra={sorted(meta_actual - meta_expected)}"
+        )
+    if not isinstance(meta.get("request_id"), str):
+        raise AIServiceError("snapshot.meta.request_id：期望 string")
+    if not isinstance(meta.get("theme"), str):
+        raise AIServiceError("snapshot.meta.theme：期望 string")
+    if not isinstance(meta.get("language"), str):
+        raise AIServiceError("snapshot.meta.language：期望 string")
+    if type(meta.get("target_duration_seconds")) is not int:
+        raise AIServiceError("snapshot.meta.target_duration_seconds：期望 int")
+
+    segments = snapshot.get("segments")
+    if not isinstance(segments, list):
+        raise AIServiceError("snapshot.segments：期望 array")
+    if not segments:
+        raise AIServiceError("snapshot.segments：不能为空")
+
+    seg_expected = {"segment_id", "name", "target_duration_seconds", "playlists", "script"}
+    for idx, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            raise AIServiceError(f"snapshot.segments[{idx}]：期望 object")
+        seg_actual = set(seg.keys())
+        if seg_actual != seg_expected:
+            raise AIServiceError(
+                f"snapshot.segments[{idx}] 字段不匹配：missing={sorted(seg_expected - seg_actual)}, extra={sorted(seg_actual - seg_expected)}"
+            )
+        if not isinstance(seg.get("segment_id"), str):
+            raise AIServiceError(f"snapshot.segments[{idx}].segment_id：期望 string")
+        if not isinstance(seg.get("name"), str):
+            raise AIServiceError(f"snapshot.segments[{idx}].name：期望 string")
+        if type(seg.get("target_duration_seconds")) is not int:
+            raise AIServiceError(f"snapshot.segments[{idx}].target_duration_seconds：期望 int")
+        if not isinstance(seg.get("playlists"), list):
+            raise AIServiceError(f"snapshot.segments[{idx}].playlists：期望 array")
+        if not isinstance(seg.get("script"), dict):
+            raise AIServiceError(f"snapshot.segments[{idx}].script：期望 object")
