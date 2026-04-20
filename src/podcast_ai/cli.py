@@ -204,7 +204,7 @@ def create_episode_cli(
     plan_file: Path = typer.Argument(
         ...,
         path_type=Path,
-        help="规划文件路径（episode_plan_*.json）。",
+        help="阶段一输出的 snapshot 路径（<episode_id>.json）。",
     ),
     music_dir: Path = typer.Argument(
         ...,
@@ -235,7 +235,7 @@ def create_episode_cli(
         raise typer.Exit(code=1)
     try:
         result = pipeline_create_episode(
-            plan_path=plan_file,
+            snapshot_path=plan_file,
             music_dir=music_dir,
             topic=topic or None,
             language=language,

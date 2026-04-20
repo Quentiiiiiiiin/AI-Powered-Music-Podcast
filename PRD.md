@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.7  
+**文档版本**：v3.9  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.7）
+**产品阶段**：迭代验证中（进入 v3.9）
 
 ---
 
@@ -217,7 +217,22 @@
     4. 阶段一相关代码（生成、映射、校验、写盘）完成同步改造后，单/多 agent 路径均可正常结束并产出统一文件集。
     5. 当新文件映射或字段缺失导致不满足约定时，系统返回明确错误，不静默回退旧产物格式。
 
-### 当前生效规则（v3.7）
+- **v3.9（迭代十七：阶段二适配 `<episode_id>.json` 输入）**：
+  - **问题**：阶段二当前仍按历史 EpisodePlan 输入格式实现；而阶段一已统一产出 `state` + 以 `episode_id` 命名的新文件（由 `state.json` 剪枝），两阶段输入契约不一致导致衔接成本高。
+  - **变更目标**：
+    1. 将阶段二“按 EpisodePlan 制作”的读取与映射逻辑改为优先消费阶段一统一产物 **`<episode_id>.json`**。
+    2. 阶段二使用的新文件字段定义以 `build_episode_snapshot_from_state` 与 `Sample_EpisodePlan_NEW.json` 为准：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    3. 本轮仅要求阶段二完成输入适配与执行链路打通，不扩展阶段一字段、不引入额外业务语义。
+  - **功能归类**：优化（跨阶段数据契约对齐与流程稳定性提升）。
+  - **User Story（用户视角）**：作为创作者，我希望阶段二能直接读取阶段一当前产出的 `<episode_id>.json`，这样从计划到混音的流程保持同一文件契约，减少格式转换和对接错误。
+  - **Acceptance Criteria（验收标准）**：
+    1. 阶段二默认输入文件为 `<episode_id>.json`（阶段一新文件），不再依赖旧 EpisodePlan 结构作为主路径。
+    2. 阶段二能正确读取并使用新文件中的 `meta` 与 `segments[*].playlists/script` 关键字段完成制作流程。
+    3. 当 `<episode_id>.json` 缺失必要字段或结构不合法时，系统返回明确错误并中止，避免静默降级产生不可控结果。
+    4. 适配改造不破坏阶段一现有产物契约（`state` + `<episode_id>.json`）及多 agent 相关流程行为。
+    5. 代码与文档中的阶段二输入约定保持一致，便于后续迭代继续扩展。
+
+### 当前生效规则（v3.9）
 
 - 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
 - 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
@@ -227,6 +242,7 @@
 - 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
 - 阶段一在单/多 agent 两种模式下统一输出：`state` 文件 + 以 `episode_id` 命名的新 JSON 文件；单 agent 历史 `playlist` 文件已移除。
 - 以 `episode_id` 命名的新文件为 state 的简化视图，字段仅保留：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+- 阶段二当前主输入已切换为阶段一产出的 `<episode_id>.json`（按上方字段子集约定读取），旧 EpisodePlan 输入不再作为默认主路径。
 - 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
 - 过渡策略按 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入；歌曲-歌曲维持 crossfade。
 - ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
@@ -511,7 +527,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.7）
+### 6.4 当前版本成功指标（v3.9）
 
 | 指标 | 目标 |
 |------|------|
@@ -522,6 +538,7 @@
 | **多 Agent 可审计性** | 每次 refinement 可按轮次检索各 Agent 落盘文件与合并后 `state`，支撑对 Critic `actions` 与下游产出的人工核对 |
 | **单 Agent 契约一致性** | 单 agent 阶段一稳定输出 `state.json`，且结构限定为 state 子集（无 `critic/control`） |
 | **阶段一产物统一性** | 单/多 agent 均产出一致文件集（`state` + `episode_id` 新文件），且不再产出 `playlist` 文件 |
+| **阶段二输入契约对齐** | 阶段二可直接消费 `<episode_id>.json` 完成制作，避免依赖旧 EpisodePlan 格式转换 |
 
 ---
 

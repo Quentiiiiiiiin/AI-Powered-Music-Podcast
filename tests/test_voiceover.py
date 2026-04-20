@@ -16,6 +16,13 @@ from podcast_ai.core.models import (
     EpisodeSegment,
     PlaylistItem,
     SegmentBoundary,
+    SelectedTrack,
+    Stage2Script,
+    Stage2Segment,
+    Stage2Snapshot,
+    Stage2SnapshotMeta,
+    Track,
+    TrackMetadata,
 )
 from podcast_ai.infra.config import AppConfig, ElevenLabsConfig, Settings, TTSConfig
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
@@ -103,3 +110,63 @@ def test_v14_tts_podcast_error_propagates_not_silent(tmp_path: Path) -> None:
 
     with pytest.raises(TTSServiceError, match="quota"):
         svc.generate_voiceovers(plan)
+
+
+def test_v39_generate_voiceovers_from_snapshot_between_tracks(tmp_path: Path) -> None:
+    snapshot = Stage2Snapshot(
+        schema="v3.0",
+        meta=Stage2SnapshotMeta(
+            request_id="r1",
+            theme="t",
+            language="zh-CN",
+            target_duration_seconds=600,
+        ),
+        segments=[
+            Stage2Segment(
+                segment_id="seg_01",
+                name="开场",
+                target_duration_seconds=300,
+                playlists=[{"track": "A", "artist": "X"}, {"track": "B", "artist": "Y"}],
+                script=Stage2Script(
+                    segment_intro="intro",
+                    between_tracks=[{"after_track_index": 0, "text": "between"}, {"after_track_index": 1, "text": None}],
+                ),
+            ),
+        ],
+    )
+    selected_tracks = [[
+        SelectedTrack(
+            track=Track(id="t1", file_path=tmp_path / "a.wav", title="A", artist="X"),
+            start_time_in_episode=0.0,
+            end_time_in_episode=120.0,
+            effective_duration=120.0,
+        ),
+        SelectedTrack(
+            track=Track(id="t2", file_path=tmp_path / "b.wav", title="B", artist="Y"),
+            start_time_in_episode=120.0,
+            end_time_in_episode=240.0,
+            effective_duration=120.0,
+        ),
+    ]]
+    boundaries = [SegmentBoundary(music_start=0.0, music_end=240.0)]
+
+    mock_tts = MagicMock()
+    p1 = tmp_path / "intro.mp3"
+    p2 = tmp_path / "between.mp3"
+    p1.write_bytes(b"x")
+    p2.write_bytes(b"y")
+    mock_tts.synthesize.side_effect = [p1, p2]
+    settings = Settings(
+        app=AppConfig(output_dir=str(tmp_path)),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+    svc = VoiceoverService(tts_client=mock_tts, settings=settings)
+    vos = svc.generate_voiceovers_from_snapshot(
+        snapshot,
+        selected_tracks_by_segment=selected_tracks,
+        segment_boundaries=boundaries,
+    )
+    assert len(vos) == 2
+    assert vos[0].text == "intro"
+    assert vos[1].text == "between"
+    assert vos[1].insert_time_in_episode == 120.0

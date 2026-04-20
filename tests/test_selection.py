@@ -6,8 +6,20 @@ from pathlib import Path
 import pytest
 
 from podcast_ai.core.exceptions import PlanMappingError
-from podcast_ai.core.models import EpisodePlan, EpisodeSegment, PlaylistItem, SelectedTrack, Track, TrackMetadata, TrackWithMetadata
-from podcast_ai.modules.selection.selector import TrackSelector, select_tracks_by_plan
+from podcast_ai.core.models import (
+    EpisodePlan,
+    EpisodeSegment,
+    PlaylistItem,
+    SelectedTrack,
+    Stage2Script,
+    Stage2Segment,
+    Stage2Snapshot,
+    Stage2SnapshotMeta,
+    Track,
+    TrackMetadata,
+    TrackWithMetadata,
+)
+from podcast_ai.modules.selection.selector import TrackSelector, select_tracks_by_plan, select_tracks_by_snapshot
 
 
 def test_select_tracks_bpm_order(sample_plan: EpisodePlan, sample_library: list[TrackWithMetadata]) -> None:
@@ -145,3 +157,39 @@ def test_v12_select_tracks_by_plan_unmapped_raises_plan_mapping_error() -> None:
     msg = str(exc_info.value)
     assert "segment" in msg.lower() or "Segment" in msg
     assert unmapped_track in msg or "推荐" in msg or "recommended" in msg.lower()
+
+
+def test_v39_select_tracks_by_snapshot_follows_playlists_order() -> None:
+    snapshot = Stage2Snapshot(
+        schema="v3.0",
+        meta=Stage2SnapshotMeta(
+            request_id="r1",
+            theme="t",
+            language="zh-CN",
+            target_duration_seconds=600,
+        ),
+        segments=[
+            Stage2Segment(
+                segment_id="seg_01",
+                name="开场",
+                target_duration_seconds=300,
+                playlists=[
+                    {"track": "First", "artist": "A"},
+                    {"track": "Second", "artist": "B"},
+                ],
+                script=Stage2Script(segment_intro="", between_tracks=[]),
+            ),
+        ],
+    )
+    library = [
+        TrackWithMetadata(
+            track=Track(id="low", file_path=Path("second.mp3"), title="Second", artist="B"),
+            metadata=TrackMetadata(track_id="low", duration_seconds=100.0, bpm=92.0, genre=None),
+        ),
+        TrackWithMetadata(
+            track=Track(id="high", file_path=Path("first.mp3"), title="First", artist="A"),
+            metadata=TrackMetadata(track_id="high", duration_seconds=120.0, bpm=108.0, genre=None),
+        ),
+    ]
+    result = select_tracks_by_snapshot(snapshot, library, crossfade_seconds=8.0)
+    assert [st.track.title for st in result] == ["First", "Second"]

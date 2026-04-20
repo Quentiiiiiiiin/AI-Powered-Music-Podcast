@@ -4,13 +4,18 @@ import logging
 from pathlib import Path
 from typing import Literal, Optional, Tuple
 
-from podcast_ai.core.exceptions import PodcastAIError
+from pydantic import ValidationError
+
+from podcast_ai.core.exceptions import PlanMappingError, PodcastAIError
 from podcast_ai.core.logging_config import log_timing
 from podcast_ai.core.models import (
     AudioRenderConfig,
     EpisodePlan,
     EpisodeRequest,
     EpisodeResult,
+    EpisodeSegment,
+    PlaylistItem,
+    Stage2Snapshot,
 )
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.tts_client import TTSClient
@@ -29,7 +34,11 @@ from podcast_ai.modules.exporter.exporter import Exporter
 from podcast_ai.modules.library.scanner import LibraryScanner
 from podcast_ai.modules.mastering.processor import MasteringService
 from podcast_ai.modules.mixing.mixer import Mixer
-from podcast_ai.modules.selection.selector import compute_segment_boundaries, select_tracks_by_plan
+from podcast_ai.modules.selection.selector import (
+    compute_segment_boundaries_from_snapshot,
+    select_tracks_by_snapshot,
+    split_tracks_by_snapshot,
+)
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
 from podcast_ai.modules.theme.state import validate_episode_snapshot_subset, validate_state_conforms_to_schema
 from podcast_ai.modules.voiceover.tts_service import VoiceoverService
@@ -59,6 +68,47 @@ def save_plan_to_disk(
 def load_plan_from_disk(path: Path) -> EpisodePlan:
     """从磁盘加载 EpisodePlan（供 create-episode 阶段继续制作）。"""
     return load_episode_plan(path)
+
+
+def _load_stage2_snapshot(path: Path) -> Stage2Snapshot:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        raise PodcastAIError(f"读取 snapshot 文件失败：{path}") from exc
+    try:
+        return Stage2Snapshot.model_validate_json(raw)
+    except ValidationError as exc:
+        raise PodcastAIError(f"snapshot 结构校验失败：{exc}") from exc
+
+
+def _episode_plan_from_snapshot(snapshot: Stage2Snapshot) -> EpisodePlan:
+    """
+    为 exporter/show notes 复用而做的最小映射。
+    阶段二主流程不再以 EpisodePlan 作为输入契约。
+    """
+    segments: list[EpisodeSegment] = []
+    for seg in snapshot.segments:
+        segments.append(
+            EpisodeSegment(
+                name=seg.name,
+                target_duration_seconds=seg.target_duration_seconds,
+                host_script=seg.script.segment_intro or "",
+                target_playlist=[
+                    PlaylistItem(
+                        segment_name=seg.name,
+                        recommended_tracks=[f"{item.track} - {item.artist}"],
+                        search_hints={},
+                    )
+                    for item in seg.playlists
+                ],
+            ),
+        )
+    return EpisodePlan(
+        segments=segments,
+        target_duration_seconds=snapshot.meta.target_duration_seconds,
+        style_description=snapshot.meta.theme,
+        plan_id=snapshot.meta.request_id,
+    )
 
 
 def plan_episode(
@@ -105,7 +155,7 @@ def plan_episode(
 
 
 def create_episode(
-    plan_path: Path,
+    snapshot_path: Path,
     music_dir: Path,
     settings: Settings | None = None,
     topic: str | None = None,
@@ -113,7 +163,7 @@ def create_episode(
     tts_client: Optional[TTSClient] = None,
 ) -> EpisodeResult:
     """
-    阶段二：从 plan 文件继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
+    阶段二：从 `<episode_id>.json`（Stage2Snapshot）继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
 
     v1.3 流程：选曲（plan 驱动）→ 计算 segment 实际边界 → 主持（按边界插入）→ 混音（按 segment 分组）。
     若任一 segment 映射失败或边界缺失，直接报错并阻断，不进入混音，避免错位输出。
@@ -123,13 +173,10 @@ def create_episode(
     effective_settings = settings or load_settings()
 
     with log_timing(logger, "create_episode"):
-        try:
-            plan = load_episode_plan(plan_path)
-        except Exception as exc:
-            raise PodcastAIError(f"加载规划文件失败：{plan_path}") from exc
+        snapshot = _load_stage2_snapshot(snapshot_path)
 
-        # 从 plan_path 推导 episode_root：.../episodes/ep_xxx/plans/xxx.json
-        episode_root = plan_path.parent.parent
+        # 从 snapshot_path 推导 episode_root：.../episodes/ep_xxx/plans/ep_xxx.json
+        episode_root = snapshot_path.parent.parent
         episode_id = episode_root.name
 
         config = AudioRenderConfig(
@@ -146,31 +193,33 @@ def create_episode(
             raise PodcastAIError(f"音乐目录为空或扫描失败：{music_dir}")
 
         with log_timing(logger, "select_tracks"):
-            # v1.2：严格按 plan 顺序映射；映射失败时 PlanMappingError 向上抛出，阻断后续流程
-            selected_tracks = select_tracks_by_plan(plan, library, config.crossfade_seconds)
+            selected_tracks = select_tracks_by_snapshot(snapshot, library, config.crossfade_seconds)
         if not selected_tracks:
             raise PodcastAIError("选曲结果为空（plan 中无推荐曲目或无法映射），无法继续制作。")
 
-        # v1.3：基于已映射歌曲计算 segment 实际边界；边界缺失时 PlanMappingError 向上抛出
-        segment_boundaries = compute_segment_boundaries(
-            plan, selected_tracks, config.crossfade_seconds
+        segment_boundaries = compute_segment_boundaries_from_snapshot(
+            snapshot, selected_tracks, config.crossfade_seconds
         )
-        if len(segment_boundaries) != len(plan.segments):
+        if len(segment_boundaries) != len(snapshot.segments):
             raise PodcastAIError(
-                f"segment 边界数量({len(segment_boundaries)})与 plan 段落数({len(plan.segments)})不一致，无法继续。"
+                f"segment 边界数量({len(segment_boundaries)})与 snapshot 段落数({len(snapshot.segments)})不一致，无法继续。"
             )
+        track_groups = split_tracks_by_snapshot(snapshot, selected_tracks)
 
         with log_timing(logger, "generate_voiceovers"):
             voiceover_svc = VoiceoverService(settings=effective_settings, tts_client=tts_client)
-            voiceovers = voiceover_svc.generate_voiceovers(
-                plan, language=language, segment_boundaries=segment_boundaries
+            voiceovers = voiceover_svc.generate_voiceovers_from_snapshot(
+                snapshot,
+                selected_tracks_by_segment=track_groups,
+                segment_boundaries=segment_boundaries,
+                language=language,
             )
 
         mix_path = get_mix_output_path(episode_root, ext="wav")
         with log_timing(logger, "build_mix"):
             mixer = Mixer()
             mix_summary = mixer.build_mix(
-                selected_tracks, voiceovers, config, mix_path, plan=plan
+                selected_tracks, voiceovers, config, mix_path, plan=None
             )
 
         final_path = get_final_audio_path(episode_root, episode_id)
@@ -180,13 +229,14 @@ def create_episode(
 
         with log_timing(logger, "export_episode"):
             exporter = Exporter()
+            export_plan = _episode_plan_from_snapshot(snapshot)
             result = exporter.export_episode(
                 final_audio_path=final_path,
-                plan=plan,
+                plan=export_plan,
                 tracks=selected_tracks,
                 episode_id=episode_id,
                 actual_duration_seconds=int(mix_summary.actual_duration_seconds),
-                topic=topic or plan.style_description or "Episode",
+                topic=topic or snapshot.meta.theme or "Episode",
             )
 
         logger.info(

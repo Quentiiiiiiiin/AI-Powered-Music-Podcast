@@ -100,8 +100,8 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 ### 阶段二：制作（从规划继续）
 
 ```bash
-# 阶段二仍读取 EpisodePlan 格式的 JSON（可由测试/工具单独落盘，或由后续迭代从 state 生成）
-podcast-ai create-episode path/to/episode_plan.json D:/Music/本期节目
+# 阶段二读取阶段一产物 `<episode_id>.json`
+podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目
 ```
 
 - 扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出
@@ -212,10 +212,10 @@ PODCAST_AI_LOG_FILE=./logs/podcast.log
 ```bash
 # 将日志等级设为 DEBUG，输出更详细的信息
 podcast-ai --log-level DEBUG plan-episode "主题" 60
-podcast-ai --log-level DEBUG create-episode <plan_path> <music_dir>
+podcast-ai --log-level DEBUG create-episode <snapshot_path> <music_dir>
 
 # 将日志同时写入文件（追加模式，UTF-8）
-podcast-ai --log-level DEBUG --log-file ./logs/debug.log create-episode <plan_path> <music_dir>
+podcast-ai --log-level DEBUG --log-file ./logs/debug.log create-episode <snapshot_path> <music_dir>
 ```
 
 ### 环境变量
@@ -244,7 +244,7 @@ PODCAST_AI_LOG_FILE=./output/debug.log
 # Windows：开启 DEBUG 并写入文件
 $env:PODCAST_AI_LOG_LEVEL = "DEBUG"
 $env:PODCAST_AI_LOG_FILE = ".\output\debug.log"
-podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx_plan_xxx.json D:\Music\本期节目
+podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx.json D:\Music\本期节目
 ```
 
 ---

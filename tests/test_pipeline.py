@@ -51,6 +51,46 @@ def _mock_plan_json() -> str:
     )
 
 
+def _save_stage2_snapshot_from_plan(output_dir: Path, episode_id: str, plan: EpisodePlan) -> Path:
+    plans_dir = output_dir / "episodes" / episode_id / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "v3.0",
+        "meta": {
+            "request_id": f"req_{episode_id}",
+            "theme": plan.style_description or "Episode",
+            "language": "zh-CN",
+            "target_duration_seconds": int(plan.target_duration_seconds),
+        },
+        "segments": [],
+    }
+    for idx, seg in enumerate(plan.segments):
+        playlists: list[dict[str, str]] = []
+        for item in seg.target_playlist:
+            for rec in item.recommended_tracks:
+                text = rec.strip()
+                if " - " in text:
+                    track, artist = text.split(" - ", 1)
+                else:
+                    track, artist = text, ""
+                playlists.append({"track": track.strip(), "artist": artist.strip()})
+        payload["segments"].append(
+            {
+                "segment_id": f"seg_{idx+1:02d}",
+                "name": seg.name,
+                "target_duration_seconds": int(seg.target_duration_seconds),
+                "playlists": playlists,
+                "script": {
+                    "segment_intro": seg.host_script or "",
+                    "between_tracks": [],
+                },
+            }
+        )
+    snapshot_path = plans_dir / f"{episode_id}.json"
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return snapshot_path
+
+
 @patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")
 def test_plan_episode_with_mock_llm(mock_generate_and_state: object, tmp_path: Path) -> None:
     """plan_episode 在 mock 下应正常完成并落盘（state.json + episode_id.json）。"""
@@ -414,12 +454,7 @@ def test_v13_create_episode_mapping_failure_blocks(
         style_description="Test",
         plan_id=plan_id,
     )
-    plan_path = save_plan_to_disk(
-        plan,
-        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
-        episode_id=episode_id,
-        plan_id=plan_id,
-    )
+    snapshot_path = _save_stage2_snapshot_from_plan(output_dir, episode_id, plan)
 
     music_dir = tmp_path / "music"
     music_dir.mkdir()
@@ -434,7 +469,7 @@ def test_v13_create_episode_mapping_failure_blocks(
 
     with pytest.raises((PlanMappingError, PodcastAIError)):
         create_episode(
-            plan_path,
+            snapshot_path,
             music_dir,
             settings=Settings(
                 app=AppConfig(output_dir=str(output_dir)),
@@ -452,6 +487,124 @@ def test_v14_create_episode_accepts_tts_client_parameter() -> None:
     """create_episode 支持注入 tts_client，便于 mock ElevenLabs 或回归单测。"""
     sig = inspect.signature(create_episode)
     assert "tts_client" in sig.parameters
+
+
+def test_v39_create_episode_invalid_snapshot_raises_clear_error(tmp_path: Path) -> None:
+    bad_snapshot = {
+        "schema": "v3.0",
+        "meta": {
+            "request_id": "r1",
+            "theme": "t",
+            # 缺 language
+            "target_duration_seconds": 600,
+        },
+        "segments": [],
+    }
+    snap_path = tmp_path / "episodes" / "ep_bad" / "plans" / "ep_bad.json"
+    snap_path.parent.mkdir(parents=True, exist_ok=True)
+    snap_path.write_text(json.dumps(bad_snapshot, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(PodcastAIError, match="snapshot 结构校验失败"):
+        create_episode(snap_path, tmp_path / "music")
+
+
+@patch("podcast_ai.core.pipeline.Exporter.export_episode")
+@patch("podcast_ai.core.pipeline.MasteringService.apply_mastering")
+@patch("podcast_ai.core.pipeline.Mixer.build_mix")
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+def test_v39_create_episode_between_tracks_generates_extra_voiceovers(
+    mock_scan: object,
+    mock_build_mix: object,
+    mock_mastering: object,
+    mock_export: object,
+    tmp_path: Path,
+) -> None:
+    from podcast_ai.core.models import EpisodeResult, Track, TrackMetadata, TrackWithMetadata
+    from podcast_ai.infra.config import AppConfig, CacheConfig, Settings
+
+    output_dir = tmp_path / "out"
+    music_dir = tmp_path / "music"
+    output_dir.mkdir(parents=True)
+    music_dir.mkdir()
+    t1 = music_dir / "a.wav"
+    t2 = music_dir / "b.wav"
+    _export_short_wav(t1, 1_000)
+    _export_short_wav(t2, 1_000)
+    episode_id = "ep_bt"
+    snapshot = {
+        "schema": "v3.0",
+        "meta": {
+            "request_id": "r_bt",
+            "theme": "between tracks",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+        },
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "playlists": [{"track": "A", "artist": "X"}, {"track": "B", "artist": "Y"}],
+                "script": {
+                    "segment_intro": "intro",
+                    "between_tracks": [
+                        {"after_track_index": 0, "text": "between"},
+                        {"after_track_index": 1, "text": None},
+                    ],
+                },
+            }
+        ],
+    }
+    snapshot_path = output_dir / "episodes" / episode_id / "plans" / f"{episode_id}.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=t1, title="A", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=1.0, bpm=95.0, genre=None),
+        ),
+        TrackWithMetadata(
+            track=Track(id="t2", file_path=t2, title="B", artist="Y"),
+            metadata=TrackMetadata(track_id="t2", duration_seconds=1.0, bpm=96.0, genre=None),
+        ),
+    ]
+    mock_build_mix.return_value = MagicMock(
+        mix_path=output_dir / "episodes" / episode_id / "mix" / "mix.wav",
+        actual_duration_seconds=2.0,
+        track_count=2,
+        voiceover_count=2,
+    )
+    mock_mastering.side_effect = lambda mix_path, output_path, _config: output_path
+    mock_export.return_value = EpisodeResult(
+        episode_id=episode_id,
+        audio_path=output_dir / "episodes" / episode_id / "final" / f"{episode_id}.mp3",
+        actual_duration_seconds=2,
+        show_notes="ok",
+        tracks=[],
+    )
+
+    class _StubTTS(TTSClient):
+        def __init__(self, base: Path) -> None:
+            self._base = base
+            self._i = 0
+
+        def synthesize(self, text: str, **kwargs: object) -> Path:  # type: ignore[override]
+            self._i += 1
+            p = self._base / f"vo_{self._i}.wav"
+            _export_short_wav(p, 200)
+            return p
+
+    create_episode(
+        snapshot_path,
+        music_dir,
+        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
+        tts_client=_StubTTS(tmp_path),
+    )
+
+    _args, kwargs = mock_build_mix.call_args
+    voiceovers = _args[1]
+    assert len(voiceovers) == 2
+    assert [v.text for v in voiceovers] == ["intro", "between"]
 
 
 # ---------- v2.1：pipeline 集成回归（边界仅音乐淡入 + 顺序/产物；时长断言带合理容差） ----------
@@ -535,12 +688,7 @@ def test_v21_create_episode_happy_path_preserves_order_and_outputs(
         style_description="v21 pipeline regression",
         plan_id=plan_id,
     )
-    plan_path = save_plan_to_disk(
-        plan,
-        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
-        episode_id=episode_id,
-        plan_id=plan_id,
-    )
+    snapshot_path = _save_stage2_snapshot_from_plan(output_dir, episode_id, plan)
 
     mock_scan.return_value = [
         TrackWithMetadata(
@@ -570,14 +718,14 @@ def test_v21_create_episode_happy_path_preserves_order_and_outputs(
         ),
     )
 
-    result = create_episode(plan_path, music_dir, settings=settings, topic="Regression")
+    result = create_episode(snapshot_path, music_dir, settings=settings, topic="Regression")
 
     assert result.episode_id == episode_id
     assert len(result.tracks) == 1
     assert result.tracks[0].track.title == "Track A"
     assert result.audio_path.exists()
     assert result.actual_duration_seconds >= 0
-    mix_path = get_mix_output_path(plan_path.parent.parent, ext="wav")
+    mix_path = get_mix_output_path(snapshot_path.parent.parent, ext="wav")
     assert mix_path.exists()
     music_seconds = 2.5
     # 波形时长用毫秒精度；EpisodeResult.actual_duration_seconds 为 int 截断秒
@@ -649,12 +797,7 @@ def test_v21_create_episode_duration_matches_voice_music_overlap(
         style_description="v21 duration",
         plan_id=plan_id,
     )
-    plan_path = save_plan_to_disk(
-        plan,
-        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
-        episode_id=episode_id,
-        plan_id=plan_id,
-    )
+    snapshot_path = _save_stage2_snapshot_from_plan(output_dir, episode_id, plan)
 
     mock_scan.return_value = [
         TrackWithMetadata(
@@ -685,9 +828,9 @@ def test_v21_create_episode_duration_matches_voice_music_overlap(
     )
 
     tts_stub = _FixedFileTTSClient(vo_path)
-    create_episode(plan_path, music_dir, settings=settings, topic="Dur", tts_client=tts_stub)
+    create_episode(snapshot_path, music_dir, settings=settings, topic="Dur", tts_client=tts_stub)
 
-    mix_path = get_mix_output_path(plan_path.parent.parent, ext="wav")
+    mix_path = get_mix_output_path(snapshot_path.parent.parent, ext="wav")
     mix_dur_ms = len(load_audio(mix_path))
     assert abs(mix_dur_ms - expected_mix_ms) <= 80
 
@@ -738,19 +881,14 @@ def test_v21_create_episode_passes_voice_music_crossfade_to_mixer(
         style_description="cfg",
         plan_id=plan_id,
     )
-    plan_path = save_plan_to_disk(
-        plan,
-        settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
-        episode_id=episode_id,
-        plan_id=plan_id,
-    )
+    snapshot_path = _save_stage2_snapshot_from_plan(output_dir, episode_id, plan)
     mock_scan.return_value = [
         TrackWithMetadata(
             track=Track(id="t1", file_path=track_path, title="a", artist="X"),
             metadata=TrackMetadata(track_id="t1", duration_seconds=1.0, bpm=95.0, genre=None),
         ),
     ]
-    mix_out = get_mix_output_path(plan_path.parent.parent, ext="wav")
+    mix_out = get_mix_output_path(snapshot_path.parent.parent, ext="wav")
     mock_build_mix.return_value = MagicMock(
         mix_path=mix_out,
         actual_duration_seconds=1.0,
@@ -773,7 +911,7 @@ def test_v21_create_episode_passes_voice_music_crossfade_to_mixer(
         tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
     )
 
-    create_episode(plan_path, music_dir, settings=settings)
+    create_episode(snapshot_path, music_dir, settings=settings)
 
     assert mock_build_mix.called
     _args, kwargs = mock_build_mix.call_args

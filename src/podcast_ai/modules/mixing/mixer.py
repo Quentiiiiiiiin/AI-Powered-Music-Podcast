@@ -128,6 +128,40 @@ def _split_tracks_into_groups(
     return groups
 
 
+def _insert_voiceovers_on_music_timeline(
+    music_mix: AudioSegment,
+    voiceovers: list[VoiceoverSegment],
+    voice_music_crossfade_seconds: float,
+) -> AudioSegment:
+    """
+    v3.9：在已构建的音乐主时间线上按 insert_time 插入多串词事件。
+    - 音乐 -> 串词：硬切
+    - 串词 -> 音乐：仅音乐淡入并在尾窗重叠
+    """
+    if not voiceovers:
+        return music_mix
+    vm_ms = int(round(voice_music_crossfade_seconds * 1000))
+    result = music_mix
+    shift_ms = 0
+    for vo in sorted(voiceovers, key=lambda x: x.insert_time_in_episode):
+        try:
+            vo_audio = simple_normalize(load_audio(vo.audio_path), target_dbfs=-16.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("加载主持 %s 失败，使用空占位: %s", vo.segment_id, exc)
+            vo_audio = AudioSegment.silent(duration=0)
+
+        insert_ms = int(round(vo.insert_time_in_episode * 1000)) + shift_ms
+        insert_ms = max(0, min(insert_ms, len(result)))
+        before = result[:insert_ms]
+        after = result[insert_ms:]
+        joined = _join_voice_to_music_fade_music_only(vo_audio, after, vm_ms)
+        result = before + joined
+        # 计算对后续插点的时间偏移
+        overlap = min(vm_ms, len(vo_audio), len(after)) if vm_ms > 0 else 0
+        shift_ms += len(vo_audio) - overlap
+    return result
+
+
 class Mixer:
     """
     v1.1 / v1.3：时间线 串词1 → 组1 → … → 串词N → 组N；组内歌曲 crossfade。
@@ -162,6 +196,18 @@ class Mixer:
                 for st in selected_tracks
             ]
             mix = crossfade_concat(track_audios, cf)
+        elif plan is None and any(v.insert_time_in_episode > 0 for v in voiceovers):
+            # v3.9：仅当 voiceovers 显式提供时间点时，启用通用时间线插入。
+            track_audios = [
+                simple_normalize(load_audio(st.track.file_path), target_dbfs=-16.0)
+                for st in selected_tracks
+            ]
+            music_mix = crossfade_concat(track_audios, cf)
+            mix = _insert_voiceovers_on_music_timeline(
+                music_mix,
+                voiceovers,
+                config.voice_music_crossfade_seconds,
+            )
         else:
             # 串词1 → 组1 → 串词2 → 组2 → …；v1.3 有 plan 时按 segment 拆分，否则均分
             if plan is not None:

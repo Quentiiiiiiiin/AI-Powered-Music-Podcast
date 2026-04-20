@@ -1,0 +1,205 @@
+{
+  "schema_version": "v3.0",
+  "meta": {
+    "request_id": "4bd9d522-40cb-4123-8c2e-f60710d547a2",
+    "theme": "A dreamy, lo-fi R&B session blending soft beats, hazy vocals, and introspective moods perfect for late-night thoughts and creative flow.",
+    "language": "en-US",
+    "target_duration_seconds": 3600
+  },
+  "segments": [
+    {
+      "segment_id": "seg_01",
+      "name": "The Haze Descends",
+      "target_duration_seconds": 660,
+      "playlist": [
+        {
+          "track": "Garden (Say It Like Dat)",
+          "artist": "SZA"
+        },
+        {
+          "track": "Location",
+          "artist": "Khalid"
+        },
+        {
+          "track": "Best Part (feat. H.E.R.)",
+          "artist": "Daniel Caesar"
+        }
+      ],
+      "script": {
+        "segment_intro": "Welcome to Luma Hits. I'm Nova. Let's begin our late-night session with a gentle, hazy warmth. These first tracks feel like sinking into a soft, familiar thought, perfect for easing into the night.",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": null
+          },
+          {
+            "after_track_index": 1,
+            "text": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "Echoes in the Static",
+      "segment_id": "seg_02",
+      "target_duration_seconds": 720,
+      "playlist": [
+        {
+          "track": "Thinkin Bout You",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Lost",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Self Control",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Pink + White",
+          "artist": "Frank Ocean"
+        }
+      ],
+      "script": {
+        "segment_intro": "Alright, we drift into a deeper, more introspective space. Frank Ocean's world is one of raw memory and delicate emotion, a perfect companion for these solitary hours.",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": null
+          },
+          {
+            "after_track_index": 1,
+            "text": null
+          },
+          {
+            "after_track_index": 2,
+            "text": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "Velvet Heartache",
+      "segment_id": "seg_03",
+      "target_duration_seconds": 780,
+      "playlist": [
+        {
+          "track": "telepatía",
+          "artist": "Kali Uchis"
+        },
+        {
+          "track": "Love Galore (feat. Travis Scott)",
+          "artist": "SZA"
+        },
+        {
+          "track": "Broken Clocks",
+          "artist": "SZA"
+        },
+        {
+          "track": "The Weekend",
+          "artist": "SZA"
+        }
+      ],
+      "script": {
+        "segment_intro": "The mood shifts, becomes a bit more textured, a bit more complex. SZA paints stories of modern love and longing with a hazy, magnetic pull that's impossible to ignore. This is one of my favorite spaces to explore with you here on Luma Hits, stay with me.",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": null
+          },
+          {
+            "after_track_index": 1,
+            "text": null
+          },
+          {
+            "after_track_index": 2,
+            "text": null
+          }
+        ]
+      }
+    },
+    {
+      "mood": "Fluid, Concentrated, Smooth",
+      "name": "Midnight Productivity",
+      "segment_id": "seg_04",
+      "target_duration_seconds": 720,
+      "playlist": [
+        {
+          "track": "Cranes in the Sky",
+          "artist": "Solange"
+        },
+        {
+          "track": "Don't Touch My Hair (feat. Sampha)",
+          "artist": "Solange"
+        },
+        {
+          "track": "Almeda",
+          "artist": "Solange"
+        },
+        {
+          "track": "After The Storm (feat. Tyler, The Creator & Bootsy Collins)",
+          "artist": "Kali Uchis"
+        }
+      ],
+      "script": {
+        "segment_intro": "This next movement feels like a cleansing breath. Solange offers soulful reflection and resilient joy, a powerful shift in energy that still flows within our dreamy soundscape.",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": "Isn't it something, how a song can sit with you in the quiet like that? It just understands."
+          },
+          {
+            "after_track_index": 1,
+            "text": null
+          },
+          {
+            "after_track_index": 2,
+            "text": "And from that strength, we can finally look ahead. A little hope, carried on a gentle beat."
+          }
+        ]
+      }
+    },
+    {
+      "mood": "Resolved, Ethereal, Drifting",
+      "name": "Fading into Blue",
+      "segment_id": "seg_05",
+      "target_duration_seconds": 720,
+      "playlist": [
+        {
+          "track": "Nikes",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Solo (Reprise)",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Godspeed",
+          "artist": "Frank Ocean"
+        },
+        {
+          "track": "Seigfried",
+          "artist": "Frank Ocean"
+        }
+      ],
+      "script": {
+        "segment_intro": "For our final chapter, we return to Frank Ocean's most ambient, ethereal realm. This is the sound of thoughts dissolving into the night air, a soft, beautiful landing.",
+        "between_tracks": [
+          {
+            "after_track_index": 0,
+            "text": null
+          },
+          {
+            "after_track_index": 1,
+            "text": null
+          },
+          {
+            "after_track_index": 2,
+            "text": "A heartfelt wish, sent out into the universe. And for our final moment together, a sprawling, cinematic introspection. Thank you for dreaming with me, Nova, on Luma Hits."
+          }
+        ]
+      }
+    }
+  ]
+}

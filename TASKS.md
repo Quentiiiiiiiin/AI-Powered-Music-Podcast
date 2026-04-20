@@ -1,220 +1,161 @@
-## 版本 v3.8（迭代十六：阶段一统一新文件产物）
+## 版本 v3.9（迭代十七：阶段二适配 `<episode_id>.json` 输入）
 
-基于 PRD v3.8：阶段一在 `single_agent` 与 `multi_agent` 下统一输出文件集：
-1) 保留 `state` 文件（当前为 `state.json`）；
-2) 新增一个以 `episode_id` 命名的新版 JSON 文件（简称“新文件”）；
-3) 移除单 agent 历史 `playlist` 文件产物；
-4) 本轮仅改阶段一生成/映射/校验/写盘契约，不要求阶段二立即消费该新文件。
+基于你补充的实现意图：阶段二**完全弃用 `EpisodePlan`**，后续执行链路（选曲、串词编排、混音）直接消费 `<episode_id>.json`（Snapshot 子集）。
+这意味着不只是读取层适配，而是阶段二核心模块的数据契约整体切换。
+
+结论：**需要重写 v3.9 任务列表，不是只改 Task 02。**
 
 ---
 
-### Task 01 - 明确“新文件”命名与路径规范（storage 层）
-- **Task name**: v3.8 - 新文件路径工具与命名规则
-- **目标**: 在存储层明确并固化“以 `episode_id` 命名的新 JSON 文件”路径，避免各处拼路径导致不一致。
+### Task 01 - 定义阶段二 Snapshot 领域模型（替代 EpisodePlan 入参）
+- **Task name**: v3.9 - Stage2Snapshot 契约模型化
+- **目标**: 为阶段二建立专用输入模型，覆盖 `<episode_id>.json` 的必需结构，并作为后续模块唯一输入对象。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 在 `src/podcast_ai/infra/storage/paths.py` 新增（或补充）路径函数，例如：
-    - `get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path`
-  - 文件名规则固定为：`{episode_id}.json`
-  - 放置目录与 `state.json` 的关系需一次性约定（推荐同在 `plans/` 下，便于阶段一产物聚合）。
-  - 增加读写 helper（可选但推荐）：
-    - `save_episode_state_snapshot(...)`
-    - `load_episode_state_snapshot(...)`
-- **Input**: `output_dir`、`episode_id`、state 数据
-- **Output**: 稳定的新文件路径与写盘入口
+  - 在 `src/podcast_ai/core/models.py` 新增（示例）：
+    - `Stage2SnapshotMeta`：`request_id/theme/language/target_duration_seconds`
+    - `Stage2PlaylistItem`：`track/artist`（按 sample）
+    - `Stage2Script`：`segment_intro/between_tracks[]`
+    - `Stage2Segment`：`segment_id/name/target_duration_seconds/playlists/script`
+    - `Stage2Snapshot`：`schema/meta/segments`
+  - 定义解析入口：`Stage2Snapshot.model_validate_json(...)` 或等价方法。
+  - 明确字段最小必需约束（缺失即失败，不静默填充）。
+- **Input**: `<episode_id>.json`
+- **Output**: 强类型的 `Stage2Snapshot`
 - **Files involved**:
-  - `src/podcast_ai/infra/storage/paths.py`
+  - `src/podcast_ai/core/models.py`
+  - 参考：`Sample_EpisodePlan_NEW.json`
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 02 - 阶段一写盘统一：输出 `state.json` + `episode_id.json`
-- **Task name**: v3.8 - `plan_episode` 统一文件产物
-- **目标**: 在 `plan_episode` 中，无论单/多 agent 都统一产出两份 JSON（`state.json` 与新文件），并确保内容一致性可追溯。
+### Task 02 - 阶段二输入加载切换：`create_episode` 直接读 Snapshot
+- **Task name**: v3.9 - pipeline 输入主路径切换
+- **目标**: `create_episode` 默认并仅以 `<episode_id>.json` 为主输入，移除内部 `load_episode_plan` 依赖。
 - **类型**: api
 - **依赖关系**: Task 01
 - **Description**:
-  - 修改 `src/podcast_ai/core/pipeline.py::plan_episode`：
-    - 保持现有 `save_state_json(...)`；
-    - 新增写盘 `episode_id.json`（由 Task 01 的路径函数生成）；
-    - 两个文件均来自同一份内存 state（避免双源漂移）。
-  - 返回值同步更新（如需）：让调用方拿到新文件路径，避免 CLI 重新推导。
-  - 保持多 agent 行为不变；single agent 与 multi agent 仅在 state 内容上不同，不在文件集合上分叉。
-- **Input**: `EpisodeRequest`、`agent_mode`
-- **Output**: 阶段一统一 JSON 产物集合
+  - 修改 `src/podcast_ai/core/pipeline.py::create_episode`：
+    - 入参语义从 `plan_path` 调整为 `snapshot_path`（可保持参数名但注释/错误信息必须改清晰）
+    - 加载 `Stage2Snapshot` 并进行结构校验
+    - 失败时返回可定位错误（字段路径/段索引）
+  - 不再调用 `load_episode_plan(...)` 作为主路径。
+  - `episode_root` 继续从 `<episode_id>.json` 路径推导（`.../episodes/<episode_id>/plans/<episode_id>.json`）。
+- **Input**: Snapshot 文件路径
+- **Output**: 阶段二启动后持有 `Stage2Snapshot`，不再依赖 `EpisodePlan`
 - **Files involved**:
   - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/infra/storage/paths.py`
-- **Estimated complexity**: M（2 小时）
-
----
-
-### Task 03 - 移除阶段一 `playlist` 文件产物与相关文案
-- **Task name**: v3.8 - 清理历史 playlist 产物
-- **目标**: 去除单 agent 历史 `playlist` 文件写盘逻辑，避免与 v3.8 统一产物目标冲突。
-- **类型**: api
-- **依赖关系**: Task 02
-- **Description**:
-  - 在 `pipeline.plan_episode` 删除 `playlist` 生成与写入代码（当前使用 `get_playlist_markdown_path` + markdown 组装）。
-  - 更新 CLI 输出文案，删除“目标歌单（Markdown）”相关输出，改为展示两份 JSON 路径。
-  - 清理未使用 import（`get_playlist_markdown_path` 等）与注释，提升可读性。
-- **Input**: `plan_episode` 结果
-- **Output**: 无 `playlist.md` 产物的统一阶段一输出
-- **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/cli.py`
-  - `src/podcast_ai/infra/storage/paths.py`（仅清理引用）
+  - `src/podcast_ai/infra/storage/paths.py`（新增 snapshot 读取 helper 可选）
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 04 - 阶段一契约同步：校验/映射/读取接口一致
-- **Task name**: v3.8 - 统一阶段一内部契约
-- **目标**: 确保阶段一涉及的“生成、映射、校验、写盘”链路在单/多 agent 下都能按统一文件契约结束，不引入分支特判。
+### Task 03 - 选曲模块签名迁移：`selector` 直接消费 Snapshot.playlists
+- **Task name**: v3.9 - select_tracks_by_snapshot
+- **目标**: 让选曲逻辑直接基于 `segments[*].playlists` 工作，去除对 `EpisodePlan.target_playlist` 的依赖。
 - **类型**: backend
-- **依赖关系**: Task 02、Task 03
+- **依赖关系**: Task 01、Task 02
 - **Description**:
-  - 保持 `validate_state_conforms_to_schema(...)` 在写盘前统一执行；
-  - 如 `ThemePlanner.generate_plan_and_state(...)` / `generate_plan_state(...)` 的返回契约受影响，做最小同步（不引入新模型层）；
-  - 明确调用方读取契约：阶段一标准入口应优先面向 `state.json` / `episode_id.json`，避免继续依赖历史 `playlist`。
-  - 本轮不改阶段二消费，仅确保阶段一产物契约清晰且可被后续迭代接入。
-- **Input**: single/multi agent 阶段一输出
-- **Output**: 阶段一统一契约稳定运行
+  - 在 `src/podcast_ai/modules/selection/selector.py` 新增并迁移：
+    - `select_tracks_by_snapshot(snapshot, library, crossfade_seconds)`
+    - `compute_segment_boundaries_from_snapshot(snapshot, selected_tracks, crossfade_seconds)`
+    - `split_tracks_by_snapshot(snapshot, selected_tracks)`
+  - 映射规则：
+    - 每个 segment 的曲目顺序直接来自 `playlists` 数组顺序
+    - 匹配优先用 `track + artist`，其次降级单字段匹配
+  - 保留旧 `select_tracks_by_plan` 可短期兼容（非主路径），但 pipeline 改为新函数。
+- **Input**: `Stage2Snapshot`
+- **Output**: 与当前流程兼容的 `SelectedTrack[]` + 边界结果
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/llm_planner.py`
+  - `src/podcast_ai/modules/selection/selector.py`
   - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2 小时）
-
----
-
-### Task 05 - 测试回归：统一文件集与模式一致性
-- **Task name**: v3.8 - 文件产物统一回归测试
-- **目标**: 自动化验证 v3.8 验收点：单/多 agent 都输出相同文件类型集合（`state.json` + `episode_id.json`），且不再输出 `playlist.md`。
-- **类型**: backend
-- **依赖关系**: Task 01-04
-- **Description**:
-  - 更新/新增测试：
-    1) `plan_episode(single_agent)`：存在 `state.json` 与 `episode_id.json`，不存在 `playlist.md`；
-    2) `plan_episode(multi_agent)`：同样文件集合；
-    3) 新文件命名与 `episode_id` 一致；
-    4) 两文件内容字段契约符合预期（至少校验顶层结构与关键字段）。
-  - 优先扩展：
-    - `tests/test_pipeline.py`
-    - 必要时新增 `tests/test_stage1_outputs.py`
-- **Input**: stub LLM / tmp_path / 两种 agent_mode
-- **Output**: `pytest` 通过，v3.8 产物契约受控
-- **Files involved**:
-  - `tests/test_pipeline.py`
-  - （可选）`tests/test_stage1_outputs.py`
 - **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 06（可选）- README 与命令行帮助同步
-- **Task name**: v3.8（可选）- 产物说明文档对齐
-- **目标**: 避免文档继续描述旧的 `playlist` 产物，降低使用误解成本。
-- **类型**: backend（文档）
-- **依赖关系**: Task 03
-- **Description**:
-  - 更新 `README.md` 的阶段一输出说明：
-    - 删除 `playlist.md`
-    - 增加 `state.json` + `episode_id.json` 说明与示例路径
-  - 同步 `cli.py` 子命令 help 文案。
-- **Input**: v3.8 新产物契约
-- **Output**: 文档与实际行为一致
-- **Files involved**:
-  - `README.md`
-  - `src/podcast_ai/cli.py`
-- **Estimated complexity**: XS（0.5-1 小时）
-
----
-
-## v3.8 代码评审后补充任务（最小修改版）
-
-> 说明：以下任务为对当前已提交代码的增量修正。保留现有产物路径与接口形态，重点修复“`episode_id.json` 字段过多、不符合 PRD 子集契约”的问题，避免大范围重构。
-
-### Task 07 - 修复新文件映射：`episode_id.json` 只保留 PRD 子集字段
-- **Task name**: v3.8 fix - snapshot 子集字段裁剪
-- **目标**: 将 `{episode_id}.json` 从“完整 PlanState 复制”修正为 PRD 指定子集：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+### Task 04 - 串词编排重构：支持 `between_tracks`（段内插点）
+- **Task name**: v3.9 - voiceover timeline from snapshot script
+- **目标**: 串词生成从“每段 1 条 host_script”升级为“segment_intro + between_tracks 多插点”，直接消费 Snapshot.script。
 - **类型**: backend
-- **依赖关系**: 无（可直接修改现有 `save_episode_state_snapshot` 入口）
+- **依赖关系**: Task 01、Task 03
 - **Description**:
-  - 在 `src/podcast_ai/infra/storage/paths.py` 中新增映射函数（示例）：
-    - `build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]`
-  - `save_episode_state_snapshot(...)` 改为写入该映射结果，而不是原始 `state`。
-  - 字段映射口径（防误解）：
-    - 顶层 `schema`：由 `state.schema_version` 映射（如无则报错，不静默填默认）
-    - `meta`：仅保留 `request_id/theme/language/target_duration_seconds`
-    - `segments[*]`：仅保留 `segment_id/name/target_duration_seconds/playlists/script`
-    - `playlists`：由 `state.segments[*].playlist` 映射（命名按 PRD/sample，避免继续写 `playlist` 单数）
-    - `script`：沿用 `state.segments[*].script`，仅做最小结构透传
-- **Input**: 内存 `PlanState`
-- **Output**: 字段受控的 `{episode_id}.json`
+  - 修改 `src/podcast_ai/modules/voiceover/tts_service.py`：
+    - 新增 `generate_voiceovers_from_snapshot(snapshot, selected_tracks/segment_boundaries, ...)`
+  - 时间线规则（最小可执行版本）：
+    - `segment_intro`：插在该 segment 第一首歌前
+    - `between_tracks[k].after_track_index`：插在 segment 内对应歌曲后边界
+  - 对 `text=null` 保持跳过（不生成 TTS），`text` 非空则生成独立 `VoiceoverSegment`
+  - 越界索引/结构异常要抛明确错误，阻断流程。
+- **Input**: Snapshot.script + 已选曲目边界
+- **Output**: 含段内多插点的 `VoiceoverSegment[]`
 - **Files involved**:
-  - `src/podcast_ai/infra/storage/paths.py`
-- **Estimated complexity**: S（1-2 小时）
-
----
-
-### Task 08 - 增加新文件专用校验并在写盘前执行
-- **Task name**: v3.8 fix - snapshot schema guard
-- **目标**: 满足 PRD 验收 5：若新文件映射缺字段或结构不符，必须明确报错并中断，不静默回退。
-- **类型**: backend
-- **依赖关系**: Task 07
-- **Description**:
-  - 在 `src/podcast_ai/modules/theme/state.py` 新增轻量校验函数（示例）：
-    - `validate_episode_snapshot_subset(snapshot: dict[str, Any]) -> None`
-  - 校验最小必需项：
-    - 顶层仅 `schema/meta/segments`
-    - `meta` 仅含 `request_id/theme/language/target_duration_seconds`
-    - `segments[*]` 至少含 `segment_id/name/target_duration_seconds/playlists/script`
-  - 在 `pipeline.plan_episode` 中写入 `{episode_id}.json` 前调用该校验；失败直接抛 `AIServiceError`（或统一业务异常），并包含可定位字段路径。
-- **Input**: snapshot dict
-- **Output**: 失败早暴露，避免错误产物落盘
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/state.py`
+  - `src/podcast_ai/modules/voiceover/tts_service.py`
   - `src/podcast_ai/core/pipeline.py`
-- **Estimated complexity**: S（1-2 小时）
+- **Estimated complexity**: L（3 小时）
 
 ---
 
-### Task 09 - 接口同步（最小影响）：明确 `plan_episode` 返回值语义与 CLI 展示
-- **Task name**: v3.8 fix - stage1 输出接口对齐
-- **目标**: 防止工程师误解返回路径含义：`state_path` 是完整 state，`snapshot_path` 是子集新文件；CLI 与函数注释保持一致。
+### Task 05 - 混音对齐改造：从“每段一串词”到“按时间点插入多串词”
+- **Task name**: v3.9 - mixer supports multi-voiceover timeline
+- **目标**: 混音层不再假设“voiceover 数量 == segment 数量”，改为基于 `insert_time_in_episode` 的通用串词插入。
+- **类型**: backend
+- **依赖关系**: Task 03、Task 04
+- **Description**:
+  - 修改 `src/podcast_ai/modules/mixing/mixer.py`：
+    - 当前 `串词_i → 组_i` 拼接逻辑改为“先构建音乐主时间线，再按时间点插入/叠加串词事件”
+  - 保持既有 v2.1 边界原则不倒退：
+    - 音乐→串词硬切
+    - 串词→音乐仅音乐淡入
+    - 歌曲-歌曲 crossfade 仍按原配置
+  - 处理多串词同段场景，确保顺序与 Snapshot 脚本一致。
+- **Input**: `SelectedTrack[]` + 多插点 `VoiceoverSegment[]`
+- **Output**: 正确对齐的最终混音
+- **Files involved**:
+  - `src/podcast_ai/modules/mixing/mixer.py`
+  - `src/podcast_ai/core/pipeline.py`
+- **Estimated complexity**: L（3 小时）
+
+---
+
+### Task 06 - CLI / 文档契约同步（阶段二输入）
+- **Task name**: v3.9 - create-episode 输入说明更新
+- **目标**: CLI 与 README 明确阶段二输入是 `<episode_id>.json`，避免继续传旧 EpisodePlan 文件。
 - **类型**: api
-- **依赖关系**: Task 07
+- **依赖关系**: Task 02
 - **Description**:
-  - 更新 `src/podcast_ai/core/pipeline.py::plan_episode` docstring 和返回说明，明确两文件内容差异（不是等价副本）。
-  - 更新 `src/podcast_ai/cli.py` 输出文案：将 `{episode_id}.json` 标注为“阶段一对接子集文件（v3.8）”。
-  - 若现有调用方有“`snapshot == state`”假设，需在注释中显式禁止该假设（不改阶段二逻辑）。
-- **Input**: `plan_episode` 调用结果
-- **Output**: 输出契约可读且不歧义
+  - 更新 `src/podcast_ai/cli.py`：
+    - `create-episode` 参数 help 改为“阶段一产出的 `<episode_id>.json`”
+    - 错误提示聚焦 snapshot 字段契约
+  - 更新 `README.md` 示例命令与文件路径说明。
+- **Input**: 用户命令输入
+- **Output**: 用户可按新契约直接跑通阶段二
 - **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
   - `src/podcast_ai/cli.py`
+  - `README.md`
 - **Estimated complexity**: XS（0.5-1 小时）
 
 ---
 
-### Task 10 - 回归测试修正：从“内容相等”改为“子集结构正确”
-- **Task name**: v3.8 fix - snapshot subset tests
-- **目标**: 修正当前错误测试假设（`snapshot_raw == state_raw`），改为验证 `{episode_id}.json` 的子集契约与字段白名单。
+### Task 07 - 回归测试：Snapshot 主路径 + between_tracks 行为
+- **Task name**: v3.9 - stage2 snapshot e2e regression
+- **目标**: 锁定 v3.9 新契约并防止回退。
 - **类型**: backend
-- **依赖关系**: Task 07、Task 08
+- **依赖关系**: Task 01-06
 - **Description**:
-  - 更新 `tests/test_pipeline.py` 相关断言：
-    - 删除 `snapshot_raw == raw` 断言；
-    - 新增断言：顶层只含 `schema/meta/segments`；
-    - `meta` 只含四个 key；
-    - `segments[*]` 含 `playlists/script`，且不含 `critic/control/global_constraints/plan` 等非约定字段。
-  - 新增负例测试（可放 `tests/test_pipeline.py` 或新文件）：
-    - 构造缺失关键字段的 state，断言 snapshot 校验失败并抛出明确错误。
-- **Input**: single/multi agent 的 mock state
-- **Output**: v3.8 子集契约由测试锁定
+  - 更新 `tests/test_pipeline.py` 与相关模块测试：
+    1) `create_episode` 以 `<episode_id>.json` 输入可跑通
+    2) 缺失关键字段时明确失败（非静默）
+    3) `between_tracks` 有文本时会生成额外串词并参与混音
+    4) `between_tracks.text=null` 不生成语音但流程不报错
+  - 适当新增：
+    - `tests/test_stage2_snapshot_input.py`
+    - `tests/test_voiceover_snapshot.py`（可选）
+- **Input**: 合法/非法 snapshot 样本
+- **Output**: `pytest` 通过，阶段二新输入契约受控
 - **Files involved**:
   - `tests/test_pipeline.py`
-  - （可选）`tests/test_stage1_outputs.py`
-- **Estimated complexity**: S（1-2 小时）
-
+  - `tests/test_voiceover.py`
+  - `tests/test_mixing.py`
+  - （可选）新增测试文件
+- **Estimated complexity**: M（2-3 小时）

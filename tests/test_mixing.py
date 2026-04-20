@@ -429,3 +429,23 @@ def test_v14_mixer_accepts_mp3_voiceover_elevenlabs_shape(tmp_path: Path) -> Non
     expected = 0.5 + 2.0 + 0.3 + 1.5
     assert abs(summary.actual_duration_seconds - expected) < 0.08
     assert summary.voiceover_count == 2
+
+
+@_ffmpeg_required
+def test_v39_mixer_supports_multi_voiceovers_by_insert_time(tmp_path: Path) -> None:
+    _make_silent_wav(tmp_path / "t1.wav", 2000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=2.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=2.0, effective_duration=2.0)
+    vo1 = _make_voiceover(tmp_path / "vo1.wav", 400)
+    vo1.insert_time_in_episode = 0.0
+    vo2 = _make_voiceover(tmp_path / "vo2.wav", 300)
+    vo2.insert_time_in_episode = 1.0
+    config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=0.0)
+    mixer = Mixer()
+    out = tmp_path / "mix_v39.wav"
+    summary = mixer.build_mix([st1], [vo1, vo2], config, out, plan=None)
+    # 总时长：音乐 2.0s + 两段串词（无叠化）
+    assert abs(summary.actual_duration_seconds - 2.7) < 0.1

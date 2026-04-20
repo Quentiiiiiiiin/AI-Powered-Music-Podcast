@@ -60,7 +60,7 @@ class _CriticStubOncePass(_TraceAgentBase, CriticAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Critic")
 
-    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         return merge_plan_state(
             state,
@@ -83,7 +83,7 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
         _TraceAgentBase.__init__(self, "Critic")
         self._call_count = 0
 
-    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         self._call_count += 1
         state = self._append_trace(state)
         if self._call_count == 1:
@@ -133,7 +133,7 @@ class _CriticStubNeverPass(_TraceAgentBase, CriticAgent):
     def __init__(self) -> None:
         _TraceAgentBase.__init__(self, "Critic")
 
-    def run(self, state: PlanState, **kwargs: Any) -> PlanState:  # type: ignore[override]
+    def run(self, state: PlanState, mode: str = "generation", **kwargs: Any) -> PlanState:  # type: ignore[override]
         state = self._append_trace(state)
         critic = {
             "pass": False,
