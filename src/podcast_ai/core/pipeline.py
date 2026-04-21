@@ -218,9 +218,7 @@ def create_episode(
         mix_path = get_mix_output_path(episode_root, ext="wav")
         with log_timing(logger, "build_mix"):
             mixer = Mixer()
-            mix_summary = mixer.build_mix(
-                selected_tracks, voiceovers, config, mix_path, plan=None
-            )
+            mix_summary = mixer.build_mix(selected_tracks, voiceovers, config, mix_path)
 
         final_path = get_final_audio_path(episode_root, episode_id)
         with log_timing(logger, "apply_mastering"):

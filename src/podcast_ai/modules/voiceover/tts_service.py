@@ -147,7 +147,7 @@ class VoiceoverService:
     ) -> list[VoiceoverSegment]:
         """
         v3.9：从 snapshot.script 生成多插点串词。
-        - segment_intro：插在本段第一首歌前（使用 segment 边界）
+        - segment_intro：seg_0 固定 0；其余段插在上一段音乐结束边界（prev music_end）
         - between_tracks[*].after_track_index：插在本段对应歌曲后边界
         """
         if len(selected_tracks_by_segment) != len(snapshot.segments):
@@ -167,6 +167,11 @@ class VoiceoverService:
 
             intro = (seg.script.segment_intro or "").strip()
             if intro:
+                # 方案 A：段首串词（除第一段）锚定在上一段 music_end，
+                # 避免 crossfade 时间线上被提前到上一段最后一首歌曲结束前。
+                intro_insert_time = (
+                    segment_boundaries[seg_idx - 1].music_end if seg_idx > 0 else 0.0
+                )
                 audio_path = self._tts.synthesize(
                     intro,
                     voice=voice,
@@ -178,7 +183,7 @@ class VoiceoverService:
                         segment_id=seg.segment_id,
                         text=intro,
                         audio_path=audio_path,
-                        insert_time_in_episode=music_start,
+                        insert_time_in_episode=intro_insert_time,
                     ),
                 )
             # intro 为空时跳过，不生成语音

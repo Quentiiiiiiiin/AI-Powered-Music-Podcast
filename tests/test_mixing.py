@@ -8,7 +8,14 @@ import pytest
 from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.generators import Sine  # type: ignore[import-untyped]
 
-from podcast_ai.core.models import AudioRenderConfig, SelectedTrack, Track, TrackMetadata, TrackWithMetadata, VoiceoverSegment
+from podcast_ai.core.models import (
+    AudioRenderConfig,
+    SelectedTrack,
+    Track,
+    TrackMetadata,
+    TrackWithMetadata,
+    VoiceoverSegment,
+)
 from podcast_ai.infra.audio_backend import crossfade_concat, is_ffmpeg_available, load_audio, simple_normalize
 from podcast_ai.modules.mixing.mixer import Mixer
 
@@ -100,7 +107,9 @@ def test_mixer_build_mix_two_tracks_crossfade(tmp_path: Path) -> None:
 # ---------- v1.1 验收测试：串词1→组1→串词2→组2、不重叠、组内 crossfade ----------
 
 
-def _make_voiceover(path: Path, duration_ms: int) -> VoiceoverSegment:
+def _make_voiceover(
+    path: Path, duration_ms: int, insert_time_in_episode: float = 0.0
+) -> VoiceoverSegment:
     """生成主持语音文件并返回 VoiceoverSegment（用于测试）。"""
     seg = AudioSegment.silent(duration=duration_ms)
     seg.export(str(path), format="wav")
@@ -108,11 +117,13 @@ def _make_voiceover(path: Path, duration_ms: int) -> VoiceoverSegment:
         segment_id=path.stem,
         text="",
         audio_path=path,
-        insert_time_in_episode=0.0,
+        insert_time_in_episode=insert_time_in_episode,
     )
 
 
-def _make_voiceover_mp3(path: Path, duration_ms: int) -> VoiceoverSegment:
+def _make_voiceover_mp3(
+    path: Path, duration_ms: int, insert_time_in_episode: float = 0.0
+) -> VoiceoverSegment:
     """生成 mp3 主持段（模拟 ElevenLabs 默认输出），供 v1.4 混音链路回归。"""
     seg = AudioSegment.silent(duration=duration_ms)
     seg.export(str(path), format="mp3")
@@ -120,7 +131,7 @@ def _make_voiceover_mp3(path: Path, duration_ms: int) -> VoiceoverSegment:
         segment_id=path.stem,
         text="",
         audio_path=path,
-        insert_time_in_episode=0.0,
+        insert_time_in_episode=insert_time_in_episode,
     )
 
 
@@ -132,8 +143,8 @@ def test_v11_episode_starts_with_voiceover(tmp_path: Path) -> None:
     _make_silent_wav(tmp_path / "t1.wav", 2000)
     _make_silent_wav(tmp_path / "t2.wav", 1500)
     voiceovers = [
-        _make_voiceover(vo1, 500),
-        _make_voiceover(vo2, 300),
+        _make_voiceover(vo1, 500, 0.0),
+        _make_voiceover(vo2, 300, 2.0),
     ]
     twm1 = TrackWithMetadata(
         track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
@@ -160,8 +171,8 @@ def test_v11_episode_starts_with_voiceover(tmp_path: Path) -> None:
 def test_v11_voiceover_and_music_no_overlap(tmp_path: Path) -> None:
     """v1.1：串词与歌曲不重叠，总时长 = 各部分之和（段间无 crossfade）。"""
     voiceovers = [
-        _make_voiceover(tmp_path / "vo1.wav", 400),
-        _make_voiceover(tmp_path / "vo2.wav", 200),
+        _make_voiceover(tmp_path / "vo1.wav", 400, 0.0),
+        _make_voiceover(tmp_path / "vo2.wav", 200, 2.5),
     ]
     _make_silent_wav(tmp_path / "t1.wav", 2500)
     _make_silent_wav(tmp_path / "t2.wav", 1800)
@@ -187,18 +198,22 @@ def test_v11_voiceover_and_music_no_overlap(tmp_path: Path) -> None:
 def test_v11_crossfade_within_groups(tmp_path: Path) -> None:
     """v1.1：相邻 segment 之间的歌曲-歌曲转场仍为 crossfade（组内 crossfade）。"""
     voiceovers = [
-        _make_voiceover(tmp_path / "vo1.wav", 500),
-        _make_voiceover(tmp_path / "vo2.wav", 300),
+        _make_voiceover(tmp_path / "vo1.wav", 500, 0.0),
+        _make_voiceover(tmp_path / "vo2.wav", 300, 5.0),
     ]
     cf = 0.5
     _make_silent_wav(tmp_path / "t1.wav", 3000)
     _make_silent_wav(tmp_path / "t2.wav", 2500)
     _make_silent_wav(tmp_path / "t3.wav", 2000)
     _make_silent_wav(tmp_path / "t4.wav", 2000)
+    # 元数据时长须与 wav 一致；组 1 为 t1(3s)+t2(2.5s)，组 2 为 t3+t4(各 2s)
+    dur_by_i = {1: 3.0, 2: 2.5, 3: 2.0, 4: 2.0}
     tracks_meta = [
         TrackWithMetadata(
             track=Track(id=f"t{i}", file_path=tmp_path / f"t{i}.wav", title=f"T{i}", artist="X"),
-            metadata=TrackMetadata(track_id=f"t{i}", duration_seconds=3.0 if i <= 2 else 2.0, bpm=100.0, genre=None),
+            metadata=TrackMetadata(
+                track_id=f"t{i}", duration_seconds=dur_by_i[i], bpm=100.0, genre=None
+            ),
         )
         for i in range(1, 5)
     ]
@@ -228,8 +243,8 @@ def test_v11_crossfade_within_groups(tmp_path: Path) -> None:
 def test_v11_duration_within_tolerance(tmp_path: Path) -> None:
     """v1.1：总时长在既有容差内（±5%）。"""
     voiceovers = [
-        _make_voiceover(tmp_path / "vo1.wav", 600),
-        _make_voiceover(tmp_path / "vo2.wav", 400),
+        _make_voiceover(tmp_path / "vo1.wav", 600, 0.0),
+        _make_voiceover(tmp_path / "vo2.wav", 400, 5.0),
     ]
     _make_silent_wav(tmp_path / "t1.wav", 5000)
     _make_silent_wav(tmp_path / "t2.wav", 4000)
@@ -278,29 +293,31 @@ def _v21_sine_episode_tone_fixture(
     music2_path = tmp_path / "m2.wav"
     _export_sine_wav(music2_path, 330.0, g2_ms)
 
+    g1_sec = g1_ms / 1000.0
+    g2_sec = g2_ms / 1000.0
     voiceovers = [
         VoiceoverSegment(segment_id="open", text="", audio_path=vo1_path, insert_time_in_episode=0.0),
-        VoiceoverSegment(segment_id="main", text="", audio_path=vo_main_path, insert_time_in_episode=0.0),
+        VoiceoverSegment(segment_id="main", text="", audio_path=vo_main_path, insert_time_in_episode=g1_sec),
     ]
     twm1 = TrackWithMetadata(
         track=Track(id="t1", file_path=music1_path, title="M1", artist="X"),
-        metadata=TrackMetadata(track_id="t1", duration_seconds=g1_ms / 1000.0, bpm=100.0, genre=None),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=g1_sec, bpm=100.0, genre=None),
     )
     twm2 = TrackWithMetadata(
         track=Track(id="t2", file_path=music2_path, title="M2", artist="Y"),
-        metadata=TrackMetadata(track_id="t2", duration_seconds=g2_ms / 1000.0, bpm=100.0, genre=None),
+        metadata=TrackMetadata(track_id="t2", duration_seconds=g2_sec, bpm=100.0, genre=None),
     )
     st1 = SelectedTrack(
         track=twm1.track,
-        start_time_in_episode=0,
-        end_time_in_episode=g1_ms / 1000.0,
-        effective_duration=g1_ms / 1000.0,
+        start_time_in_episode=0.0,
+        end_time_in_episode=g1_sec,
+        effective_duration=g1_sec,
     )
     st2 = SelectedTrack(
         track=twm2.track,
-        start_time_in_episode=0,
-        end_time_in_episode=g2_ms / 1000.0,
-        effective_duration=g2_ms / 1000.0,
+        start_time_in_episode=g1_sec,
+        end_time_in_episode=g1_sec + g2_sec,
+        effective_duration=g2_sec,
     )
     return {
         "vm_seconds": vm_seconds,
@@ -409,8 +426,8 @@ def test_v14_mixer_accepts_mp3_voiceover_elevenlabs_shape(tmp_path: Path) -> Non
     _make_silent_wav(tmp_path / "t1.wav", 2000)
     _make_silent_wav(tmp_path / "t2.wav", 1500)
     voiceovers = [
-        _make_voiceover_mp3(vo1, 500),
-        _make_voiceover_mp3(vo2, 300),
+        _make_voiceover_mp3(vo1, 500, 0.0),
+        _make_voiceover_mp3(vo2, 300, 2.0),
     ]
     twm1 = TrackWithMetadata(
         track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
@@ -439,13 +456,118 @@ def test_v39_mixer_supports_multi_voiceovers_by_insert_time(tmp_path: Path) -> N
         metadata=TrackMetadata(track_id="t1", duration_seconds=2.0, bpm=100.0, genre=None),
     )
     st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=2.0, effective_duration=2.0)
-    vo1 = _make_voiceover(tmp_path / "vo1.wav", 400)
-    vo1.insert_time_in_episode = 0.0
-    vo2 = _make_voiceover(tmp_path / "vo2.wav", 300)
-    vo2.insert_time_in_episode = 1.0
+    vo1 = _make_voiceover(tmp_path / "vo1.wav", 400, 0.0)
+    vo2 = _make_voiceover(tmp_path / "vo2.wav", 300, 2.0)
     config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=0.0)
     mixer = Mixer()
     out = tmp_path / "mix_v39.wav"
-    summary = mixer.build_mix([st1], [vo1, vo2], config, out, plan=None)
+    summary = mixer.build_mix([st1], [vo1, vo2], config, out)
     # 总时长：音乐 2.0s + 两段串词（无叠化）
     assert abs(summary.actual_duration_seconds - 2.7) < 0.1
+
+
+# ---------- v3.9.1：时间线校验与「非整轨先叠化」路径回归 ----------
+
+
+def test_v391_rejects_duplicate_insert_time(tmp_path: Path) -> None:
+    """同一锚点两条串词须拒绝，避免时间线歧义。"""
+    _make_silent_wav(tmp_path / "t1.wav", 2000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=2.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(
+        track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=2.0, effective_duration=2.0
+    )
+    _make_silent_wav(tmp_path / "v1.wav", 100)
+    _make_silent_wav(tmp_path / "v2.wav", 100)
+    vo1 = VoiceoverSegment(
+        segment_id="a", text="", audio_path=tmp_path / "v1.wav", insert_time_in_episode=0.0
+    )
+    vo2 = VoiceoverSegment(
+        segment_id="b", text="", audio_path=tmp_path / "v2.wav", insert_time_in_episode=0.0
+    )
+    config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=0.0)
+    mixer = Mixer()
+    with pytest.raises(ValueError, match="insert_time 冲突"):
+        mixer.build_mix([st1], [vo1, vo2], config, tmp_path / "out.wav")
+
+
+def test_v391_rejects_insert_not_on_timeline_anchor(tmp_path: Path) -> None:
+    """insert_time 必须落在 0 或某曲 episode start/end 锚点上。"""
+    _make_silent_wav(tmp_path / "t1.wav", 2000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=2.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(
+        track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=2.0, effective_duration=2.0
+    )
+    _make_silent_wav(tmp_path / "v1.wav", 100)
+    vo1 = VoiceoverSegment(
+        segment_id="a", text="", audio_path=tmp_path / "v1.wav", insert_time_in_episode=1.0
+    )
+    config = AudioRenderConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=0.0)
+    mixer = Mixer()
+    with pytest.raises(ValueError, match="非合法锚点"):
+        mixer.build_mix([st1], [vo1], config, tmp_path / "out.wav")
+
+
+@_ffmpeg_required
+def test_v391_no_single_crossfade_of_entire_tracklist(monkeypatch, tmp_path: Path) -> None:
+    """
+    v3.9.1：有串词时按块组内叠化，不得出现「先对全部 selected_tracks 做一次 crossfade_concat」
+    的旧实现（可通过单次调用片段数观测）。
+    """
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    chunk_lengths: list[int] = []
+
+    def _spy(segments, crossfade_seconds):
+        segs = list(segments)
+        chunk_lengths.append(len(segs))
+        return crossfade_concat(segs, crossfade_seconds)
+
+    monkeypatch.setattr(mixer_mod, "crossfade_concat", _spy)
+
+    voiceovers = [
+        _make_voiceover(tmp_path / "vo1.wav", 500, 0.0),
+        _make_voiceover(tmp_path / "vo2.wav", 300, 5.0),
+    ]
+    cf = 0.5
+    _make_silent_wav(tmp_path / "t1.wav", 3000)
+    _make_silent_wav(tmp_path / "t2.wav", 2500)
+    for i in (3, 4):
+        _make_silent_wav(tmp_path / f"t{i}.wav", 2000)
+    dur_by_i = {1: 3.0, 2: 2.5, 3: 2.0, 4: 2.0}
+    tracks_meta = [
+        TrackWithMetadata(
+            track=Track(id=f"t{i}", file_path=tmp_path / f"t{i}.wav", title=f"T{i}", artist="X"),
+            metadata=TrackMetadata(
+                track_id=f"t{i}", duration_seconds=dur_by_i[i], bpm=100.0, genre=None
+            ),
+        )
+        for i in range(1, 5)
+    ]
+    selected: list[SelectedTrack] = []
+    t_acc = 0.0
+    for i, twm in enumerate(tracks_meta):
+        dur = twm.metadata.duration_seconds
+        start = t_acc
+        end = start + dur
+        effective = dur - cf if i > 0 else dur
+        t_acc = end - cf
+        selected.append(
+            SelectedTrack(
+                track=twm.track,
+                start_time_in_episode=start,
+                end_time_in_episode=end,
+                effective_duration=effective,
+            )
+        )
+    config = AudioRenderConfig(crossfade_seconds=cf, voice_music_crossfade_seconds=0.0)
+    mixer = Mixer()
+    out = tmp_path / "mix_v391_spy.wav"
+    mixer.build_mix(selected, voiceovers, config, out)
+    assert 4 not in chunk_lengths, "不应一次性叠化全部 4 首曲目"
+    assert 2 in chunk_lengths

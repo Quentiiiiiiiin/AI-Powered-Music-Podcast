@@ -170,3 +170,96 @@ def test_v39_generate_voiceovers_from_snapshot_between_tracks(tmp_path: Path) ->
     assert vos[0].text == "intro"
     assert vos[1].text == "between"
     assert vos[1].insert_time_in_episode == 120.0
+
+
+def test_v39_segment_intro_after_previous_segment_end(tmp_path: Path) -> None:
+    """方案 A：第 2 段 intro 锚定在上一段 music_end，而不是本段 music_start。"""
+    snapshot = Stage2Snapshot(
+        schema="v3.0",
+        meta=Stage2SnapshotMeta(
+            request_id="r2",
+            theme="t",
+            language="zh-CN",
+            target_duration_seconds=900,
+        ),
+        segments=[
+            Stage2Segment(
+                segment_id="seg_01",
+                name="段1",
+                target_duration_seconds=500,
+                playlists=[
+                    {"track": "A", "artist": "X"},
+                    {"track": "B", "artist": "Y"},
+                    {"track": "C", "artist": "Z"},
+                ],
+                script=Stage2Script(
+                    segment_intro="intro1",
+                    between_tracks=[{"after_track_index": 1, "text": "after_t2"}],
+                ),
+            ),
+            Stage2Segment(
+                segment_id="seg_02",
+                name="段2",
+                target_duration_seconds=400,
+                playlists=[{"track": "D", "artist": "W"}],
+                script=Stage2Script(segment_intro="intro2", between_tracks=[]),
+            ),
+        ],
+    )
+    selected_tracks = [
+        [
+            SelectedTrack(
+                track=Track(id="t1", file_path=tmp_path / "a.wav", title="A", artist="X"),
+                start_time_in_episode=0.0,
+                end_time_in_episode=120.0,
+                effective_duration=120.0,
+            ),
+            SelectedTrack(
+                track=Track(id="t2", file_path=tmp_path / "b.wav", title="B", artist="Y"),
+                start_time_in_episode=100.0,
+                end_time_in_episode=220.0,
+                effective_duration=100.0,
+            ),
+            SelectedTrack(
+                track=Track(id="t3", file_path=tmp_path / "c.wav", title="C", artist="Z"),
+                start_time_in_episode=200.0,
+                end_time_in_episode=360.0,
+                effective_duration=140.0,
+            ),
+        ],
+        [
+            SelectedTrack(
+                track=Track(id="t4", file_path=tmp_path / "d.wav", title="D", artist="W"),
+                start_time_in_episode=330.0,
+                end_time_in_episode=480.0,
+                effective_duration=120.0,
+            ),
+        ],
+    ]
+    boundaries = [
+        SegmentBoundary(music_start=0.0, music_end=360.0),
+        SegmentBoundary(music_start=330.0, music_end=480.0),
+    ]
+
+    mock_tts = MagicMock()
+    p1 = tmp_path / "intro1.mp3"
+    p2 = tmp_path / "after_t2.mp3"
+    p3 = tmp_path / "intro2.mp3"
+    p1.write_bytes(b"1")
+    p2.write_bytes(b"2")
+    p3.write_bytes(b"3")
+    mock_tts.synthesize.side_effect = [p1, p2, p3]
+    settings = Settings(
+        app=AppConfig(output_dir=str(tmp_path)),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+    svc = VoiceoverService(tts_client=mock_tts, settings=settings)
+    vos = svc.generate_voiceovers_from_snapshot(
+        snapshot,
+        selected_tracks_by_segment=selected_tracks,
+        segment_boundaries=boundaries,
+    )
+
+    # 时间排序后应为：seg1 intro(0) -> seg1 after_t2(220) -> seg2 intro(360)
+    assert [v.segment_id for v in vos] == ["seg_01", "seg_01_after_1", "seg_02"]
+    assert [v.insert_time_in_episode for v in vos] == [0.0, 220.0, 360.0]
