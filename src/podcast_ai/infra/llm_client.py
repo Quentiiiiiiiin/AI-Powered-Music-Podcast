@@ -55,14 +55,12 @@ class OpenAICompatibleLLMClient(LLMClient):
             raise AIServiceError("LLM base_url 未配置（llm.base_url 为空）。请在 config.yaml 或环境变量中进行配置。")
         if not self._cfg.model:
             raise AIServiceError("LLM 模型名称未配置（llm.model 为空）。")
-         
-         # 新增：请求前校验 api_key
         if not self._cfg.api_key or not self._cfg.api_key.strip():
             raise AIServiceError(
-            "LLM api_key 未配置。请在 config.yaml 中设置 llm.api_key，"
-            "或使用环境变量 PODCAST_AI_LLM__API_KEY。OpenRouter 需有效 API Key 才能调用。"
-        )
-        
+                "LLM api_key 未配置。请在 config.yaml 中设置 llm.api_key，"
+                "或使用环境变量 PODCAST_AI_LLM__API_KEY。OpenRouter 需有效 API Key 才能调用。",
+            )
+
         url = "/chat/completions"
         payload: Dict[str, Any] = {
             "model": self._cfg.model,
@@ -70,8 +68,19 @@ class OpenAICompatibleLLMClient(LLMClient):
         }
         payload.update(kwargs)
 
-        # 日志中打印脱敏后的请求信息（不包含 api_key）
-        safe_payload = {**payload}
+        # 日志中打印脱敏后的请求信息（不包含 api_key、不展开完整 json_schema）
+        safe_payload = dict(payload)
+        if "response_format" in safe_payload:
+            rf = safe_payload.get("response_format") or {}
+            js = rf.get("json_schema") if isinstance(rf, dict) else {}
+            safe_payload["response_format"] = {
+                "type": rf.get("type") if isinstance(rf, dict) else None,
+                "json_schema": {
+                    "name": js.get("name") if isinstance(js, dict) else None,
+                    "strict": js.get("strict") if isinstance(js, dict) else None,
+                    "schema": "<omitted>",
+                },
+            }
         try:
             preview = json.dumps(safe_payload, ensure_ascii=False)[:512]
         except Exception:  # noqa: BLE001
@@ -86,7 +95,13 @@ class OpenAICompatibleLLMClient(LLMClient):
                 if resp.status_code >= 500:
                     raise AIServiceError(f"LLM 服务端错误（HTTP {resp.status_code}）。")
                 if resp.status_code >= 400:
-                    raise AIServiceError(f"LLM 请求失败（HTTP {resp.status_code}）：{resp.text[:300]}")
+                    body_preview = (resp.text or "")[:300]
+                    hint = ""
+                    if resp.status_code == 400:
+                        low = body_preview.lower()
+                        if "response_format" in low or "json_schema" in low:
+                            hint = "（可能与 response_format/结构化输出不被当前网关或模型支持有关）"
+                    raise AIServiceError(f"LLM 请求失败（HTTP {resp.status_code}）：{body_preview}{hint}")
 
                 data = resp.json()
                 # OpenAI Chat 兼容字段：choices[0].message.content
@@ -97,6 +112,8 @@ class OpenAICompatibleLLMClient(LLMClient):
 
                 logger.debug("LLM response length=%d chars", len(content))
                 return content
+            except AIServiceError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.warning("LLM 调用失败（第 %d 次）：%s", attempt, repr(exc))

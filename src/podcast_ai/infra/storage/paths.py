@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 from podcast_ai.core.models import EpisodePlan, VoiceoverSegment
+from podcast_ai.modules.theme.state import PlanState
 
 
 def generate_episode_id() -> str:
@@ -69,14 +72,6 @@ def get_show_notes_path(episode_root: Path, episode_id: str) -> Path:
     return episode_root.joinpath("final", f"{episode_id}_show_notes.md")
 
 
-def get_playlist_markdown_path(episode_root: Path) -> Path:
-    """
-    人类可读的目标歌单 Markdown 路径：
-      {episode_root}/playlist.md
-    """
-    return episode_root.joinpath("playlist.md")
-
-
 def get_tts_cache_dir(output_dir: Path) -> Path:
     """
     TTS 缓存目录（全局共享，而不是按 episode 拆分）：
@@ -123,4 +118,146 @@ def load_episode_plan(path: Path) -> EpisodePlan:
     """从 JSON 文件加载 EpisodePlan。"""
     text = path.read_text(encoding="utf-8")
     return EpisodePlan.model_validate_json(text)
+
+
+def get_state_path(episode_root: Path) -> Path:
+    """
+    阶段一输出的统一状态文件路径：
+      {episode_root}/plans/state.json
+    """
+    return episode_root.joinpath("plans", "state.json")
+
+
+def save_state_json(state: PlanState, output_dir: Path, episode_id: str) -> Path:
+    """
+    将 PlanState 落盘为 state.json，并返回文件路径。
+    """
+    episode_root = get_episode_root(output_dir, episode_id)
+    state_path = get_state_path(episode_root)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    # PlanState 约定为结构化 dict，可直接 JSON 化
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return state_path
+
+
+def load_state_json(path: Path) -> PlanState:
+    """从 JSON 文件加载 PlanState。"""
+    text = path.read_text(encoding="utf-8")
+    # PlanState 为结构化 dict：直接反序列化即可
+    raw: Any = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError(f"state.json 格式错误：期望 object，但得到 {type(raw).__name__}")
+    return raw
+
+
+def get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path:
+    """
+    v3.8：阶段一新增的快照文件路径：
+      {episode_root}/plans/{episode_id}.json
+    """
+    return episode_root.joinpath("plans", f"{episode_id}.json")
+
+
+def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
+    """
+    v3.8 fix：将完整 PlanState 映射为对接子集文件结构。
+
+    产物结构：
+    - schema
+    - meta.{request_id, theme, language, target_duration_seconds}
+    - segments[*].{segment_id, name, target_duration_seconds, playlists, script}
+    """
+    schema_version = state.get("schema_version")
+    if not isinstance(schema_version, str) or not schema_version.strip():
+        raise ValueError("snapshot.schema 映射失败：state.schema_version 缺失或非 string")
+
+    meta = state.get("meta")
+    if not isinstance(meta, dict):
+        raise ValueError("snapshot.meta 映射失败：state.meta 必须是 object")
+    for key in ("request_id", "theme", "language", "target_duration_seconds"):
+        if key not in meta:
+            raise ValueError(f"snapshot.meta 映射失败：state.meta.{key} 缺失")
+
+    segments_raw = state.get("segments")
+    if not isinstance(segments_raw, list):
+        raise ValueError("snapshot.segments 映射失败：state.segments 必须是 array")
+
+    segments: list[dict[str, Any]] = []
+    for idx, seg in enumerate(segments_raw):
+        if not isinstance(seg, dict):
+            raise ValueError(f"snapshot.segments[{idx}] 映射失败：必须是 object")
+        for key in ("segment_id", "name", "target_duration_seconds", "playlist", "script"):
+            if key not in seg:
+                raise ValueError(f"snapshot.segments[{idx}] 映射失败：state.segments[{idx}].{key} 缺失")
+        segments.append(
+            {
+                "segment_id": seg["segment_id"],
+                "name": seg["name"],
+                "target_duration_seconds": seg["target_duration_seconds"],
+                "playlists": seg["playlist"],
+                "script": seg["script"],
+            }
+        )
+
+    return {
+        "schema": schema_version,
+        "meta": {
+            "request_id": meta["request_id"],
+            "theme": meta["theme"],
+            "language": meta["language"],
+            "target_duration_seconds": meta["target_duration_seconds"],
+        },
+        "segments": segments,
+    }
+
+
+def save_episode_state_snapshot(
+    state: PlanState,
+    output_dir: Path,
+    episode_id: str,
+    *,
+    snapshot: dict[str, Any] | None = None,
+) -> Path:
+    """将 v3.8 子集 snapshot 写入 {episode_id}.json，并返回文件路径。"""
+    episode_root = get_episode_root(output_dir, episode_id)
+    snapshot_path = get_episode_state_snapshot_path(episode_root, episode_id)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = snapshot if snapshot is not None else build_episode_snapshot_from_state(state)
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return snapshot_path
+
+
+def load_episode_state_snapshot(path: Path) -> PlanState:
+    """从 {episode_id}.json 加载 PlanState。"""
+    text = path.read_text(encoding="utf-8")
+    raw: Any = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} 格式错误：期望 object，但得到 {type(raw).__name__}")
+    return raw
+
+
+def get_multi_agent_audit_run_dir(base_output_dir: Path, run_id: str) -> Path:
+    """
+    v3.6：单次 multi-agent 规划独占审计目录，避免多次运行互相覆盖。
+
+    约定：``{output_dir}/audit/multi_agent/{run_id}/``
+    ``run_id`` 通常取 ``state[\"meta\"][\"request_id\"]``。
+    """
+    safe = (run_id or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return Path(base_output_dir).expanduser() / "audit" / "multi_agent" / safe
+
+
+def format_audit_agent_filename(iteration: int, agent_slug: str) -> str:
+    """``iteration{i}_{agent_slug}.json``；agent_slug 为 planner | music_curator | script_writer | critic。"""
+    return f"iteration{int(iteration)}_{agent_slug}.json"
+
+
+def format_audit_state_filename(iteration: int) -> str:
+    """完整 state 快照：``iteration{i}_state.json``。"""
+    return f"iteration{int(iteration)}_state.json"
+
+
+def format_audit_state_partial_filename(iteration: int) -> str:
+    """失败时可查：``iteration{i}_state_partial.json``（内容含 error 与本轮开始前的 state 等元数据）。"""
+    return f"iteration{int(iteration)}_state_partial.json"
 

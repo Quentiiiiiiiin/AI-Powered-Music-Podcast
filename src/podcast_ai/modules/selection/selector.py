@@ -10,7 +10,7 @@ import logging
 from typing import Optional
 
 from podcast_ai.core.exceptions import PlanMappingError
-from podcast_ai.core.models import EpisodePlan, SegmentBoundary, SelectedTrack, TrackWithMetadata
+from podcast_ai.core.models import EpisodePlan, SegmentBoundary, SelectedTrack, Stage2Snapshot, TrackWithMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +85,16 @@ def select_tracks_by_plan(
 
     # 按 plan 顺序构建 SelectedTrack，计算时间线
     result: list[SelectedTrack] = []
-    t_acc = 0.0
+    prev_end = 0.0
+    prev_dur = 0.0
     for i, twm in enumerate(mapped):
         dur = twm.metadata.duration_seconds
-        start = t_acc
+        overlap = min(cf, prev_dur, dur) if i > 0 else 0.0
+        start = prev_end - overlap if i > 0 else 0.0
         end = start + dur
-        effective = dur - cf if i > 0 else dur
-        t_acc = end - cf
+        effective = dur - overlap
+        prev_end = end
+        prev_dur = dur
         result.append(
             SelectedTrack(
                 track=twm.track,
@@ -155,6 +158,120 @@ def split_tracks_by_plan(
     track_idx = 0
     for seg in plan.segments:
         n_tracks = sum(len(item.recommended_tracks) for item in seg.target_playlist)
+        if track_idx + n_tracks > len(selected_tracks):
+            raise PlanMappingError(
+                f"segment「{seg.name}」需 {n_tracks} 首曲目，selected_tracks 不足（idx={track_idx}）。"
+            )
+        groups.append(selected_tracks[track_idx : track_idx + n_tracks])
+        track_idx += n_tracks
+    return groups
+
+
+def _match_snapshot_item_to_library(
+    track_name: str,
+    artist_name: str,
+    library: list[TrackWithMetadata],
+) -> TrackWithMetadata | None:
+    """优先按 track+artist 匹配，失败后退化到单字段匹配。"""
+    track_norm = (track_name or "").strip().lower()
+    artist_norm = (artist_name or "").strip().lower()
+
+    if track_norm and artist_norm:
+        for twm in library:
+            title = (twm.track.title or twm.track.file_path.stem or "").strip().lower()
+            artist = (twm.track.artist or "").strip().lower()
+            if title == track_norm and artist == artist_norm:
+                return twm
+
+    if track_norm:
+        return _find_best_match(track_norm, library)
+    if artist_norm:
+        return _find_best_match(artist_norm, library)
+    return None
+
+
+def select_tracks_by_snapshot(
+    snapshot: Stage2Snapshot,
+    library: list[TrackWithMetadata],
+    crossfade_seconds: float,
+) -> list[SelectedTrack]:
+    """
+    v3.9：严格按 snapshot.segments[*].playlists 顺序映射本地曲目。
+    """
+    cf = crossfade_seconds
+    mapped: list[TrackWithMetadata] = []
+    for seg_idx, seg in enumerate(snapshot.segments):
+        for item_idx, item in enumerate(seg.playlists):
+            match = _match_snapshot_item_to_library(item.track, item.artist, library)
+            if match is None:
+                raise PlanMappingError(
+                    f"无法映射：segments[{seg_idx}].playlists[{item_idx}] "
+                    f"track='{item.track}' artist='{item.artist}' 在本地候选库中无匹配。"
+                )
+            mapped.append(match)
+
+    result: list[SelectedTrack] = []
+    prev_end = 0.0
+    prev_dur = 0.0
+    for i, twm in enumerate(mapped):
+        dur = twm.metadata.duration_seconds
+        overlap = min(cf, prev_dur, dur) if i > 0 else 0.0
+        start = prev_end - overlap if i > 0 else 0.0
+        end = start + dur
+        effective = dur - overlap
+        prev_end = end
+        prev_dur = dur
+        result.append(
+            SelectedTrack(
+                track=twm.track,
+                start_time_in_episode=start,
+                end_time_in_episode=end,
+                effective_duration=effective,
+            ),
+        )
+    logger.info("snapshot 驱动选曲完成: %d 首", len(result))
+    return result
+
+
+def compute_segment_boundaries_from_snapshot(
+    snapshot: Stage2Snapshot,
+    selected_tracks: list[SelectedTrack],
+    crossfade_seconds: float,  # noqa: ARG001
+) -> list[SegmentBoundary]:
+    """
+    v3.9：按 snapshot 段内 playlists 数量切分并计算实际边界。
+    """
+    boundaries: list[SegmentBoundary] = []
+    track_idx = 0
+    prev_end = 0.0
+    for seg in snapshot.segments:
+        n_tracks = len(seg.playlists)
+        if n_tracks == 0:
+            boundaries.append(SegmentBoundary(music_start=prev_end, music_end=prev_end))
+            continue
+        if track_idx + n_tracks > len(selected_tracks):
+            raise PlanMappingError(
+                f"segment「{seg.name}」规划了 {n_tracks} 首曲目，但 selected_tracks 不足（idx={track_idx}）。"
+            )
+        first = selected_tracks[track_idx]
+        last = selected_tracks[track_idx + n_tracks - 1]
+        music_start = first.start_time_in_episode
+        music_end = last.end_time_in_episode
+        boundaries.append(SegmentBoundary(music_start=music_start, music_end=music_end))
+        prev_end = music_end
+        track_idx += n_tracks
+    return boundaries
+
+
+def split_tracks_by_snapshot(
+    snapshot: Stage2Snapshot,
+    selected_tracks: list[SelectedTrack],
+) -> list[list[SelectedTrack]]:
+    """v3.9：按 snapshot 每段 playlists 数量拆分 selected_tracks。"""
+    groups: list[list[SelectedTrack]] = []
+    track_idx = 0
+    for seg in snapshot.segments:
+        n_tracks = len(seg.playlists)
         if track_idx + n_tracks > len(selected_tracks):
             raise PlanMappingError(
                 f"segment「{seg.name}」需 {n_tracks} 首曲目，selected_tracks 不足（idx={track_idx}）。"

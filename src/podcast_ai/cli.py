@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import typer
 
@@ -67,6 +68,12 @@ def version() -> None:
 def plan_episode_cli(
     topic: str = typer.Argument(..., help="节目主题（如：Late Night Chill Electronic）"),
     duration_minutes: int = typer.Argument(..., help="目标时长（分钟）"),
+    agent_mode: Literal["single_agent", "multi_agent"] = typer.Option(
+        "multi_agent",
+        "--agent-mode",
+        help="阶段一生成模式：single_agent 或 multi_agent。",
+        show_default=True,
+    ),
     language: str = typer.Option(
         "zh",
         "--language",
@@ -82,7 +89,8 @@ def plan_episode_cli(
     ),
 ) -> None:
     """
-    阶段一：根据主题与时长生成 EpisodePlan 与目标歌单规划。
+    阶段一：根据主题与时长生成规划结果；state 统一落盘为 state.json。
+    single_agent 输出为 PlanState 子集（不含 critic/control）。
     """
     settings = load_settings()
     effective_output_dir = Path(output_dir) if output_dir is not None else Path(settings.app.output_dir)
@@ -95,15 +103,20 @@ def plan_episode_cli(
     )
 
     try:
-        plan, plan_path, playlist_path = pipeline_plan_episode(request, settings=settings)
+        plan, state_path, snapshot_path = pipeline_plan_episode(
+            request,
+            settings=settings,
+            agent_mode=agent_mode,
+        )
     except PodcastAIError as exc:
         typer.echo(f"[错误] 规划失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     typer.echo("规划完成：")
-    typer.echo(f"- Episode ID: {plan.plan_id}")
-    typer.echo(f"- 规划文件（JSON）：{plan_path}")
-    typer.echo(f"- 目标歌单（Markdown）：{playlist_path}")
+    typer.echo(f"- Episode ID: {snapshot_path.stem}")
+    typer.echo(f"- Plan ID（内存标识，未单独落盘）：{plan.plan_id}")
+    typer.echo(f"- state.json（统一状态）：{state_path}")
+    typer.echo(f"- {snapshot_path.name}（阶段一对接子集文件，v3.8）：{snapshot_path}")
 
 
 _INIT_CONFIG_YAML = """app:
@@ -191,7 +204,7 @@ def create_episode_cli(
     plan_file: Path = typer.Argument(
         ...,
         path_type=Path,
-        help="规划文件路径（episode_plan_*.json）。",
+        help="阶段一输出的 snapshot 路径（<episode_id>.json）。",
     ),
     music_dir: Path = typer.Argument(
         ...,
@@ -222,7 +235,7 @@ def create_episode_cli(
         raise typer.Exit(code=1)
     try:
         result = pipeline_create_episode(
-            plan_path=plan_file,
+            snapshot_path=plan_file,
             music_dir=music_dir,
             topic=topic or None,
             language=language,

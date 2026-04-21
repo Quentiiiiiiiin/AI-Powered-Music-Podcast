@@ -16,8 +16,8 @@ from typing import Optional
 
 from pydub import AudioSegment  # type: ignore[import-untyped]
 
-from podcast_ai.core.exceptions import PodcastAIError
-from podcast_ai.core.models import EpisodePlan, SegmentBoundary, VoiceoverSegment
+from podcast_ai.core.exceptions import PlanMappingError, PodcastAIError
+from podcast_ai.core.models import EpisodePlan, SegmentBoundary, SelectedTrack, Stage2Snapshot, VoiceoverSegment
 from podcast_ai.infra.audio_backend import export_audio
 from podcast_ai.infra.config import Settings, load_settings
 from podcast_ai.infra.storage.paths import get_tts_cache_dir
@@ -134,6 +134,90 @@ class VoiceoverService:
                 )
 
         logger.info("主持语音生成完成: %d 段（与 segments 一一对应）", len(results))
+        return results
+
+    def generate_voiceovers_from_snapshot(
+        self,
+        snapshot: Stage2Snapshot,
+        *,
+        selected_tracks_by_segment: list[list[SelectedTrack]],
+        segment_boundaries: list[SegmentBoundary],
+        language: str = "zh",
+        use_cache: bool = True,
+    ) -> list[VoiceoverSegment]:
+        """
+        v3.9：从 snapshot.script 生成多插点串词。
+        - segment_intro：seg_0 固定 0；其余段插在上一段音乐结束边界（prev music_end）
+        - between_tracks[*].after_track_index：插在本段对应歌曲后边界
+        """
+        if len(selected_tracks_by_segment) != len(snapshot.segments):
+            raise PlanMappingError("selected_tracks_by_segment 与 snapshot.segments 长度不一致。")
+        if len(segment_boundaries) != len(snapshot.segments):
+            raise PlanMappingError("segment_boundaries 与 snapshot.segments 长度不一致。")
+
+        voice = _get_voice_for_language(language, self._settings)
+        output_dir = Path(self._settings.app.output_dir)
+        placeholder_path = _get_placeholder_audio_path(output_dir)
+        results: list[VoiceoverSegment] = []
+
+        for seg_idx, seg in enumerate(snapshot.segments):
+            music_start = segment_boundaries[seg_idx].music_start
+            seg_tracks = selected_tracks_by_segment[seg_idx]
+            n_tracks = len(seg_tracks)
+
+            intro = (seg.script.segment_intro or "").strip()
+            if intro:
+                # 方案 A：段首串词（除第一段）锚定在上一段 music_end，
+                # 避免 crossfade 时间线上被提前到上一段最后一首歌曲结束前。
+                intro_insert_time = (
+                    segment_boundaries[seg_idx - 1].music_end if seg_idx > 0 else 0.0
+                )
+                audio_path = self._tts.synthesize(
+                    intro,
+                    voice=voice,
+                    language=language,
+                    use_cache=use_cache,
+                )
+                results.append(
+                    VoiceoverSegment(
+                        segment_id=seg.segment_id,
+                        text=intro,
+                        audio_path=audio_path,
+                        insert_time_in_episode=intro_insert_time,
+                    ),
+                )
+            # intro 为空时跳过，不生成语音
+
+            track_start = music_start
+            for bt in seg.script.between_tracks:
+                idx = bt.after_track_index
+                if idx < 0 or idx >= n_tracks:
+                    raise PlanMappingError(
+                        f"segments[{seg_idx}].script.between_tracks.after_track_index 越界：{idx}，本段曲目数={n_tracks}"
+                    )
+                text = (bt.text or "").strip()
+                if not text:
+                    continue
+                # 按“对应曲目后”插入（使用本段第 idx 首曲目的 end_time）。
+                insert_time = seg_tracks[idx].end_time_in_episode if seg_tracks else track_start
+                audio_path = self._tts.synthesize(
+                    text,
+                    voice=voice,
+                    language=language,
+                    use_cache=use_cache,
+                )
+                results.append(
+                    VoiceoverSegment(
+                        segment_id=f"{seg.segment_id}_after_{idx}",
+                        text=text,
+                        audio_path=audio_path,
+                        insert_time_in_episode=insert_time,
+                    ),
+                )
+
+        # 保证时间线稳定
+        results.sort(key=lambda v: v.insert_time_in_episode)
+        logger.info("snapshot 串词生成完成: %d 段", len(results))
         return results
 
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EpisodeRequest(BaseModel):
@@ -57,6 +57,9 @@ class EpisodePlan(BaseModel):
     overall_bpm_range: Optional[Tuple[int, int]] = None
     style_description: str = ""
     plan_id: str
+    # v3.0：可选的多 Agent 评估与生成追踪信息
+    critic_summary: Optional[Dict[str, Any]] = None
+    generation_trace: Optional[List[Dict[str, Any]]] = None
 
 
 class Track(BaseModel):
@@ -137,4 +140,54 @@ class EpisodeResult(BaseModel):
     actual_duration_seconds: int
     show_notes: str
     tracks: List[SelectedTrack] = Field(default_factory=list)
+
+
+class Stage2SnapshotMeta(BaseModel):
+    """阶段二输入快照的 meta 子集。"""
+
+    request_id: str
+    theme: str
+    language: str
+    target_duration_seconds: int = Field(..., ge=1)
+
+
+class Stage2PlaylistItem(BaseModel):
+    """阶段二快照中单条曲目信息。"""
+
+    track: str
+    artist: str
+
+
+class Stage2BetweenTrackItem(BaseModel):
+    """段内串词插点：在指定曲目索引之后插入。"""
+
+    after_track_index: int = Field(..., ge=0)
+    text: str | None = None
+
+
+class Stage2Script(BaseModel):
+    """阶段二快照中的脚本文本结构。"""
+
+    segment_intro: str
+    between_tracks: List[Stage2BetweenTrackItem] = Field(default_factory=list)
+
+
+class Stage2Segment(BaseModel):
+    """阶段二快照中的段落结构。"""
+
+    segment_id: str
+    name: str
+    target_duration_seconds: int = Field(..., ge=1)
+    playlists: List[Stage2PlaylistItem] = Field(default_factory=list)
+    script: Stage2Script
+
+
+class Stage2Snapshot(BaseModel):
+    """v3.9：阶段二唯一输入对象（来自 `<episode_id>.json`）。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_: str = Field(alias="schema")
+    meta: Stage2SnapshotMeta
+    segments: List[Stage2Segment] = Field(default_factory=list, min_length=1)
 

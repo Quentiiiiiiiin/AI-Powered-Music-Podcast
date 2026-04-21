@@ -40,3 +40,6 @@ Episode_Plan_Music/
 
 # ---- Secrets (recommended) ----
 .env
+
+# ---- User local notes ----
+AI Podcast 新一轮迭代需求.md

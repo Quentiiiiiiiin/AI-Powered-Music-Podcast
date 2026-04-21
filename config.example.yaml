@@ -5,6 +5,9 @@ app:
   # 产出目录（规划文件、临时文件、最终音频与 show notes 等）
   output_dir: "./output"
 
+  # v3.6：multi-agent 是否在 output_dir/audit/multi_agent/<request_id>/ 落盘每轮 Agent 与 state（默认 true；false 可关闭）
+  # multi_agent_audit_enabled: true
+
 audio:
   # 相邻歌曲-歌曲转场（秒）
   crossfade_seconds: 8.0
@@ -28,6 +31,8 @@ llm:
   model: "gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v3.4：省略或 null = 仅当 base_url 为 OpenRouter 时附带 response_format；true/false 可强制开关
+  # structured_output: false
 
 tts:
   # v1.4 默认 elevenlabs；可改为 edge_tts 使用 Edge TTS

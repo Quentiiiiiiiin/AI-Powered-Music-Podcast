@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v1.0  
+**文档版本**：v3.9.1  
 **创建日期**：2025-03-06  
-**产品阶段**：MVP 技术验证
+**产品阶段**：迭代验证中（进入 v3.9.1）
 
 ---
 
@@ -75,7 +75,7 @@
     1) 音乐结束后紧接主持串词：不做 crossfade，音乐正常结束后直接开始串词；  
     2) 若串词后面接着音乐：仅在“串词结束前”的尾部对音乐做短时淡入；串词不淡出（不与音乐做反向淡出重叠）。
   - **功能归类**：优化（语音可懂度与听感平衡）。
- - **User Story（用户视角）**：作为内容创作者，我希望串词保持清晰可懂，同时在串词末尾能自然过渡到下一首歌，这样我更容易直接发布成品。
+  - **User Story（用户视角）**：作为内容创作者，我希望串词保持清晰可懂，同时在串词末尾能自然过渡到下一首歌，这样我更容易直接发布成品。
   - **Acceptance Criteria（验收标准）**：
     1. 串词开始时不发生串词淡出（串词音频从开始点保持清晰，不因叠加而降低可懂度）。
     2. 串词结束前出现的过渡只表现为“音乐淡入”，不对串词做淡出；串词与背景音乐重叠期间语音仍可清晰听懂。
@@ -99,6 +99,193 @@
     3. `target_duration_seconds` 总和与目标时长在 ±10% 内（或按 prompt 设定的“允许浮动”规则满足）。
     4. `host_script`（以及可选的段内串词）使用正确语言；必须的开场/段落过渡/结尾串词位置存在。
     5. 在同等输入下，相比 v2.1，EpisodePlan 的段落结构与串词位置更贴近真实 episode（以内部试听/对比为准）。
+
+- **v3.1（迭代九：阶段一模式可选 + 统一 state_schema.json 输出）**：
+  - **问题**：
+    1. 阶段一的 `plan-episode` 指令当前代码写死使用多 agent 模式，用户无法选择单 agent 或多 agent。
+    2. 无论单 agent 还是多 agent，当前最终返回的仍是 EpisodePlan 格式 JSON，而不是 `state_schema.json` 的同构结构，导致后续链路字段对齐成本高。
+  - **变更目标**：
+    1. 将多 agent/单 agent 作为用户可选配置（或参数），允许选择不同生成策略。
+    2. 无论选择哪种模式，阶段一最终产物输出文件都必须与 `state_schema.json` **同结构**；单 agent 下不涉及的字段填充为 `null`。
+  - **功能归类**：优化（可配置性与数据契约一致性提升）。
+  - **User Story（用户视角）**：作为内容创作者，我希望能够选择单 agent 或多 agent 生成 EpisodePlan，并且无论选择哪种模式，最终输出都保持与 `state_schema.json` 一致的结构，便于后续混音与调试。
+  - **Acceptance Criteria（验收标准）**：
+    1. 用户能通过配置/命令参数选择生成模式：`single_agent` 或 `multi_agent`（默认值可由实现指定，但必须可切换）。
+    2. 在两种模式下，最终输出文件都能被 `state_schema.json` 的结构约束通过校验（字段层级一致，缺失字段用 `null` 表达）。
+    3. 多 agent 模式下生成结果可追踪到 Planner / Music Curator / Script Writer / Critic 的执行状态（至少在 state 的 control/meta 或日志中可定位）。
+    4. 若输出 schema 校验失败，系统必须返回明确错误并阻断后续阶段，避免产生不可用 mix。
+
+- **v3.2（迭代十：Agent 输出 JSON 修复与标准化）**：
+  - **问题**：多 agent 模式下，各 Agent 的原始返回文本可能出现非严格 JSON 格式（如缺标点），导致在 `json.load` 前直接解析失败并中断整个流程。
+  - **变更目标**：在每个 Agent `run` 返回后、进入 `json.load` 之前，先对 raw 文本进行 JSON 修复与标准化，再进行解析；若修复后仍无法合法解析，则明确报错并退出（不进入后续混音）。
+  - **功能归类**：bug 修复（可靠性与容错提升）。
+  - **User Story（用户视角）**：作为内容创作者，我希望模型偶发的 JSON 格式错误不会导致整个计划生成失败，我能更稳定地获得可用 episode plan。
+  - **Acceptance Criteria（验收标准）**：
+    1. 在 Planner / Music Curator / Script Writer / Critic 的每次 `run` 返回后、`json.load` 之前，都执行一次 JSON 修复与标准化步骤。
+    2. 对常见的 JSON 格式问题（如缺少分隔符/引号不完整/多余前后文本）能够自动修复到可解析状态，并成功进入后续 state schema 校验。
+    3. 若修复无法得到合法 JSON：系统返回明确错误信息（包含哪一个 Agent、何时失败、失败原因），并立即终止该 episode plan 生成流程。
+    4. 成功修复后的 JSON 必须仍满足 state schema 的关键字段/层级要求；不满足则以 schema 校验失败方式中断。
+
+- **v3.3（迭代十一：JSON 修复 — 结构闭合与完整性）**：
+  - **问题**：v3.2 的 JSON 修复对「缺 `]` / 缺 `}`」等**结构不完整**类错误覆盖不足，而 Agent 输出中此类遗漏较常见，仍会导致解析失败或流程中断。
+  - **变更目标**：在现有修复与标准化流程上，增加对 JSON **括号/方括号配对与结构完整性**的检测与补全（在可安全推断的前提下补全缺失的 `}`、`]` 等），再进入 `json.load`；若无法安全修复则仍按 v3.2 规则明确报错退出。
+  - **功能归类**：优化（JSON 修复能力增强）+ bug 修复（针对常见结构截断）。
+  - **User Story（用户视角）**：作为内容创作者，我希望 Agent 偶尔漏写结尾括号时系统仍能自动修好并继续生成，而不是整次 plan 失败。
+  - **Acceptance Criteria（验收标准）**：
+    1. 对「未闭合对象/数组」（典型表现为缺 `}` 或 `]`）的 raw 文本，修复层应尝试补全至合法 JSON 并成功 `json.load`（在语义可接受范围内）。
+    2. v3.2 已覆盖的修复能力（分隔符、前后杂质等）保持不退化。
+    3. 若存在多种补全方式导致歧义或补全后仍非法：不得静默写入错误结构，应报错并终止，并记录原始 raw 便于排查。
+    4. 修复成功后仍须通过后续 state schema 校验；校验失败则中断（与 v3.2 一致）。
+    5. 四个 Agent 的 `run` 路径均统一走增强后的修复流程（与 v3.2 调用点一致）。
+
+- **v3.4（迭代十二：OpenRouter 结构化输出 response_format）**：
+  - **问题**：依赖纯 prompt + 事后 JSON 修复（v3.2/v3.3）效果不稳定，解析失败与结构错误仍频繁，维护成本高。
+  - **变更目标**：在经 **OpenRouter** 调用大模型时，于请求体中增加 **`response_format`**（参考仓库内 `openrouter_structured_output.json`：`type: json_schema`、`json_schema.strict: true`、`schema` 约束字段），**强制**四个 Agent（Planner / Music Curator / Script Writer / Critic）按各自所需的 JSON 结构输出；减少对事后修复的依赖。
+  - **实现要点**：除常规 `messages` 外携带 `response_format`；每个 Agent 使用与其**输出契约**对齐的 JSON Schema（`required`、`additionalProperties: false` 等按 OpenRouter 文档要求配置）；与 `state_schema.json` / Agent 增量字段保持一致性由实现侧保证。
+  - **功能归类**：新功能（平台结构化输出集成）+ 优化（Agent 输出可靠性）。
+  - **User Story（用户视角）**：作为内容创作者，我希望四个 Agent 的模型输出一开始就是合法、结构固定的 JSON，这样计划生成更稳定、更少因格式问题中断。
+  - **Acceptance Criteria（验收标准）**：
+    1. Planner / Music Curator / Script Writer / Critic 四处 OpenRouter 请求均携带各自正确的 `response_format`（`json_schema` + `strict`）。
+    2. 正常路径下返回体可直接解析为 JSON，且与对应 Agent 的约定结构一致，无需依赖修复链路即可进入后续状态合并与校验（修复可作为可选兜底，非主路径）。
+    3. 若 OpenRouter/API 不支持结构化输出或返回非约定结构：须明确报错并记录请求标识，不得静默继续。
+    4. Schema 与 `state_schema.json` 及 PRD 中 Agent 契约无冲突（字段名、必填项、禁止多写字段与编排逻辑一致）。
+    5. 示例请求形态与 `openrouter_structured_output.json` 文档一致（`messages` + `response_format` 并列）。
+
+- **v3.5（迭代十三：代码可读性与冗余校验清理）**：
+   - **问题**：v3.4 已显著提升成功率，但代码侧仍存在可维护性问题：
+     1. 之前迭代实现的 `json repair` 逻辑已不再是主路径，保留带来理解与维护成本。
+     2. 当前存在大量与 JSON/Schema 校验相关的重复逻辑，为保证“过度一致性”而增加噪音与复杂度。
+   - **变更目标**：
+     1. 去除 `json repair` 相关的非必要代码路径（保留必要的错误处理即可）。
+     2. 精简 JSON/Schema 校验逻辑，保留必要校验、移除重复校验，让校验与解析职责更清晰集中。
+   - **其他可优化方向（供实现参考）**：
+     1. 将“解析 + 校验”封装为统一工具函数/服务，避免四个 agent 各自拷贝同类逻辑。
+     2. 统一错误类型与日志格式，减少散落的 try/except 和打印语句。
+   - **功能归类**：优化（可维护性、可读性、代码简洁度）。
+   - **User Story（用户视角）**：作为后续维护者，我希望代码更容易理解与扩展，减少无关校验/修复逻辑带来的耦合。
+   - **Acceptance Criteria（验收标准）**：
+     1. `json repair` 从四个 agent 的主路径中移除/不再调用；若保留也仅作为明确的可选兜底并有清晰注释与开关。
+     2. JSON/Schema 校验执行次数与位置更合理：尽量做到“解析一次、校验一次”，或集中在统一入口，减少重复逻辑。
+     3. 四个 agent 的职责边界更清晰（解析/校验集中，其余逻辑更短更易读）。
+     4. 行为不回退：在既有测试/可运行验证下，plan 生成仍保持“成功率与输出稳定性不显著下降”。
+     5. 相关关键路径拥有足够的可读性保障（例如新增/完善少量单测覆盖解析与 schema 校验工具函数）。
+
+- **v3.6（迭代十四：多 Agent 可审计落盘）**：
+  - **问题**：多 agent 流程已能稳定跑通，但运行中难以核实 **Critic 给出的 `actions` 是否被对应 Agent 理解并体现在后续输出中**；缺少标准化、可按轮次检索的落盘产物。
+  - **变更目标**：
+    1. **按轮次、按 Agent** 将每一次 Agent 调用的可复查输出写入文件，文件名为 `iteration[i]_[agent]`（`i` 为 refinement 轮次序号，与 Orchestrator/`control.iteration` 计数一致；`agent` 为可识别的角色名，如 `planner`、`music_curator`、`script_writer`、`critic`，与实现命名对齐即可）。
+    2. **每一轮在 Critic 之后、系统完成对 state 的合并后**，将当前完整 state 快照写入文件，文件名为 `iteration[i]_state`（内容与 `state_schema.json` 同构的 JSON，便于对照 schema）。
+  - **输出位置**：具体目录由实现配置（建议单次 run 独占子目录，避免多任务覆盖）；PRD 约束为**命名规范与写入时机**，不要求固定绝对路径。
+  - **功能归类**：**优化**（可观测性、调试与人工验收）+ **对流程闭环的补强**（针对「建议是否被采纳」的验证缺口，不单独计为业务逻辑 bug 修复，以审计能力为主）。
+  - **User Story（用户视角）**：作为开发者或验收人员，我希望每次多 agent 计划生成时，系统自动按轮次保存各 Agent 的输出和合并后的 state，这样我能对照 Critic 的 `actions` 检查下游 Agent 是否落实修改。
+  - **Acceptance Criteria（验收标准）**：
+    1. 在每一轮 refinement 中，凡被 Orchestrator 调用的 Agent（Planner / Music Curator / Script Writer / Critic），在该次调用结束、结果进入合并流程前或合并所需的最晚节点，均生成对应 `iteration[i]_[agent]` 文件；内容为该次可复查输出（实现统一约定保存「模型原始文本」或「解析后的结构化 JSON」，并在代码/README 中简要说明）。
+    2. 每一轮在 Critic 完成且该轮 state 合并完成后，生成 `iteration[i]_state`，且可与同轮各 Agent 文件用相同 `i` 对齐。
+    3. 文件命名严格符合 `iteration[i]_[agent]` 与 `iteration[i]_state`；`i` 与轮次定义全局一致、可追溯（与 `control.iteration` 或编排层约定一致）。
+    4. 落盘失败须明确记录（日志或错误信息），不得静默吞掉；主流程错误与写盘错误应可区分。
+    5. 落盘为附加 I/O，不因写文件显著降低 plan 生成成功率或破坏既有 v3.1–v3.5 行为（结构化输出、schema 校验等）。
+
+- **v3.7（迭代十五：单 Agent 输出对齐 State Schema 子集）**：
+  - **问题**：单 agent 模式当前仍输出 EpisodePlan 风格结果，与多 agent 模式使用的 `state_schema.json` 结构不一致，导致阶段一下游处理、调试与验收口径分叉。
+  - **变更目标**：
+    1. 单 agent 模式输出从 EpisodePlan 统一为 **State 风格结构**，字段限定为：`schema_version`、`meta`、`global_constraints`、`plan`、`segments`；**不包含** `critic` 与 `control`。
+    2. 除 `prompts.py` 中 `build_theme_planner_messages` 的提示词约束外，单 agent 也需对齐多 agent 的结构化输出策略（如 `response_format/json_schema` 严格约束），降低格式漂移。
+    3. 单 agent 阶段一产物文件名统一为 **`state.json`**。
+    4. 同步修改阶段一单 agent 路径上受影响代码（解析、校验、写盘、调用方读取契约），确保链路一致。
+  - **功能归类**：优化（数据契约一致性、稳定性与可维护性提升）。
+  - **User Story（用户视角）**：作为使用单 agent 模式的创作者，我希望输出与多 agent 的 state 结构保持同一口径（精简子集），并稳定写为 `state.json`，这样我在后续处理与排查时不需要维护两套格式心智模型。
+  - **Acceptance Criteria（验收标准）**：
+    1. 单 agent 模式阶段一输出 JSON 顶层仅包含 `schema_version/meta/global_constraints/plan/segments`，且不出现 `critic/control` 字段。
+    2. 单 agent 模式模型调用采用结构化输出强约束（与多 agent 同类机制），正常路径下返回可直接按约定结构解析与校验。
+    3. 单 agent 阶段一默认输出文件名为 `state.json`，并被后续流程按该命名正确读取。
+    4. 受影响代码路径完成同步改造后，单 agent 端到端流程可运行，且不破坏多 agent 既有行为。
+    5. 若模型返回结构不符合约定，系统给出明确错误并中断，不静默降级为旧 EpisodePlan 格式。
+
+- **v3.8（迭代十六：阶段一统一新文件产物）**：
+  - **问题**：当前两种模式在阶段一输出产物不一致：单 agent 额外产出 `playlist` 文件，而多 agent 不产出该文件，导致消费端与验收口径分叉。
+  - **变更目标**：
+    1. 阶段一统一两种模式输出：保留 `state` 文件，并统一新增以 `episode_id` 命名的新版 JSON（简称“新文件”）。
+    2. 去除单 agent 模式下独有的 `playlist` 文件产物。
+    3. 新文件结构以 `Sample_EpisodePlan_NEW.json` 为准，基于 state 简化，仅保留必要字段：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    4. 本轮仅覆盖阶段一输出契约与写盘，不要求阶段二立即消费该新文件（后续迭代再适配）。
+  - **功能归类**：优化（阶段一产物契约统一、可维护性与对接稳定性提升）。
+  - **User Story（用户视角）**：作为使用单/多 agent 两种模式的创作者，我希望阶段一产物命名和结构统一，这样我在查看结果或接入后续流程时只需要维护一套输出认知。
+  - **Acceptance Criteria（验收标准）**：
+    1. 单 agent 与多 agent 在阶段一均输出两类文件：`state` 文件 + 以 `episode_id` 命名的新文件；不再输出 `playlist` 文件。
+    2. 新文件字段严格对齐 `Sample_EpisodePlan_NEW.json` 的约定子集：仅含 `schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    3. 新文件命名稳定且可追溯（以 `episode_id` 命名），两种模式行为一致。
+    4. 阶段一相关代码（生成、映射、校验、写盘）完成同步改造后，单/多 agent 路径均可正常结束并产出统一文件集。
+    5. 当新文件映射或字段缺失导致不满足约定时，系统返回明确错误，不静默回退旧产物格式。
+
+- **v3.9（迭代十七：阶段二适配 `<episode_id>.json` 输入）**：
+  - **问题**：阶段二当前仍按历史 EpisodePlan 输入格式实现；而阶段一已统一产出 `state` + 以 `episode_id` 命名的新文件（由 `state.json` 剪枝），两阶段输入契约不一致导致衔接成本高。
+  - **变更目标**：
+    1. 将阶段二“按 EpisodePlan 制作”的读取与映射逻辑改为优先消费阶段一统一产物 **`<episode_id>.json`**。
+    2. 阶段二使用的新文件字段定义以 `build_episode_snapshot_from_state` 与 `Sample_EpisodePlan_NEW.json` 为准：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+    3. 本轮仅要求阶段二完成输入适配与执行链路打通，不扩展阶段一字段、不引入额外业务语义。
+  - **功能归类**：优化（跨阶段数据契约对齐与流程稳定性提升）。
+  - **User Story（用户视角）**：作为创作者，我希望阶段二能直接读取阶段一当前产出的 `<episode_id>.json`，这样从计划到混音的流程保持同一文件契约，减少格式转换和对接错误。
+  - **Acceptance Criteria（验收标准）**：
+    1. 阶段二默认输入文件为 `<episode_id>.json`（阶段一新文件），不再依赖旧 EpisodePlan 结构作为主路径。
+    2. 阶段二能正确读取并使用新文件中的 `meta` 与 `segments[*].playlists/script` 关键字段完成制作流程。
+    3. 当 `<episode_id>.json` 缺失必要字段或结构不合法时，系统返回明确错误并中止，避免静默降级产生不可控结果。
+    4. 适配改造不破坏阶段一现有产物契约（`state` + `<episode_id>.json`）及多 agent 相关流程行为。
+    5. 代码与文档中的阶段二输入约定保持一致，便于后续迭代继续扩展。
+
+- **v3.9.1（迭代十八：Mixer 串词 / 歌曲转场与 snapshot 对齐）**：
+  - **问题**：v3.9 阶段二混音实现中，存在「先把歌曲整段串接并做完相邻歌 crossfade，再插入串词」的顺序，导致听感上常出现**下一首已开始一小段后串词才接上**；与 snapshot 中 `script.between_tracks` 等串词语义不一致。
+  - **变更目标**：**重构阶段二 mixer 编排步骤**，以当前 `<episode_id>.json` snapshot 为单一时间线来源，按「串词 ↔ 曲目」真实顺序混音，并统一三类转场规则。
+  - **转场规则（明确）**：
+    1. **上一首歌曲结束 → 串词开始**：不做 crossfade（自然结束或硬切接人声，保持串词开头清晰、不与上一首歌尾部重叠过渡）。
+    2. **串词结束 → 下一首歌曲开始**：执行 **crossfade**（串词尾部与下一首进入重叠过渡）。
+    3. **歌曲与歌曲之间**：执行 **crossfade**。
+  - **示例时间片顺序**：串词1 — crossfade — 歌曲1 — 串词2 — crossfade — 歌曲2 — crossfade — 歌曲3（段内 `between_tracks` 串词与段首 `segment_intro` 均按上述规则接入，不再整段先歌后插词）。
+  - **功能归类**：**bug 修复**（串词相对歌曲的错位听感）+ **优化**（mixer 与 snapshot 结构对齐、可维护性）。
+  - **User Story（用户视角）**：作为听众/创作者，我希望串词在计划中的位置听起来是对的——不会在下一首歌已经响起来后才“补”上串词，同时串词结束后进入下一首歌有自然的 crossfade。
+  - **Acceptance Criteria（验收标准）**：
+    1. 混音管线按 snapshot 展开的时间线处理：**不再**采用「全曲先 crossfade 串完再统一插串词」的旧步骤顺序。
+    2. 任意「歌 → 串词」边界无 crossfade；任意「串词 → 歌」边界有 crossfade；任意「歌 → 歌」边界有 crossfade（与 PRD 示例一致）。
+    3. 含 `between_tracks` 的 segment 内，相邻曲目之间的串词仍满足第 2 条规则，听感上无「歌已起、词未到」的系统性错位。
+    4. 串词可懂度不因错误重叠而明显下降（主观试听：串词开头不被上一首歌尾部掩盖）。
+    5. 与 v3.9 输入契约兼容：仍以 `<episode_id>.json` 为阶段二主输入，不引入新的计划文件格式。
+
+### 当前生效规则（v3.9.1）
+
+- 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
+- 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
+- 无论单 agent 还是多 agent，阶段一最终输出契约都对齐 `state_schema` 体系；其中单 agent 输出为精简子集（`schema_version/meta/global_constraints/plan/segments`），不包含 `critic/control`。
+- 单 agent 模式阶段一输出文件名固定为 `state.json`。
+- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
+- 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
+- 阶段一在单/多 agent 两种模式下统一输出：`state` 文件 + 以 `episode_id` 命名的新 JSON 文件；单 agent 历史 `playlist` 文件已移除。
+- 以 `episode_id` 命名的新文件为 state 的简化视图，字段仅保留：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
+- 阶段二当前主输入已切换为阶段一产出的 `<episode_id>.json`（按上方字段子集约定读取），旧 EpisodePlan 输入不再作为默认主路径。
+- 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
+- **阶段二混音（v3.9.1）**：以 `<episode_id>.json` snapshot 展开时间线；**歌→串词**不接 crossfade；**串词→歌**接 crossfade；**歌→歌**接 crossfade；段内 `between_tracks` 与上述一致。（历史 v2.1「串词结束前音乐短时淡入」由本规则中的「串词→歌 crossfade」承接听感目标，**不再**单独描述为先整段歌 crossfade 再插词。）
+- ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
+- TTS 当前主路径为 ElevenLabs。
+- **多 agent 模式（v3.6）**：每一轮 refinement 须按约定落盘 `iteration[i]_[agent]` 与各轮合并后的 `iteration[i]_state`，便于审计 Critic 建议与后续 Agent 输出是否一致。
+
+### 已完成迭代（v3.0）
+
+- **v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）**：
+  - **问题**：阶段一目前仍以“单次模型调用”生成 EpisodePlan，存在质量波动、结构失衡、风格不统一、局部难优化的问题。
+  - **变更目标**：将阶段一升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），通过“共享 State + 结构化反馈 + 有限迭代”提升 plan 质量与稳定性。
+  - **功能描述（核心）**：
+    1. 采用共享 `state`（JSON）作为唯一事实源，Agent 间不自由对话，只读写受控字段。
+    2. 引入 Critic Agent 进行结构化评估（评分 + 问题定位 + 修复指令）。
+    3. 引入有限次 Refinement Loop（建议最多 2~3 次），达到阈值提前结束。
+    4. 增加异常处理：JSON 不合法、缺字段、偏离指令时的 fallback 与重试。
+  - **State Schema（v3.0 草案）**：以 `meta / global_constraints / plan / segments / critic / control` 为核心层级；其中 `control.max_iterations` 默认为 3，可配置。
+  - **State Schema 完善（本轮）**：补充 `schema_version`、`meta.language/request_id`、`segments.segment_id/order`、`critic.actions[]`（支持多点修复）以及 `control.next_agent/last_updated_by`，提升可追踪性与可编排性。
+  - **User Story（用户视角）**：作为内容创作者，我希望 episode plan 由多 Agent 协同生成并可被评估与回修，这样结果更稳定、结构更合理，也更容易按问题定向优化。
+  - **功能归类**：新功能（架构升级）+ 优化（质量稳定性提升）。
+  - **Acceptance Criteria（验收标准）**：
+    1. 阶段一输出不再是单次黑盒结果，流程可追踪到 Planner / Music Curator / Script Writer / Critic 各步骤。
+    2. 所有 Agent 输入/输出均为结构化 JSON，并遵循 state schema 的字段约束（仅允许修改自身负责字段）。
+    3. Critic 必须输出结构化评估：`pass`、评分维度、问题列表、修复 action（目标 agent + 指令）。
+    4. 系统支持有限迭代（max 2~3 次）与提前收敛；超过阈值时给出最终状态与未解决问题。
+    5. 异常路径可处理：JSON 非法、缺字段、输出偏离 schema 时可重试或回退，不直接产出不可用 plan。
 
 ## 1. 产品背景
 
@@ -200,7 +387,7 @@
 | ID | 作为... | 我希望... | 以便... |
 |----|---------|-----------|---------|
 | US-01 | 内容创作者 | 输入节目主题和期望时长 | 系统能自动生成完整 Podcast 音频 |
-| US-02 | 内容创作者 | 系统自动完成选曲和排序 | 我无需手动挑选和排列歌曲 |
+| US-02 | 内容创作者 | 系统严格按 plan 的歌曲顺序生成单集 mix（不二次重排） | 导出结果与策划一致，避免播放顺序偏离 |
 | US-03 | 内容创作者 | 歌曲之间有平滑过渡 | 听感连贯，无需手动混音 |
 | US-04 | 内容创作者 | 系统自动生成主持串词并转为语音 | 我无需录制和剪辑主持部分 |
 | US-05 | 内容创作者 | 输出音量统一的完整音频 | 可直接发布，无需额外母带处理 |
@@ -209,12 +396,13 @@
 | US-08 | 内容创作者 | 主持串词与 plan 的 segment/歌曲边界严格对齐 | 我能听到的串词始终与 plan 策划一致，不会因 target duration 预估偏差而错位 |
 | US-09 | 内容创作者 | 串词与歌曲之间具备平滑过渡（crossfade 试验） | 串词更有存在感，与音乐更融为一体 |
 | US-10 | 内容创作者 | EpisodePlan 结构与串词位置更接近真实节目 | 我能更少返工，导出结果与 plan 的结构设定更一致 |
+| US-11 | 内容创作者 | Episode Plan 由多 Agent 协同并带评估回修机制生成 | 计划质量更稳定且可解释，问题可被定向修复 |
 
 ### 5.2 验收标准（以 US-01 为例）
 
 - 用户输入主题（如「Late Night Chill Electronic」）和时长（如 60 分钟）
 - 系统在 30–60 分钟内完成全流程
-- 输出一个完整 MP3 文件，时长接近目标（误差 ±5%）
+- 输出一个完整 MP3 文件，且播放顺序与 plan 一致（时长误差在当前版本不作为强约束）
 - 音频可直接试听，听感基本可用
 
 ---
@@ -228,8 +416,7 @@
         ↓
 ┌─────────────────────────────────────────────────────────┐
 │  1. 主题生成模块（AI）                                    │
-│     → 节目结构、段落、情绪、BPM 区间、串词草稿              │
-│     → 目标歌单规划（每段推荐若干曲目）            │
+│     → 输出 `state.json`（与 state_schema.json 同结构的 episode plan state） │
 └─────────────────────────────────────────────────────────┘
         ↓
      （人工步骤）
@@ -245,8 +432,8 @@
         ↓
 ┌─────────────────────────────────────────────────────────┐
 │  3. 自动选曲与排序模块                                    │
-│     → 从已准备的本地歌曲中，依据节目结构与规划进行筛选       │
-│     → BPM 接近、曲风一致、总时长匹配、按 BPM 排序           │
+│     → 阶段二按 plan 进行歌曲映射与顺序执行                   │
+│     → 不做 BPM 二次排序/贪心重排                             │
 └─────────────────────────────────────────────────────────┘
         ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -256,8 +443,8 @@
         ↓
 ┌─────────────────────────────────────────────────────────┐
 │  4. 自动混音模块                                          │
-│     → 先将“歌曲 + 主持语音”按顺序排好，再进行 crossfade  │
-│     → crossfade 仅对相邻“歌曲-歌曲”转场生效              │
+│     → 按 snapshot 时间线编排「串词 + 歌曲」，再施加转场（v3.9.1） │
+│     → 歌→串词无 crossfade；串词→歌 crossfade；歌→歌 crossfade │
 └─────────────────────────────────────────────────────────┘
         ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -280,8 +467,8 @@
 | 项目 | 说明 |
 |------|------|
 | **输入** | 用户主题、期望时长 |
-| **输出** | 节目结构、节目段落、情绪描述、每段 BPM 区间、主持串词草稿、**目标歌单规划**（为每个段落给出若干推荐曲目或搜索条件，如艺术家 / 曲风 / BPM / 关键词等） |
-| **实现（v2.2）** | 调用 LLM API，并通过更强的 prompt/约束确保返回严格 JSON、字段命名规范、语言一致性与时长/串词位置可执行性（更贴近真实 EpisodePlan）。 |
+| **输出（v3.1）** | `state.json`（与 `state_schema.json` **同结构**的 episode plan state 文件；单 agent 不涉及字段填充为 `null`）。 |
+| **实现（v3.1）** | 阶段一支持用户选择 `single_agent` / `multi_agent` 模式；多 agent 模式包含 Planner / Music Curator / Script Writer / Critic + 有限迭代回修；无论模式如何，最终输出均为 `state.json` 并满足 schema 契约。 |
 | **使用方式** | 用户可仅运行本模块，先获得节目策划与目标歌单，再根据该规划手动获取或整理歌曲后，继续后续自动化流程 |
 | **优先级** | P0 |
 
@@ -309,9 +496,9 @@
 
 | 项目 | 说明 |
 |------|------|
-| **功能** | 在完成“歌曲 + 主持语音”时间线排布后：1）对相邻歌曲转场做 crossfade；2）在 v2.1 对“串词与相邻歌曲边界”做过渡优化：串词不淡出，音乐仅在“串词结束前”做短时淡入（试验版） |
-| **参数** | 歌曲-歌曲 crossfade 维持 6–10 秒；音乐在“串词结束前”的淡入时长默认 2–4 秒（可配置）。串词开始点不进行音乐-串词 crossfade（保持正常切入） |
-| **目标** | 保证过渡连贯，同时优先保证串词可懂度，避免 v2.0 中“串词淡出导致清晰度下降”的问题 |
+| **功能（v3.9.1）** | 按 snapshot 将串词与曲目排成单一时间线后施加转场：**歌→串词**无 crossfade；**串词→歌** crossfade；**歌→歌** crossfade；段内 `between_tracks` 串词参与同一套规则。 |
+| **参数** | 歌曲-歌曲 crossfade 维持 6–10 秒量级（可配置）；串词→歌 crossfade 时长可单独配置或与歌-歌共用默认值，以实现自然衔接且不掩盖串词起首。 |
+| **目标** | 消除「先整段歌 crossfade 再插串词」导致的**串词滞后**；在串词清晰起首的前提下，串词结束进入下一首歌有足够过渡。 |
 | **MVP 范围** | 不包含 beatmatching、key 匹配 |
 | **优先级** | P0 |
 
@@ -321,7 +508,7 @@
 |------|------|
 | **流程** | AI 生成串词 → TTS 生成语音 → **按 plan 的 segment 所包含歌曲时间线计算插入点（串词在 segment 之前）** |
 | **TTS 供应商（v1.4）** | 默认使用 ElevenLabs（替代 Edge TTS）；具体调用路径可为官方 SDK 或 HTTP API（待最终实现验证）。 |
-| **要求（v2.1 方案）** | 主持语音期间背景音乐默认静音；在 v2.1：音乐仅在“串词结束前”做短时淡入以增强连贯性，但不对串词做淡出。整期开头先串词再音乐，顺序为 串词1 - segment 1 - 串词2 - segment 2 - … - 串词N - segment N。 |
+| **要求（语义时间线 + v3.9.1 混音）** | 主持语音期间背景音乐默认静音；整期顺序为 串词1 - segment 1 - …。**具体「串词↔歌」音量与 crossfade 由阶段二 mixer 按 v3.9.1 执行**（歌→串词无 crossfade；串词→歌、歌→歌有 crossfade）。 |
 | **定位策略（关键）** | 串词_i 的开始时间以 plan 中 segment_i 对应的**第一首歌播放开始边界**为准；不再使用 `target duration seconds` 预估插入位置。第一个串词在 episode 开头，最后一个串词在最后一个 segment 之前。 |
 | **优先级** | P0 |
 
@@ -341,14 +528,35 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 MVP 成功指标
+### 6.3 Agent 输入/输出契约表（v3.0）
+
+| Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
+|------|------|------|------|
+| **Planner** | `meta`、`global_constraints`、历史 `critic.issues` | `meta.theme_description`、`global_constraints.*`、`plan.segments_design`、`plan.emotion_curve`、`segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design` | `segments[*].playlist`、`segments[*].script`、`critic.*`、`control.*` |
+| **Music Curator** | `meta`、`global_constraints`、`plan`、`segments[*].segment_design/mood/bpm_range`、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
+| **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
+| **Critic** | 全量 `state` | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`、`control.next_agent` | `meta`、`global_constraints`、`plan`、`segments` 内容本身 |
+| **Orchestrator（流程控制）** | 全量 `state` | `control.iteration/status/next_agent/last_updated_by`、重试与回退标记 | 业务内容字段（`plan`、`segments[*].playlist/script`） |
+
+**契约补充规则**
+- 所有 Agent 仅允许修改自己负责字段；非负责字段必须原样透传。
+- 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
+- Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
+- 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
+
+### 6.4 当前版本成功指标（v3.9.1）
 
 | 指标 | 目标 |
 |------|------|
 | **制作时间** | 单期节目制作时间 ≤ 30–60 分钟（含用户输入与试听） |
 | **输出质量** | 生成音频可直接试听，听感基本可用 |
-| **时长准确度** | 输出时长与目标时长误差：v1.2 阶段不作为强约束（后续迭代再迁移到阶段一/整体规划中优化）。 |
+| **时长准确度** | 当前阶段不作为强约束（以 plan 一致性与可听性为优先）；后续迭代可回收为规划侧目标。 |
 | **流程完整性** | 从输入到输出全流程自动化，无需人工干预核心环节 |
+| **多 Agent 可审计性** | 每次 refinement 可按轮次检索各 Agent 落盘文件与合并后 `state`，支撑对 Critic `actions` 与下游产出的人工核对 |
+| **单 Agent 契约一致性** | 单 agent 阶段一稳定输出 `state.json`，且结构限定为 state 子集（无 `critic/control`） |
+| **阶段一产物统一性** | 单/多 agent 均产出一致文件集（`state` + `episode_id` 新文件），且不再产出 `playlist` 文件 |
+| **阶段二输入契约对齐** | 阶段二可直接消费 `<episode_id>.json` 完成制作，避免依赖旧 EpisodePlan 格式转换 |
+| **串词 / 歌曲转场正确性** | 混音结果符合 v3.9.1 三类转场规则，主观试听无「下一首已播一小段串词才来」的系统性错位 |
 
 ---
 
@@ -396,7 +604,7 @@
 
 ---
 
-## 8. V2 扩展
+## 8. 后续扩展（v3+）
 
 ### 8.1 高级音频处理
 
@@ -430,13 +638,13 @@
 | **主持风格选择** | 不同语气、语速的 TTS 风格 | P2 |
 | **章节标记** | 自动生成章节信息，便于播客平台展示 | P1 |
 
-### 8.5 V2 路线图（示意）
+### 8.5 路线图（示意）
 
 ```
-Phase 1 (MVP)     → 核心流程打通，验证可行性
-Phase 2 (V2.0)    → Key 匹配、Beatmatching、多音乐库、模板系统
-Phase 3 (V2.1)    → Web UI、多语言、章节标记
-Phase 4 (未来)    → 流媒体接入、多用户、高级情绪算法
+Phase 1 (已完成)  → MVP 核心流程打通
+Phase 2 (已完成)  → v2.x 计划一致性、串词时序、TTS 与过渡策略迭代
+Phase 3 (v3.0+)   → Key 匹配、Beatmatching、多音乐库、模板系统
+Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算法
 ```
 
 ---

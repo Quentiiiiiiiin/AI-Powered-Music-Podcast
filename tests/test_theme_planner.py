@@ -10,6 +10,7 @@ import pytest
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.modules.theme.llm_planner import ThemePlanner
+from podcast_ai.modules.theme.state import validate_state_conforms_to_schema
 
 
 class _StubLLMClient:
@@ -66,7 +67,7 @@ def test_v22_theme_planner_parses_strict_json_schema() -> None:
     )
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
-    plan = planner.generate_plan(request)
+    plan = planner.generate_plan(request, use_orchestrator=False)
 
     assert len(plan.segments) >= 2
     for seg in plan.segments:
@@ -117,7 +118,7 @@ def test_v22_theme_planner_search_hints_missing_or_invalid_fallback_to_empty_dic
     )
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
-    plan = planner.generate_plan(request)
+    plan = planner.generate_plan(request, use_orchestrator=False)
 
     assert len(plan.segments) == 1
     assert len(plan.segments[0].target_playlist) == 2
@@ -150,7 +151,7 @@ def test_v22_theme_planner_error_message_for_empty_host_script() -> None:
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
     with pytest.raises(AIServiceError, match=r"segments\[0\]\.host_script"):
-        planner.generate_plan(request)
+        planner.generate_plan(request, use_orchestrator=False)
 
 
 def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> None:
@@ -178,4 +179,54 @@ def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> N
     planner = ThemePlanner(llm_client=_StubLLMClient(payload))
 
     with pytest.raises(AIServiceError, match=r"segments\[0\]\.target_playlist"):
-        planner.generate_plan(request)
+        planner.generate_plan(request, use_orchestrator=False)
+
+
+def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() -> None:
+    """v3.7：single_agent 生成的 PlanState 为子集结构，不包含 critic/control。"""
+    payload = {
+        "schema_version": "v3.0",
+        "meta": {
+            "request_id": "req_001",
+            "theme": "Late Night Chill",
+            "theme_description": "late-night test flow",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+            "overall_bpm_range": [90, 120],
+        },
+        "global_constraints": {
+            "tone": "克制",
+            "language_style": "第一人称",
+            "avoid": [],
+        },
+        "plan": {
+            "segments_design": "开场->中段->收束",
+            "emotion_curve": ["平静", "抬升", "收束"],
+        },
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "order": 1,
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "bpm_range": [90, 105],
+                "mood": "chill",
+                "segment_design": "开场铺垫",
+                "playlist": [{"track": "Track A", "artist": "Artist X", "bpm": 98}],
+                "script": {"segment_intro": "欢迎来到 Luma Hits。", "between_tracks": [{"after_track_index": 0, "text": None}]},
+            }
+        ],
+    }
+    request = EpisodeRequest(
+        topic="Late Night Chill",
+        duration_minutes=10,
+        language="zh",
+        output_dir=Path("./output"),
+    )
+    planner = ThemePlanner(llm_client=_StubLLMClient(payload))
+
+    plan, state = planner.generate_plan_and_state(request, agent_mode="single_agent")
+    validate_state_conforms_to_schema(state, agent_mode="single_agent")
+    assert "critic" not in state
+    assert "control" not in state
+    assert len(state["segments"]) == len(plan.segments)

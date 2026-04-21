@@ -41,14 +41,15 @@
     - 主要文件：`core/pipeline.py`
     - 职责：
       - 支持 **两阶段流程**：① 规划阶段（输出歌单）→ ② 制作阶段（用户准备好歌曲后继续）
+      - 阶段一（v3.0）采用 **多 Agent 规划流水线**：Planner / Music Curator / Script Writer / Critic，基于共享 state 进行有限迭代回修
       - 串联 7 个 PRD 定义的功能模块（主题生成 → 扫库 → 选曲 → 混音 → 主持 → 母带 → 导出）
       - 管理整体流程、错误处理、进度日志与时间统计
       - 提供高层 API：`plan_episode`（仅规划）、`create_episode`（完整制作或从规划继续）
   - **领域模块层（Domain / Modules Layer）**
     - 按“功能模块”划分子包，每个模块只关注自己的业务规则与实现：
-      - `modules/theme`：主题与节目结构生成（LLM 调用与 prompt 设计）
+      - `modules/theme`：阶段一 Episode Plan 多 Agent 生成（LLM、共享 `PlanState`、编排与评估回修；具体文件见 §5 `modules/theme/`）
       - `modules/library`：本地音乐库扫描与元数据提取
-      - `modules/selection`：自动选曲与排序算法
+      - `modules/selection`：按 plan 做本地曲目映射与缺失校验（不做二次重排）
       - `modules/mixing`：音轨拼接、crossfade 混音逻辑
       - `modules/voiceover`：主持串词生成与 TTS 语音生成
       - `modules/mastering`：Loudness normalization 与母带处理
@@ -65,7 +66,12 @@
 **阶段一：规划与歌单输出（用户可仅执行此阶段）**
   1. 用户通过 CLI 输入主题和时长 → 解析为 `EpisodeRequest`
   2. `Pipeline.plan_episode(request)`：
-    - 调用 `ThemePlanner.generate_plan`：生成节目结构、段落、情绪、BPM 区间、串词草稿、**目标歌单规划** → `EpisodePlan`
+    - 调用 `ThemePlanner.generate_plan`（v3.0 多 Agent）：
+      - Planner：先生成全局结构与约束
+      - Music Curator：补齐各段目标歌单规划
+      - Script Writer：生成各段主持串词
+      - Critic：输出结构化反馈并驱动有限回修（默认最多 3 次）
+    - 产出：可追踪的 `EpisodePlan`（含评估反馈摘要）
     - 将 `EpisodePlan` 持久化为 JSON 文件，并输出可读的「目标歌单」供用户查阅
   3. 用户根据目标歌单到各平台搜索、下载或整理歌曲，放入指定本地目录
   **阶段二：制作（用户准备好歌曲后执行）**
@@ -73,7 +79,7 @@
   2. `Pipeline.create_episode(plan_path, music_dir)` 或 `create_episode(request, plan=...)`：
     - 加载已有 `EpisodePlan`（或可选：重新生成）
     - 调用 `LibraryScanner.scan_or_load_cache`：扫描用户准备好的目录 → `list[TrackWithMetadata]`
-    - 调用 `TrackSelector.select_tracks`：在已扫描歌曲中，**结合目标歌单规划**与节目结构选曲、排序 → `list[SelectedTrack]`
+    - 调用 `TrackSelector.select_tracks`：按 plan 顺序做本地文件映射与缺失校验（不做 BPM 二次排序/贪心替代）→ `list[SelectedTrack]`
     - 调用 `VoiceoverService.generate_voiceovers`：生成主持语音片段 → `list[VoiceoverSegment]`
     - 调用 `Mixer.build_mix`：拼接歌曲与主持语音，做 crossfade → 中间混音结果
     - 调用 `MasteringService.apply_mastering`：统一 Loudness → 最终音频
@@ -105,6 +111,15 @@
     - `overall_bpm_range: tuple[int, int] | None`
     - `style_description: str`
     - `plan_id: str`（用于与制作阶段关联、持久化与加载）
+    - `critic_summary: dict | None`（多 Agent 评估与回修摘要）
+    - `generation_trace: list[dict] | None`（可选：记录 Planner/Curator/Writer/Critic 的关键步骤）
+  - `PlanState`（v3.0 共享 state，阶段一内部使用）
+    - `meta: dict`
+    - `global_constraints: dict`
+    - `plan: dict`
+    - `segments: list[dict]`
+    - `critic: dict`
+    - `control: dict`（含 `max_iterations`，默认 3）
   - `EpisodeSegment`
     - `name: str`（如「开场」「中段」「收尾」）
     - `target_duration_seconds: int`
@@ -157,22 +172,29 @@
   - 文件：`core/pipeline.py`
   - 主要函数：
     - `plan_episode(request: EpisodeRequest) -> EpisodePlan`
-      - **阶段一**：仅生成节目结构、串词草稿与**目标歌单规划**，输出为 JSON 文件；用户据此手动下载歌曲
+      - **阶段一**：多 Agent 协同生成 Episode Plan（含目标歌单与评估回修），输出为 JSON 文件；用户据此手动下载歌曲
     - `create_episode(plan_path: Path, music_dir: Path, ...) -> EpisodeResult`
       - **阶段二**：加载已有规划，从扫描用户准备好的音乐目录开始，执行选曲 → 混音 → 主持 → 母带 → 导出
     - `create_episode(request: EpisodeRequest, plan: EpisodePlan | None = None) -> EpisodeResult`
       - 可选：若传入 `plan` 且用户已准备好歌曲，可跳过阶段一直接执行阶段二
 - **领域模块接口（示例）**
-  - `ThemePlanner`（模块 1：主题生成）
-    - `generate_plan(request: EpisodeRequest) -> EpisodePlan`
-    - 输出包含：节目结构、段落、情绪、BPM 区间、串词草稿、**目标歌单规划**（每段推荐曲目或搜索条件）
+  - `ThemePlanner`（模块 1：主题生成门面）
+    - 文件：`modules/theme/llm_planner.py`
+    - `generate_plan(request: EpisodeRequest, use_orchestrator: bool = False) -> EpisodePlan`
+    - `use_orchestrator=False`：单次 LLM 调用（v2.x）
+    - `use_orchestrator=True`（v3.0）：方法内懒加载 `PlanOrchestrator`，对返回的 `PlanState` 经 `_episode_plan_from_state` 转为 `EpisodePlan`
+    - 输出包含：节目结构、段落、情绪、BPM 区间、串词与**目标歌单规划**（v2/v3 schema 细节以 PRD 与 `state` 为准）
+  - `PlanOrchestrator`（v3.0，阶段一内部编排）
+    - 文件：`modules/theme/orchestrator.py`；依赖 `planner_agent.PlannerAgent`、`music_curator_agent.MusicCuratorAgent`、`script_writer_agent.ScriptWriterAgent` 与 `critic_agent.CriticAgent`
+    - `run(request: EpisodeRequest, initial_state: PlanState | None = None) -> PlanState`
+    - 协调 Planner / Music Curator / Script Writer / Critic，按共享 state 执行有限回修迭代；**不**在此转换为 `EpisodePlan`
   - `LibraryScanner`（模块 2：音乐库扫描）
     - `scan_library(root_dir: Path) -> list[TrackWithMetadata]`
     - `scan_or_load_cache(root_dir: Path) -> list[TrackWithMetadata]`
     - 默认假设用户已根据目标歌单规划将本期候选歌曲放入指定目录
   - `TrackSelector`（模块 3：自动选曲与排序）
     - `select_tracks(plan: EpisodePlan, library: list[TrackWithMetadata]) -> list[SelectedTrack]`
-    - 在已扫描到的候选歌曲中，**结合目标歌单规划**与节目结构进行选择：BPM 接近、曲风一致、总时长匹配
+    - 严格按 plan 的歌曲序列执行映射；若 plan 曲目无法映射到本地文件则报错并中断
   - `Mixer`（模块 4：自动混音）
     - `build_mix(selected_tracks: list[SelectedTrack], voiceovers: list[VoiceoverSegment], config: AudioRenderConfig) -> Path`
   - `VoiceoverService`（模块 5：主持语音）
@@ -229,12 +251,18 @@ project-root/
 
       modules/
         theme/
-          llm_planner.py
-          prompts.py
+          llm_planner.py            # ThemePlanner；v2 单次规划；PlanState→EpisodePlan；v3 内懒加载 PlanOrchestrator
+          planner_agent.py          # PlannerAgent；sanitize_planner_patch（公开）
+          music_curator_agent.py    # MusicCuratorAgent；_sanitize_curator_patch
+          script_writer_agent.py    # ScriptWriterAgent；_sanitize_script_writer_patch
+          critic_agent.py           # CriticAgent；_sanitize_critic_patch
+          orchestrator.py           # PlanOrchestrator；调度四 Agent 与迭代控制
+          state.py                  # PlanState、initialize/merge/assert
+          prompts.py                # 各 Agent / v2 ThemePlanner 的 message 构建
         library/
           scanner.py        # 扫描目录、提取元数据
         selection/
-          selector.py       # 选曲与排序策略
+          selector.py       # 按 plan 映射本地曲目与缺失校验（不做二次重排）
         mixing/
           mixer.py          # crossfade、音轨合成
         voiceover/
@@ -261,29 +289,42 @@ project-root/
   - 方案：
     - 首次全量扫描后，将结果缓存为 JSON/SQLite，后续只对新增或修改文件做增量扫描。
     - BPM 计算可采用近似方法（降低采样密度、只分析前 N 秒）以换取速度。
-- **2）选曲与总时长控制**
-  - 难点：在保证 BPM/风格连续性的前提下，使总时长落在目标值 ±5% 区间内。
+- **2）plan 一致性与本地曲目映射**
+  - 难点：阶段二必须严格按 plan 播放顺序执行，且 plan 曲目未必能在本地目录找到同名或可匹配文件。
   - 方案：
-    - 将问题视作简单的“带约束的背包问题”，采用启发式贪心算法：
-      - 先按 BPM / 风格过滤候选，再按时长与差值进行排序与微调。
-    - 在模型中显式记录 crossfade 重叠时间，计算“有效节目时长”时扣除重叠部分。
+    - `TrackSelector` 仅负责“按顺序映射 + 缺失检测”，不做 BPM 重排或贪心替代。
+    - 引入明确的映射失败报告（缺失曲目清单、建议补齐项），失败即中断，避免 silently fallback。
+    - 将“时长精度”从阶段二强约束中移除，优先保障 plan 一致性。
 - **3）Crossfade 混音与音量一致性**
   - 难点：不同来源的音轨音量差异大，直接拼接容易出现忽大忽小或削波。
   - 方案：
     - 在混音前，对每首歌做一次粗略的音量归一化（RMS 或简单 LUFS 估计）。
     - 使用 pydub 的 `fade_in` / `fade_out` 和自定义 crossfade 秒数，实现固定 6–10 秒的过渡。
     - 在最终导出前，调用 `MasteringService` 使用 ffmpeg 的 `loudnorm` 或类似方案进行整体 Loudness normalization。
-- **4）主持语音插入的时序规划**
-  - 难点：需要避免主持语音压住歌曲关键段落，同时保证节目节奏自然。
+- **4）主持语音与歌曲边界对齐（v1.3/v2.1）**
+  - 难点：串词插入点若按目标时长估算，容易与实际歌曲边界错位；边界过渡还需兼顾可懂度。
   - 方案：
-    - 在 `EpisodePlan` 中为每个 `EpisodeSegment` 约定插入策略（如段首、段尾或中间某个时间点）。
-    - 在混音阶段，使用统一的时间线（以秒为单位）管理所有事件（歌曲开始/结束、主持插入），避免写死 offset。
+    - 串词插入点以“segment 第一首歌真实开始边界”为准，顺序固定为：串词_i → segment_i。
+    - 过渡策略遵循 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入，串词不淡出。
+    - 在 `Mixer` 中先排完整时间线，再做歌曲-歌曲与串词边界过渡处理。
 - **5）LLM 与 TTS 调用的可靠性与成本**
   - 难点：网络调用存在失败与超时风险，同时需要控制 token 与调用次数。
   - 方案：
     - 在 `LLMClient` / `TTSClient` 中内建重试、超时与基础日志机制。
     - 将模型名称、最大字数/时长、语言等参数配置化，方便按需调优成本与效果。
     - 通过 prompt 约束串词长度与风格，降低无效生成。
+- **6）阶段一多 Agent 状态一致性（v3.0）**
+  - 难点：多 Agent 协作时容易出现 JSON 非法、字段漂移、越权写入、回修循环失控。
+  - 方案：
+    - 以 `PlanState` 为唯一事实源，按读写契约限制每个 Agent 的可写字段。
+    - `Critic` 输出结构化问题与修复动作；`Orchestrator` 控制有限迭代（默认 `max_iterations=3`）与提前收敛。
+    - 对非法 JSON/缺字段增加重试与回退，确保最终 `EpisodePlan` 可执行。
+- **7）跨平台依赖安装（尤其是 FFmpeg）**
+  - 难点：Windows 与 macOS 上 FFmpeg 安装方式与路径各异，易导致运行时错误。
+  - 方案：
+    - 在 README 中提供面向 Windows/macOS 的简明安装步骤与验证命令。
+    - 应用启动或首次音频操作前检查 FFmpeg 是否可用，若不可用则给出明确错误提示与参考链接。
+    - 所有对 FFmpeg 的调用统一通过 `infra/audio_backend.py`，避免在各模块中散落命令调用。
 
 ---
 
@@ -301,10 +342,17 @@ project-root/
   - **影响面**：
     - 主要影响 `infra/tts_client.py`、`modules/voiceover/tts_service.py` 与配置文件
     - 对 Pipeline、数据模型、目录结构无结构性变更
-- **6）跨平台依赖安装（尤其是 FFmpeg）**
-  - 难点：Windows 与 macOS 上 FFmpeg 安装方式与路径各异，易导致运行时错误。
-  - 方案：
-    - 在 README 中提供面向 Windows/macOS 的简明安装步骤与验证命令。
-    - 应用启动或首次音频操作前检查 FFmpeg 是否可用，若不可用则给出明确错误提示与参考链接。
-    - 所有对 FFmpeg 的调用统一通过 `infra/audio_backend.py`，避免在各模块中散落命令调用。
+- **AD-2026-03-v3.0：阶段一 Episode Plan 多 Agent 化（迭代八）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**，但不改变整体分层与单体形态
+  - **背景**：PRD v3.0 要求阶段一从单次模型调用升级为 Planner / Music Curator / Script Writer / Critic 的多 Agent Pipeline，并基于共享 state 做有限回修迭代
+  - **最小改动方案**：
+    - 保持现有两阶段流程、CLI 入口和应用层边界不变
+    - 仅在 `modules/theme` 内新增 `orchestrator + 4 agents + state schema`，由 `plan_episode` 调用
+    - `EpisodePlan` 增加可选追踪字段（`critic_summary`、`generation_trace`），用于可解释性与问题回溯
+    - 迭代控制参数仅保留 `max_iterations`（默认 3），避免过度配置
+  - **影响面**：
+    - 主要影响 `modules/theme/*` 与 `core/pipeline.py` 的阶段一编排
+    - 阶段二混音链路、TTS 链路、导出链路保持不变
+  - **实现落地（当前仓库）**：阶段一四 Agent 各独占 `*_agent.py`，类与同文件内 `_sanitize_*_patch`（Planner 为公开 `sanitize_planner_patch`）共存；`PlanOrchestrator` 仅依赖上述四模块与 `state` 等；`ThemePlanner` 在 v3 路径方法内懒加载 `orchestrator`。
 

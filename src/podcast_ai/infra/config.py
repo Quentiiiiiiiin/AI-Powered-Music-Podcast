@@ -21,6 +21,27 @@ class LLMConfig(BaseModel):
     model: str = "minimax/minimax-m2.5"
     timeout_seconds: int = 60
     max_retries: int = 2
+    # v3.4：None = 仅当 base_url 指向 openrouter.ai 时在请求体附加 response_format；True/False 强制开关
+    structured_output: bool | None = Field(
+        default=None,
+        description="OpenRouter 结构化 JSON：None 自动检测 host；True/False 覆盖",
+    )
+
+
+def should_use_structured_output(cfg: LLMConfig) -> bool:
+    """
+    是否应在 chat/completions 请求中附带 `response_format`（json_schema strict）。
+
+    - `structured_output=True`：始终启用
+    - `structured_output=False`：始终关闭（避免非 OpenRouter 网关 400）
+    - `None`：仅当 `base_url` 主机名含 `openrouter.ai` 时启用
+    """
+    if cfg.structured_output is True:
+        return True
+    if cfg.structured_output is False:
+        return False
+    url = (cfg.base_url or "").strip().lower()
+    return "openrouter.ai" in url
 
 
 class ElevenLabsConfig(BaseModel):
@@ -64,6 +85,8 @@ class CacheConfig(BaseModel):
 class AppConfig(BaseModel):
     music_dir: str = "./music"
     output_dir: str = "./output"
+    # v3.6：multi-agent 路径下按轮次落盘 audit（关闭则不写 audit/，避免 I/O 影响主流程）
+    multi_agent_audit_enabled: bool = Field(default=True, description="是否启用多 Agent 审计落盘")
 
 
 class _YamlSettingsSource(PydanticBaseSettingsSource):
