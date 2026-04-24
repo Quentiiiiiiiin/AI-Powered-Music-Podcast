@@ -62,10 +62,16 @@ PODCAST_AI_LLM__API_KEY=sk-xxx
 PODCAST_AI_LLM__BASE_URL=https://api.openai.com/v1
 PODCAST_AI_LLM__MODEL=gpt-4o-mini
 
-# v1.4：TTS 默认使用 ElevenLabs
+# v4.1：TTS 支持 edge / elevenlabs / minimax
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
+
+# MiniMax（同步非流式）
+# PODCAST_AI_TTS__PROVIDER=minimax
+# PODCAST_AI_TTS__MINIMAX__API_KEY=your_minimax_api_key_here
+# PODCAST_AI_TTS__MINIMAX__MODEL=speech-2.8-hd
+# PODCAST_AI_TTS__MINIMAX__VOICE_ID=male-qn-qingse
 ```
 
 ---
@@ -102,6 +108,8 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 ```bash
 # 阶段二读取阶段一产物 `<episode_id>.json`
 podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目
+# 指定 TTS 供应商（覆盖配置）
+podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目 --tts-provider minimax
 ```
 
 - 扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出
@@ -138,8 +146,9 @@ podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生�
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
 | `llm.base_url`               | LLM API 地址          | 需配置          |
 | `llm.api_key`                | LLM API Key         | 建议用环境变量      |
-| `tts.provider`               | TTS 供应商             | `elevenlabs` |
+| `tts.provider`               | TTS 供应商（`edge`/`elevenlabs`/`minimax`） | `elevenlabs` |
 | `tts.elevenlabs.voice_id`    | ElevenLabs Voice ID | 需配置          |
+| `tts.minimax.voice_id`       | MiniMax Voice ID | `male-qn-qingse` |
 
 
 ---
@@ -257,6 +266,7 @@ podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx.json D:\Music\本�
 | `未检测到可用的 FFmpeg/ffprobe`      | FFmpeg 未安装或未加入 PATH                             | 安装 FFmpeg，将 `ffmpeg/bin` 加入 PATH                                                           |
 | `LLM base_url 未配置`            | 未配置 `llm.base_url` 或 `PODCAST_AI_LLM__BASE_URL` | 在 `config.yaml` 或 `.env` 中配置                                                               |
 | `ElevenLabs TTS 配置不完整`        | 未配置 `tts.elevenlabs.api_key` 或 `voice_id`       | 在 `.env` 设置 `PODCAST_AI_TTS__ELEVENLABS__API_KEY` 与 `PODCAST_AI_TTS__ELEVENLABS__VOICE_ID` |
+| `MiniMax TTS 配置不完整`        | 未配置 `tts.minimax.api_key`       | 在 `.env` 设置 `PODCAST_AI_TTS__MINIMAX__API_KEY`（可选设置 `VOICE_ID`） |
 | `ElevenLabs TTS 调用失败：鉴权失败`    | API Key 无效或过期                                   | 检查 ElevenLabs key 是否正确                                                                     |
 | `ElevenLabs TTS 调用失败：资源不存在`   | `voice_id` 不正确                                  | 到 ElevenLabs 控制台复制正确 Voice ID                                                              |
 | `ElevenLabs TTS 调用失败：配额或频率受限` | 配额不足或触发限流                                       | 稍后重试或提升套餐                                                                                  |

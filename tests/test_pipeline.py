@@ -487,6 +487,109 @@ def test_v14_create_episode_accepts_tts_client_parameter() -> None:
     """create_episode 支持注入 tts_client，便于 mock ElevenLabs 或回归单测。"""
     sig = inspect.signature(create_episode)
     assert "tts_client" in sig.parameters
+    assert "tts_provider" in sig.parameters
+
+
+@patch("podcast_ai.core.pipeline.Exporter.export_episode")
+@patch("podcast_ai.core.pipeline.MasteringService.apply_mastering")
+@patch("podcast_ai.core.pipeline.Mixer.build_mix")
+@patch("podcast_ai.core.pipeline.VoiceoverService.generate_voiceovers_from_snapshot")
+@patch("podcast_ai.core.pipeline.split_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.compute_segment_boundaries_from_snapshot")
+@patch("podcast_ai.core.pipeline.select_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+def test_v41_create_episode_tts_provider_override_applies_to_service_settings(
+    mock_scan: object,
+    mock_select: object,
+    mock_boundaries: object,
+    mock_split: object,
+    mock_generate_voiceovers: object,
+    mock_build_mix: object,
+    mock_mastering: object,
+    mock_export: object,
+    tmp_path: Path,
+) -> None:
+    """v4.1：create_episode 传入 tts_provider 时，应覆盖 settings.tts.provider。"""
+    from podcast_ai.core.models import EpisodeResult, SegmentBoundary, SelectedTrack, Track, TrackMetadata, TrackWithMetadata
+    from podcast_ai.infra.config import AppConfig, CacheConfig, Settings
+
+    output_dir = tmp_path / "out"
+    music_dir = tmp_path / "music"
+    output_dir.mkdir(parents=True)
+    music_dir.mkdir()
+    t1 = music_dir / "a.wav"
+    _export_short_wav(t1, 1000)
+    episode_id = "ep_provider"
+    snapshot = {
+        "schema": "v3.0",
+        "meta": {
+            "request_id": "r_provider",
+            "theme": "provider test",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+        },
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "playlists": [{"track": "A", "artist": "X"}],
+                "script": {"segment_intro": "", "between_tracks": []},
+            }
+        ],
+    }
+    snapshot_path = output_dir / "episodes" / episode_id / "plans" / f"{episode_id}.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    selected = [
+        SelectedTrack(
+            track=Track(id="t1", file_path=t1, title="A", artist="X"),
+            start_time_in_episode=0.0,
+            end_time_in_episode=1.0,
+            effective_duration=1.0,
+        )
+    ]
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=t1, title="A", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=1.0, bpm=100.0, genre=None),
+        )
+    ]
+    mock_select.return_value = selected
+    mock_boundaries.return_value = [SegmentBoundary(music_start=0.0, music_end=1.0)]
+    mock_split.return_value = [selected]
+    mock_generate_voiceovers.return_value = []
+    mock_build_mix.return_value = MagicMock(
+        mix_path=output_dir / "episodes" / episode_id / "mix" / "mix.wav",
+        actual_duration_seconds=1.0,
+        track_count=1,
+        voiceover_count=0,
+    )
+    mock_mastering.side_effect = lambda mix_path, output_path, _config: output_path
+    mock_export.return_value = EpisodeResult(
+        episode_id=episode_id,
+        audio_path=output_dir / "episodes" / episode_id / "final" / f"{episode_id}.mp3",
+        actual_duration_seconds=1,
+        show_notes="ok",
+        tracks=[],
+    )
+
+    captured_provider: dict[str, str] = {}
+
+    def _check_provider(settings):
+        captured_provider["value"] = settings.tts.provider
+        return _FixedFileTTSClient(t1)
+
+    with patch("podcast_ai.modules.voiceover.tts_service.get_default_tts_client", side_effect=_check_provider):
+        create_episode(
+            snapshot_path,
+            music_dir,
+            settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
+            tts_provider="minimax",
+        )
+
+    assert captured_provider["value"] == "minimax"
 
 
 def test_v39_create_episode_invalid_snapshot_raises_clear_error(tmp_path: Path) -> None:

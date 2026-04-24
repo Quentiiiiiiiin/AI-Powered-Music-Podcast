@@ -161,6 +161,7 @@ def create_episode(
     topic: str | None = None,
     language: str = "zh",
     tts_client: Optional[TTSClient] = None,
+    tts_provider: Literal["edge", "elevenlabs", "minimax"] | None = None,
 ) -> EpisodeResult:
     """
     阶段二：从 `<episode_id>.json`（Stage2Snapshot）继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
@@ -171,6 +172,14 @@ def create_episode(
     v1.4：可注入 `tts_client`（如单测 mock）；默认使用 `VoiceoverService` 内建的 `get_default_tts_client`（ElevenLabs）。
     """
     effective_settings = settings or load_settings()
+    if tts_provider is not None:
+        # 命令级覆盖，仅覆盖 provider 本身，其他字段继续来自现有配置/.env。
+        effective_settings = effective_settings.model_copy(
+            deep=True,
+            update={
+                "tts": effective_settings.tts.model_copy(update={"provider": tts_provider}),
+            },
+        )
 
     with log_timing(logger, "create_episode"):
         snapshot = _load_stage2_snapshot(snapshot_path)

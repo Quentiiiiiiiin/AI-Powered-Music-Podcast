@@ -32,3 +32,10 @@ tts:
     voice_id: ""
     model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
+  # v4.1：MiniMax（同步非流式）
+  minimax:
+    api_key: ""
+    model: "speech-2.8-hd"
+    voice_id: "English_Sharp_Commentator"
+    query_interval_ms: 500
+    query_timeout_seconds: 30

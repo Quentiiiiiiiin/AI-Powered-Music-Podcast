@@ -153,6 +153,13 @@ tts:
     voice_id: ""
     model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
+  # v4.1：MiniMax（同步非流式）
+  minimax:
+    api_key: ""
+    model: "speech-2.8-hd"
+    voice_id: "male-qn-qingse"
+    query_interval_ms: 500
+    query_timeout_seconds: 30
 """
 
 _INIT_ENV_EXAMPLE = """# LLM / TTS key 建议放环境变量
@@ -161,6 +168,10 @@ PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
+# PODCAST_AI_TTS__PROVIDER=minimax
+# PODCAST_AI_TTS__MINIMAX__API_KEY=your_minimax_api_key_here
+# PODCAST_AI_TTS__MINIMAX__MODEL=speech-2.8-hd
+# PODCAST_AI_TTS__MINIMAX__VOICE_ID=male-qn-qingse
 """
 
 
@@ -223,6 +234,11 @@ def create_episode_cli(
         "-l",
         help="串词与 TTS 语言。",
     ),
+    tts_provider: Literal["edge", "elevenlabs", "minimax"] | None = typer.Option(
+        None,
+        "--tts-provider",
+        help="覆盖配置中的 TTS 供应商（edge/elevenlabs/minimax）。",
+    ),
 ) -> None:
     """
     阶段二：从规划文件继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
@@ -239,6 +255,7 @@ def create_episode_cli(
             music_dir=music_dir,
             topic=topic or None,
             language=language,
+            tts_provider=tts_provider,
         )
     except PodcastAIError as exc:
         typer.echo(f"[错误] 制作失败：{exc}", err=True)

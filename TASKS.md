@@ -1,102 +1,141 @@
-## 版本 v3.9.1（迭代十八：Mixer 串词 / 歌曲转场与 snapshot 对齐）
+﻿## 版本 v4.1（迭代十九：新增 MiniMax TTS + TTS 模块重构）
 
-基于 PRD v3.9.1：阶段二混音**不再**采用「先把全部歌曲 `crossfade_concat` 串完，再按 `insert_time` 往音乐时间线里插串词」的顺序（该顺序会导致「下一首已起一小段串词才接上」）；改为以 `<episode_id>.json` snapshot 与阶段二已生成的 `VoiceoverSegment` 为**单一时间线来源**，按「串词 ↔ 曲目」真实顺序编排，并统一三类转场：
+基于 PRD v4.1 与 ARCHITECTURE 中 AD-2026-04-v4.1，本迭代目标是：
+- 在不改变现有分层与主流程（pipeline/mixer/exporter）的前提下，新增 `minimax` TTS 供应商；
+- 统一 `edge` / `elevenlabs` / `minimax` 三供应商调用抽象与公共逻辑；
+- CLI 支持供应商选择，模型均从 `.env` 生效；
+- 清理冗余分支，保持 TTS 代码简洁可维护。
 
-1. **歌 → 串词**：无 crossfade（硬切 / 自然结束接人声，串词开头清晰）。
-2. **串词 → 歌**：crossfade（串词尾与下一首进入重叠过渡，沿用 `voice_music_crossfade_seconds` 语义）。
-3. **歌 → 歌**：crossfade（沿用 `crossfade_seconds`）。
-
-段内 `between_tracks` 与段首 `segment_intro` 均走同一套相邻边界规则。与 v3.9 输入契约兼容：仍以 `<episode_id>.json` 为主输入，不新增计划文件格式。
+MiniMax 本轮采用「同步语音合成（HTTP 非流式）」稳定主路径；`voice_setting` / `audio_setting` 先使用代码内默认值，不提前过度配置化。
 
 ---
 
-### Task 01 - 现状审计与单一编排路径设计（Mixer）
-- **Task name**: v3.9.1 - Mixer 编排路径收敛设计
-- **目标**: 梳理 `src/podcast_ai/modules/mixing/mixer.py` 内现有分支（`plan` 分段拼接、`_insert_voiceovers_on_music_timeline`、无主持全曲 crossfade），明确 v3.9.1 后**唯一主路径**与可删除/合并的冗余分支。
+### Task 01 - 统一 TTS 配置模型（含 MiniMax）
+- **Task name**: v4.1 - TTS 配置契约扩展与校验
+- **目标**: 在 `Settings/TTSConfig` 中正式支持三供应商配置，尤其补齐 MiniMax 必要字段（如 `api_key`、`model`、query 轮询参数）；并提供最小必填校验函数，非法配置时尽早报错。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 对照 PRD 示例时间片顺序，写出目标状态机：相邻块类型 `(music|voice)` → 应用哪条转场规则。
-  - 确认与 `pipeline.create_episode` 当前调用方式一致：`build_mix(..., plan=None)` 且 `voiceovers` 已带 `insert_time_in_episode`（由 `VoiceoverService.generate_voiceovers_from_snapshot` 产出）。
-  - 输出一页内可执行的伪代码/步骤列表（不落文档文件也可，写在 `Mixer.build_mix` docstring 内即可）。
-- **Input**: 当前 `mixer.py` + PRD v3.9.1
-- **Output**: 明确「删哪些分支、新主路径如何拼」
+  - 扩展 `src/podcast_ai/infra/config.py`：新增 `MiniMaxConfig`，并挂到 `TTSConfig`。
+  - 统一 provider 合法值为 `edge` / `elevenlabs` / `minimax`（兼容历史别名可在路由层做 normalize）。
+  - 新增 `require_minimax_tts_config(...)`（类似现有 `require_elevenlabs_tts_config`）。
+  - 更新默认配置模板来源（`cli.py` 的 `init-config` 内容、`.env.example` 说明）以反映 v4.1。
+- **Input**: PRD v4.1 + `MiniMax API Doc.md`
+- **Output**: 可被客户端直接消费的统一 TTS 配置契约
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - （只读）`src/podcast_ai/core/pipeline.py`
-- **Estimated complexity**: S（1 小时）
-
----
-
-### Task 02 - 从「曲目时间线 + 串词时间点」构造有序音频块序列
-- **Task name**: v3.9.1 - 时间线展开为 music/voice 块列表
-- **目标**: 将 `SelectedTrack`（全曲顺序）与按 `insert_time_in_episode` 排序的 `VoiceoverSegment` 合并为**严格时间递增**的块序列，每块为已 `load_audio`+`simple_normalize` 的 `AudioSegment`，并携带块类型（music/voice）。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 在 `mixer.py` 内新增小函数（示例）：`_build_ordered_blocks_from_tracks_and_voiceovers(selected_tracks, voiceovers) -> list[tuple[Literal[\"music\",\"voice\"], AudioSegment]]`。
-  - 规则：按 `insert_time` 将 voice 插入**全局曲目时间线**的正确位置（与 snapshot 语义一致：串词不应落在「下一首已开始」之后）。
-  - 若 `insert_time` 冲突或越界，抛 `ValueError`/`PodcastAIError` 并带 segment_id / insert_time。
-- **Input**: `selected_tracks`、`voiceovers`
-- **Output**: 有序块列表
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-- **Estimated complexity**: M（2-3 小时）
-
----
-
-### Task 03 - 重构 `Mixer.build_mix`：按相邻块类型统一施加三条转场规则
-- **Task name**: v3.9.1 - 单一 `build_mix` 主路径
-- **目标**: 用 Task 02 的块序列，自左向右拼接；对每一对相邻块 `(prev, next)` 仅按类型选择：`music+voice` 硬接、`voice+music` 用现有 `_join_voice_to_music_fade_music_only`、`music+music` 用 `crossfade_concat` 的两段等价拼接（或抽 2 段专用 helper，避免整轨先拼）。
-- **类型**: backend
-- **依赖关系**: Task 02
-- **Description**:
-  - **删除/停用**「先 `crossfade_concat(track_audios)` 再 `_insert_voiceovers_on_music_timeline`」分支（PRD 验收 1 明确禁止该顺序）。
-  - `voice_music_crossfade_seconds` 仅用于 **voice→music**；`crossfade_seconds` 仅用于 **music→music**；**music→voice** 禁止叠化。
-  - 无 `voiceovers` 时保留「全曲 music→music crossfade」短路径（可复用现有逻辑）。
-- **Input**: 有序块序列 + `AudioRenderConfig`
-- **Output**: 最终 `AudioSegment` 混音结果
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - `src/podcast_ai/infra/audio_backend.py`（仅复用 `crossfade_concat` / `export_audio` 等，尽量不扩展）
-- **Estimated complexity**: L（3 小时）
-
----
-
-### Task 04 - 冗余清理与接口收敛（保持简洁）
-- **Task name**: v3.9.1 - 删除旧编排分支与死代码
-- **目标**: 在 Task 03 主路径稳定后，移除不再被 snapshot 阶段二调用的冗余实现，降低维护成本。
-- **类型**: backend
-- **依赖关系**: Task 03
-- **Description**:
-  - 删除或内联：`_insert_voiceovers_on_music_timeline`、`_concat_parts_with_voice_music_crossfade`、`_split_tracks_into_groups` 等若已无任何调用路径。
-  - 移除 `Mixer.build_mix` 的 `plan: Optional[EpisodePlan]` 参数（若全局已无调用方）；或保留但标记弃用并确保 `pipeline` 不再传入——**优先删除**以符合「去除冗余」。
-  - 清理 `from podcast_ai.modules.selection.selector import split_tracks_by_plan` 等未使用 import。
-  - 同步更新 `pipeline.create_episode` 中对 `build_mix` 的调用签名（若 Task 04 删除参数）。
-- **Input**: 全仓库 rg 引用检查
-- **Output**: `mixer.py` 更短、单一路径
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - `src/podcast_ai/core/pipeline.py`
-  - `tests/test_mixing.py`（若签名变更）
+  - `src/podcast_ai/infra/config.py`
+  - `src/podcast_ai/cli.py`（init-config 模板）
 - **Estimated complexity**: S（1-2 小时）
 
 ---
 
-### Task 05 - 单测：锁定三类转场与「禁止先拼全曲再插词」
-- **Task name**: v3.9.1 - Mixer 行为回归测试
-- **目标**: 用可控 stub（静音/短音频或 mock `load_audio`）验证：相邻边界应用正确；**不再**出现「整段音乐先 crossfade 再插入串词」的代码路径（可通过 monkeypatch `crossfade_concat` 调用次数/顺序断言）。
+### Task 02 - 重构 `infra/tts_client.py`：抽取公共骨架与供应商路由
+- **Task name**: v4.1 - TTS 客户端架构收敛
+- **目标**: 将当前分散在各实现中的公共逻辑（缓存 key、重试、日志、错误包装、响应校验、落盘）抽成统一 helper/base，保证三供应商行为一致，降低新增 provider 成本。
 - **类型**: backend
-- **依赖关系**: Task 03（Task 04 后若有签名变更则依赖 Task 04）
+- **依赖关系**: Task 01
 - **Description**:
-  - 覆盖最小场景：
-    1) `music → voice → music`：第一段 music 与 voice 硬接；voice 与第二段 music 发生 voice→music crossfade。
-    2) `music → music`（无中间 voice）：两段 music 走 song crossfade。
-    3) 多 `insert_time` 的 voice 交错插入，顺序与 `insert_time` 一致。
-  - 可选：段内两条 `between_tracks` 的简化 snapshot fixture（不必跑完整 ffmpeg，若现有测试已 mock）。
-- **Input**: stub segments + voiceovers
-- **Output**: `pytest` 通过
+  - 在 `tts_client.py` 内抽取可复用 helper：`_build_cache_path`、`_retry_synthesize`、`_validate_audio_bytes`、统一错误转换函数。
+  - 保持外部接口不变：`TTSClient.synthesize(text, *, voice, language, use_cache) -> Path`。
+  - `get_default_tts_client(...)` 改为统一 provider 路由，错误信息明确列出支持值。
+  - 尽量删除重复代码块，避免 edge/elevenlabs/minimax 各自复制重试与落盘逻辑。
+- **Input**: 现有 edge + elevenlabs 实现
+- **Output**: 统一的 TTS 客户端骨架与清晰路由
 - **Files involved**:
-  - `tests/test_mixing.py`
-  - `src/podcast_ai/modules/mixing/mixer.py`
-- **Estimated complexity**: M（2 小时）
+  - `src/podcast_ai/infra/tts_client.py`
+- **Estimated complexity**: M（2-3 小时）
+
+---
+
+### Task 03 - 新增 MiniMax 同步 TTS 客户端
+- **Task name**: v4.1 - MiniMax provider 实现（同步 HTTP 非流式）
+- **目标**: 在 `tts_client.py` 内新增 `MiniMaxTTSClient`，完整打通：同步调用接口 -> 解析响应 `data.audio`（hex）-> 落盘缓存。
+- **类型**: api
+- **依赖关系**: Task 01, Task 02
+- **Description**:
+  - 按 `MiniMax API Doc.md` 封装同步非流式接口（`/v1/t2a_v2`，`stream=false`）。
+  - 解析返回体 `data.audio` 的 hex 编码并转为音频 bytes，校验后写入缓存。
+  - 对 `base_resp.status_code != 0`、缺字段、hex 解码失败等场景返回清晰 `TTSServiceError`。
+  - `voice_setting` / `audio_setting` 使用代码内默认值（v4.1 约束），并在注释中标注后续配置化点。
+- **Input**: MiniMax API 文档、统一 TTS 配置
+- **Output**: 可在主流程直接使用的 `MiniMaxTTSClient.synthesize`
+- **Files involved**:
+  - `src/podcast_ai/infra/tts_client.py`
+- **Estimated complexity**: L（3-4 小时）
+
+---
+
+### Task 04 - CLI 增加 `tts_provider` 选择并透传到阶段二
+- **Task name**: v4.1 - create-episode 增加 TTS 供应商参数
+- **目标**: `create-episode` 命令支持用户显式选择 `edge` / `elevenlabs` / `minimax`，并透传到 `VoiceoverService` 实际生效；非法值直接阻断。
+- **类型**: backend
+- **依赖关系**: Task 01, Task 02
+- **Description**:
+  - 在 `src/podcast_ai/cli.py` 的 `create_episode_cli` 新增 `--tts-provider`（可选，覆盖配置）。
+  - 在 `src/podcast_ai/core/pipeline.py` 增加 provider 覆盖入口（可通过注入构造好的 `tts_client` 或显式 provider 参数）。
+  - 保持默认行为兼容：未传 CLI 参数时继续读取配置中的 `tts.provider`。
+- **Input**: CLI 当前参数与 pipeline 调用链
+- **Output**: 命令级供应商切换能力
+- **Files involved**:
+  - `src/podcast_ai/cli.py`
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/modules/voiceover/tts_service.py`（如需增加 provider override）
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 05 - VoiceoverService 对齐统一 TTS 抽象并清理冗余逻辑
+- **Task name**: v4.1 - 语音服务层收敛与简化
+- **目标**: 保持 `VoiceoverService` 只关注“文本与插入时间线”，将供应商差异全部下沉到 `infra/tts_client.py`；移除服务层中与供应商耦合的冗余分支。
+- **类型**: backend
+- **依赖关系**: Task 02, Task 03
+- **Description**:
+  - 统一 `generate_voiceovers*` 两条路径调用 `self._tts.synthesize(...)` 的参数语义（voice/language/use_cache）。
+  - 清理不再需要的 provider 特判注释与历史命名（如仅 edge 生效的误导性描述）。
+  - 保证错误策略一致：配置/调用错误明确抛出，不静默降级。
+- **Input**: 当前 `tts_service.py`
+- **Output**: 业务层更薄、职责更清晰
+- **Files involved**:
+  - `src/podcast_ai/modules/voiceover/tts_service.py`
+- **Estimated complexity**: S（1 小时）
+
+---
+
+### Task 06 - 回归测试与新增 MiniMax 路径测试
+- **Task name**: v4.1 - TTS 三供应商行为测试
+- **目标**: 覆盖最小可执行测试，确保重构后 edge/elevenlabs 不回退，且 minimax 同步链路可被稳定验证（mock HTTP）。
+- **类型**: backend
+- **依赖关系**: Task 03, Task 04, Task 05
+- **Description**:
+  - 新增/更新 `tests`：
+    1) provider 路由测试（`get_default_tts_client` 返回类型与非法 provider 报错）；
+    2) MiniMax 同步接口成功链路测试（含 `data.audio` hex -> bytes 落盘）；
+    3) MiniMax 返回失败码/缺字段/hex 非法场景错误测试；
+    4) CLI `--tts-provider` 参数透传生效测试（或 pipeline 级单测）。
+  - 使用 mock/stub，避免真实外部 API 调用。
+- **Input**: 重构后的 TTS 模块
+- **Output**: v4.1 验收点对应自动化测试
+- **Files involved**:
+  - `tests/test_tts_client.py`（可新增）
+  - `tests/test_voiceover.py`（可新增）
+  - `tests/test_pipeline.py` / `tests/test_cli.py`（按现有测试结构选择）
+- **Estimated complexity**: M（2-3 小时）
+
+---
+
+### Task 07 - 文档与冗余收尾（去除历史噪音）
+- **Task name**: v4.1 - 配置文档与代码清理
+- **目标**: 更新 README/配置说明为 v4.1 新口径，并移除旧 provider 文案与未使用代码，避免后续误用。
+- **类型**: backend
+- **依赖关系**: Task 01, Task 04
+- **Description**:
+  - 更新 `README.md` 中 TTS 配置与命令示例：展示 `edge` / `elevenlabs` / `minimax` 切换方式。
+  - 清理 `tts_client.py` 中历史 `edge_tts` 命名残留（例如 `edge_tts` vs `edge` 的文案混乱）与未使用 helper/import。
+  - 对 MiniMax 默认参数加简短注释，说明“本轮固定默认值，后续再配置化”。
+- **Input**: 代码完成态
+- **Output**: 文档与实现一致、无冗余噪音
+- **Files involved**:
+  - `README.md`
+  - `src/podcast_ai/infra/tts_client.py`
+  - `src/podcast_ai/cli.py`
+- **Estimated complexity**: S（1 小时）

@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.9.1  
+**文档版本**：v4.1  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.9.1）
+**产品阶段**：迭代验证中（进入 v4.1）
 
 ---
 
@@ -249,43 +249,22 @@
     4. 串词可懂度不因错误重叠而明显下降（主观试听：串词开头不被上一首歌尾部掩盖）。
     5. 与 v3.9 输入契约兼容：仍以 `<episode_id>.json` 为阶段二主输入，不引入新的计划文件格式。
 
-### 当前生效规则（v3.9.1）
-
-- 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
-- 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
-- 无论单 agent 还是多 agent，阶段一最终输出契约都对齐 `state_schema` 体系；其中单 agent 输出为精简子集（`schema_version/meta/global_constraints/plan/segments`），不包含 `critic/control`。
-- 单 agent 模式阶段一输出文件名固定为 `state.json`。
-- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
-- 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
-- 阶段一在单/多 agent 两种模式下统一输出：`state` 文件 + 以 `episode_id` 命名的新 JSON 文件；单 agent 历史 `playlist` 文件已移除。
-- 以 `episode_id` 命名的新文件为 state 的简化视图，字段仅保留：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
-- 阶段二当前主输入已切换为阶段一产出的 `<episode_id>.json`（按上方字段子集约定读取），旧 EpisodePlan 输入不再作为默认主路径。
-- 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
-- **阶段二混音（v3.9.1）**：以 `<episode_id>.json` snapshot 展开时间线；**歌→串词**不接 crossfade；**串词→歌**接 crossfade；**歌→歌**接 crossfade；段内 `between_tracks` 与上述一致。（历史 v2.1「串词结束前音乐短时淡入」由本规则中的「串词→歌 crossfade」承接听感目标，**不再**单独描述为先整段歌 crossfade 再插词。）
-- ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
-- TTS 当前主路径为 ElevenLabs。
-- **多 agent 模式（v3.6）**：每一轮 refinement 须按约定落盘 `iteration[i]_[agent]` 与各轮合并后的 `iteration[i]_state`，便于审计 Critic 建议与后续 Agent 输出是否一致。
-
-### 已完成迭代（v3.0）
-
-- **v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）**：
-  - **问题**：阶段一目前仍以“单次模型调用”生成 EpisodePlan，存在质量波动、结构失衡、风格不统一、局部难优化的问题。
-  - **变更目标**：将阶段一升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），通过“共享 State + 结构化反馈 + 有限迭代”提升 plan 质量与稳定性。
-  - **功能描述（核心）**：
-    1. 采用共享 `state`（JSON）作为唯一事实源，Agent 间不自由对话，只读写受控字段。
-    2. 引入 Critic Agent 进行结构化评估（评分 + 问题定位 + 修复指令）。
-    3. 引入有限次 Refinement Loop（建议最多 2~3 次），达到阈值提前结束。
-    4. 增加异常处理：JSON 不合法、缺字段、偏离指令时的 fallback 与重试。
-  - **State Schema（v3.0 草案）**：以 `meta / global_constraints / plan / segments / critic / control` 为核心层级；其中 `control.max_iterations` 默认为 3，可配置。
-  - **State Schema 完善（本轮）**：补充 `schema_version`、`meta.language/request_id`、`segments.segment_id/order`、`critic.actions[]`（支持多点修复）以及 `control.next_agent/last_updated_by`，提升可追踪性与可编排性。
-  - **User Story（用户视角）**：作为内容创作者，我希望 episode plan 由多 Agent 协同生成并可被评估与回修，这样结果更稳定、结构更合理，也更容易按问题定向优化。
-  - **功能归类**：新功能（架构升级）+ 优化（质量稳定性提升）。
+- **v4.1（迭代十九：新增 MiniMax TTS + TTS 模块重构）**：
+  - **问题**：当前 TTS 供应商选择能力有限，难以在不同质量/成本/可用性之间灵活切换；同时 TTS 相关代码可读性与可扩展性不足，新增供应商改动成本高。
+  - **变更目标**：
+    1. 新增 **MiniMax** 作为第三个 TTS 供应商，并打通同步语音合成（HTTP 非流式）链路（参考 `MiniMax API Doc.md`）。
+    2. 对 TTS 模块重构为统一供应商抽象，收敛公共逻辑（输入、落盘、错误处理、日志），减少分散分支。
+    3. 命令新增 TTS 供应商选择字段，支持 `edge` / `elevenlabs` / `minimax`。
+    4. 各供应商模型改为从 `.env` 读取并由用户选择；MiniMax 的 `voice_setting` / `audio_setting` 等定制字段本轮先在代码中固定默认值。
+  - **功能归类**：**新功能**（引入 MiniMax）+ **优化**（TTS 架构与配置体验）。
+  - **User Story（用户视角）**：作为创作者，我希望在命令中直接选择 TTS 供应商，并通过环境变量切换模型，这样我可以按场景在 edge / elevenlabs / minimax 间快速切换，而不需要改代码。
   - **Acceptance Criteria（验收标准）**：
-    1. 阶段一输出不再是单次黑盒结果，流程可追踪到 Planner / Music Curator / Script Writer / Critic 各步骤。
-    2. 所有 Agent 输入/输出均为结构化 JSON，并遵循 state schema 的字段约束（仅允许修改自身负责字段）。
-    3. Critic 必须输出结构化评估：`pass`、评分维度、问题列表、修复 action（目标 agent + 指令）。
-    4. 系统支持有限迭代（max 2~3 次）与提前收敛；超过阈值时给出最终状态与未解决问题。
-    5. 异常路径可处理：JSON 非法、缺字段、输出偏离 schema 时可重试或回退，不直接产出不可用 plan。
+    1. CLI 支持 `edge` / `elevenlabs` / `minimax` 选择；非法值或缺失配置时返回明确错误提示。
+    2. MiniMax 路径可完成同步语音合成请求，并得到可用音频文件接入现有串词流程。
+    3. 三个供应商的模型配置均可通过 `.env` 生效，修改配置后无需改业务代码。
+    4. 重构后 edge 与 elevenlabs 既有能力不回退，公共流程保持一致且代码结构更清晰。
+    5. MiniMax 定制参数（如 `voice_setting`、`audio_setting`）在本轮以代码内默认值稳定运行，后续再配置化。
+
 
 ## 1. 产品背景
 
@@ -507,7 +486,7 @@
 | 项目 | 说明 |
 |------|------|
 | **流程** | AI 生成串词 → TTS 生成语音 → **按 plan 的 segment 所包含歌曲时间线计算插入点（串词在 segment 之前）** |
-| **TTS 供应商（v1.4）** | 默认使用 ElevenLabs（替代 Edge TTS）；具体调用路径可为官方 SDK 或 HTTP API（待最终实现验证）。 |
+| **TTS 供应商（v4.1）** | 支持 `edge` / `elevenlabs` / `minimax`；由命令参数选择供应商。MiniMax 采用同步语音合成（HTTP 非流式）。 |
 | **要求（语义时间线 + v3.9.1 混音）** | 主持语音期间背景音乐默认静音；整期顺序为 串词1 - segment 1 - …。**具体「串词↔歌」音量与 crossfade 由阶段二 mixer 按 v3.9.1 执行**（歌→串词无 crossfade；串词→歌、歌→歌有 crossfade）。 |
 | **定位策略（关键）** | 串词_i 的开始时间以 plan 中 segment_i 对应的**第一首歌播放开始边界**为准；不再使用 `target duration seconds` 预估插入位置。第一个串词在 episode 开头，最后一个串词在最后一个 segment 之前。 |
 | **优先级** | P0 |
@@ -544,7 +523,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.9.1）
+### 6.4 当前版本成功指标（v4.1）
 
 | 指标 | 目标 |
 |------|------|
@@ -557,6 +536,7 @@
 | **阶段一产物统一性** | 单/多 agent 均产出一致文件集（`state` + `episode_id` 新文件），且不再产出 `playlist` 文件 |
 | **阶段二输入契约对齐** | 阶段二可直接消费 `<episode_id>.json` 完成制作，避免依赖旧 EpisodePlan 格式转换 |
 | **串词 / 歌曲转场正确性** | 混音结果符合 v3.9.1 三类转场规则，主观试听无「下一首已播一小段串词才来」的系统性错位 |
+| **TTS 供应商可切换性** | 支持在 `edge` / `elevenlabs` / `minimax` 间切换，且模型可由 `.env` 配置，无需改业务代码 |
 
 ---
 
@@ -665,7 +645,7 @@ Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算�
 
 - **版权**：MVP 阶段不重点考虑，用户需确保音乐库中的音乐具有合法使用权
 - **技术栈**：以 Python 为主，音频处理可使用 librosa、pydub、essentia 等库
-- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 当前主路径为 ElevenLabs（替代 Edge TTS），可保留 OpenAI TTS/Coqui 作为后续备选
+- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 支持 Edge / ElevenLabs / MiniMax，模型通过 `.env` 配置选择，MiniMax 定制参数本轮使用代码内默认值
 
 ---
 

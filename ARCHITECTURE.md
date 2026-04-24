@@ -17,8 +17,8 @@
     - 默认实现：接入 OpenAI / Claude / 其它兼容 LLM，模型名称与 API Key 通过环境变量或配置文件注入
   - **TTS**
     - 抽象接口：`TTSClient`
-    - 默认实现：`ElevenLabs`（v1.4 主路径）
-    - 备选实现（可选，非默认）：OpenAI TTS / Coqui
+    - 支持实现：`edge` / `elevenlabs` / `minimax`（v4.1）
+    - 供应商与模型选择：由 CLI 参数 + `.env` 配置驱动（无需改业务代码）
   - **配置与数据校验**
     - `pydantic` / `pydantic-settings`：用于配置加载、数据模型定义与校验
 - **工具与基础设施**
@@ -58,7 +58,7 @@
   - **基础设施层（Infrastructure Layer）**
     - 对外部世界的全部访问集中在此层，提供可替换实现：
       - `infra/llm_client.py`：封装 LLM 调用（统一重试与日志）
-      - `infra/tts_client.py`：封装 TTS 调用（默认 ElevenLabs，支持 SDK/HTTP 两种接入路径二选一）
+      - `infra/tts_client.py`：统一 TTS 供应商抽象与路由（`edge` / `elevenlabs` / `minimax`），收敛输入校验、音频落盘、错误处理、日志；MiniMax 走同步语音合成（HTTP 非流式）链路
       - `infra/audio_backend.py`：封装 pydub / librosa / ffmpeg 的常用操作
       - `infra/storage/cache.py`：音乐库扫描结果缓存（JSON 或 SQLite）
       - `infra/config.py`：加载配置文件和环境变量
@@ -199,7 +199,8 @@
     - `build_mix(selected_tracks: list[SelectedTrack], voiceovers: list[VoiceoverSegment], config: AudioRenderConfig) -> Path`
   - `VoiceoverService`（模块 5：主持语音）
     - `generate_voiceovers(plan: EpisodePlan) -> list[VoiceoverSegment]`
-    - 默认使用 ElevenLabs 生成主持语音；若调用失败，返回清晰错误信息（不静默失败）
+    - 支持通过命令参数选择 `edge` / `elevenlabs` / `minimax`；模型从 `.env` 读取
+    - MiniMax 路径采用同步语音合成（HTTP 非流式）并接入现有音频插入流程；调用失败返回清晰错误信息（不静默失败）
   - `MasteringService`（模块 6：母带处理）
     - `apply_mastering(mix_path: Path, config: AudioRenderConfig) -> Path`
   - `Exporter`（模块 7：导出）
@@ -243,7 +244,7 @@ project-root/
       infra/
         config.py           # 配置加载（config.yaml + 环境变量）
         llm_client.py       # LLMClient 抽象 + 默认实现
-        tts_client.py       # TTSClient 抽象 + 默认实现（ElevenLabs）
+        tts_client.py       # TTSClient 统一供应商抽象与路由（edge / elevenlabs / minimax）
         audio_backend.py    # 对 pydub / librosa / ffmpeg 的统一封装
         storage/
           cache.py          # 音乐库扫描缓存（JSON/SQLite）
@@ -355,4 +356,16 @@ project-root/
     - 主要影响 `modules/theme/*` 与 `core/pipeline.py` 的阶段一编排
     - 阶段二混音链路、TTS 链路、导出链路保持不变
   - **实现落地（当前仓库）**：阶段一四 Agent 各独占 `*_agent.py`，类与同文件内 `_sanitize_*_patch`（Planner 为公开 `sanitize_planner_patch`）共存；`PlanOrchestrator` 仅依赖上述四模块与 `state` 等；`ThemePlanner` 在 v3 路径方法内懒加载 `orchestrator`。
+- **AD-2026-04-v4.1：新增 MiniMax TTS + TTS 模块重构（迭代十九）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**，保持单体与现有分层不变
+  - **背景**：PRD v4.1 要求新增 MiniMax（同步语音合成，HTTP 非流式），并将 TTS 模块重构为统一供应商抽象，以支持 `edge` / `elevenlabs` / `minimax` 的命令级切换与 `.env` 模型配置
+  - **最小改动方案**：
+    - 保持 `VoiceoverService` 与 `TTSClient` 抽象边界不变，仅在 `infra/tts_client.py` 内新增 MiniMax provider 与统一路由层
+    - 抽取并复用公共逻辑（输入规范化、音频落盘、错误处理、日志），减少供应商分支散落在业务层
+    - CLI 增加 `tts_provider` 参数（`edge` / `elevenlabs` / `minimax`）；各供应商模型参数统一走 `.env`
+    - MiniMax 定制字段（`voice_setting`、`audio_setting`）本轮固定默认值，先保证同步链路稳定，不提前做复杂配置化
+  - **影响面**：
+    - 主要影响 `infra/tts_client.py`、`infra/config.py`、`cli.py`、`modules/voiceover/tts_service.py`
+    - 不改变 `pipeline` 编排、混音链路与数据模型主结构
 
