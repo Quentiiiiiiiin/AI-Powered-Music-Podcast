@@ -130,6 +130,10 @@ class AudioRenderConfig(BaseModel):
         ge=0,
         description="串词结束后音乐淡入的叠化窗口（秒）；不影响歌曲-歌曲 crossfade",
     )
+    # v4.2：开启后在「串词->歌」边界尝试用下一首 intro 估计值动态决定 vm（失败回退默认）。
+    voice_music_intro_align_enabled: bool = True
+    # v4.2：动态 vm 上限（秒）；关闭对齐时不生效。
+    voice_music_intro_align_max_seconds: float = Field(3.0, ge=0)
 
 
 class EpisodeResult(BaseModel):

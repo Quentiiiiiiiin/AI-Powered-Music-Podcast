@@ -143,6 +143,8 @@ podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生�
 | `app.music_dir`              | 音乐目录                | `./music`    |
 | `app.output_dir`             | 输出目录                | `./output`   |
 | `audio.crossfade_seconds`    | 曲目过渡时长（秒）           | `8.0`        |
+| `audio.voice_music_intro_align_enabled` | 是否启用串词->下一首 intro 对齐（v4.2） | `true` |
+| `audio.voice_music_intro_align_max_seconds` | 串词->歌动态叠化上限（秒，v4.2） | `3.0` |
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
 | `llm.base_url`               | LLM API 地址          | 需配置          |
 | `llm.api_key`                | LLM API Key         | 建议用环境变量      |

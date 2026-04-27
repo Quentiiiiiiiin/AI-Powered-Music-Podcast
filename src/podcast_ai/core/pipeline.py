@@ -193,6 +193,8 @@ def create_episode(
             loudness_target_lufs=effective_settings.audio.loudness_target_lufs,
             bitrate="320k",
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
+            voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
+            voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
         )
 
         with log_timing(logger, "scan_library"):

@@ -104,6 +104,9 @@ class AudioConfig(BaseModel):
     loudness_target_lufs: float = -14.0
     # v2.0：串词-歌曲边界 crossfade（默认约 2–4s 区间的中值；置 0 可回退为硬切）
     voice_music_crossfade_seconds: float = 3.0
+    # v4.2：开启后对「串词->歌」按下一首 intro 估计动态决定 vm；失败回退默认 vm。
+    voice_music_intro_align_enabled: bool = True
+    voice_music_intro_align_max_seconds: float = 3.0
 
 
 class CacheConfig(BaseModel):

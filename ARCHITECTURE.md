@@ -7,7 +7,7 @@
 - **核心第三方库（MVP）**
   - **音频处理**
     - `pydub`：音频切片、拼接、音量调整、crossfade 淡入淡出（依赖 FFmpeg，API 简单）
-    - `librosa`：BPM、时长和基础音频特征分析
+    - `librosa`：BPM、时长、基础音频特征分析；**v4.2** 起用于阶段二「下一首 intro」估计，以约束**串词→歌** crossfade 时机与重叠长度
     - 系统依赖：**FFmpeg**（单次安装，作为全局依赖）
   - **元数据读取**
     - `mutagen`：读取 mp3/wav 标签与基础元数据（时长、编码、标题等）
@@ -50,7 +50,7 @@
       - `modules/theme`：阶段一 Episode Plan 多 Agent 生成（LLM、共享 `PlanState`、编排与评估回修；具体文件见 §5 `modules/theme/`）
       - `modules/library`：本地音乐库扫描与元数据提取
       - `modules/selection`：按 plan 做本地曲目映射与缺失校验（不做二次重排）
-      - `modules/mixing`：音轨拼接、crossfade 混音逻辑
+      - `modules/mixing`：音轨拼接与 crossfade；按 PRD **v3.9.1** 语义时间线（歌→串词无 crossfade；串词→歌、歌→歌有 crossfade）；**v4.2** 在「串词→下一首」边界用 librosa 估计下一首 **intro**，参与 crossfade 时长与对齐点决策，失败时回退到与 v3.9.1 兼容的默认行为并打日志
       - `modules/voiceover`：主持串词生成与 TTS 语音生成
       - `modules/mastering`：Loudness normalization 与母带处理
       - `modules/exporter`：最终 MP3 导出与 Show Notes 输出
@@ -81,7 +81,7 @@
     - 调用 `LibraryScanner.scan_or_load_cache`：扫描用户准备好的目录 → `list[TrackWithMetadata]`
     - 调用 `TrackSelector.select_tracks`：按 plan 顺序做本地文件映射与缺失校验（不做 BPM 二次排序/贪心替代）→ `list[SelectedTrack]`
     - 调用 `VoiceoverService.generate_voiceovers`：生成主持语音片段 → `list[VoiceoverSegment]`
-    - 调用 `Mixer.build_mix`：拼接歌曲与主持语音，做 crossfade → 中间混音结果
+    - 调用 `Mixer.build_mix`：按 snapshot 单一时间线拼接歌曲与主持语音并施加转场（含 v4.2 intro 对齐的**串词→歌** crossfade）→ 中间混音结果
     - 调用 `MasteringService.apply_mastering`：统一 Loudness → 最终音频
     - 调用 `Exporter.export_episode`：输出 MP3 与 Show Notes → `EpisodeResult`
   3. CLI 输出：文件路径、实际时长、选曲列表等摘要信息
@@ -265,7 +265,7 @@ project-root/
         selection/
           selector.py       # 按 plan 映射本地曲目与缺失校验（不做二次重排）
         mixing/
-          mixer.py          # crossfade、音轨合成
+          mixer.py          # 时间线混音、歌↔串词↔歌 crossfade；v4.2：串词→下一首 intro 估计（librosa）与回退
         voiceover/
           tts_service.py    # 主持语音生成与管理
         mastering/
@@ -296,18 +296,19 @@ project-root/
     - `TrackSelector` 仅负责“按顺序映射 + 缺失检测”，不做 BPM 重排或贪心替代。
     - 引入明确的映射失败报告（缺失曲目清单、建议补齐项），失败即中断，避免 silently fallback。
     - 将“时长精度”从阶段二强约束中移除，优先保障 plan 一致性。
-- **3）Crossfade 混音与音量一致性**
-  - 难点：不同来源的音轨音量差异大，直接拼接容易出现忽大忽小或削波。
+- **3）Crossfade 混音与音量一致性（含 v3.9.1 / v4.2）**
+  - 难点：不同来源的音轨音量差异大；**串词→歌**需在可懂度与「intro 垫底、主歌将起」听感之间折中；intro 估计可能失败。
   - 方案：
     - 在混音前，对每首歌做一次粗略的音量归一化（RMS 或简单 LUFS 估计）。
-    - 使用 pydub 的 `fade_in` / `fade_out` 和自定义 crossfade 秒数，实现固定 6–10 秒的过渡。
+    - **歌→歌**：维持 6–10 秒量级 crossfade（可配置），语义与 v3.9.1 一致，不因 v4.2 被改写。
+    - **歌→串词**：无 crossfade（自然结束或硬切接人声）。
+    - **串词→歌（v4.2）**：对紧随串词后的下一首本地音频用 **librosa** 做 intro 区间估计（RMS 包络、onset、节拍等启发式，阈值与回退策略见实现注释）；据此设定 crossfade 时机与重叠上限；**估计失败或置信度过低**时必须回退到文档化的默认 crossfade，并记录日志。
     - 在最终导出前，调用 `MasteringService` 使用 ffmpeg 的 `loudnorm` 或类似方案进行整体 Loudness normalization。
-- **4）主持语音与歌曲边界对齐（v1.3/v2.1）**
-  - 难点：串词插入点若按目标时长估算，容易与实际歌曲边界错位；边界过渡还需兼顾可懂度。
+- **4）主持语音与歌曲边界对齐（v1.3 + v3.9.1 时间线）**
+  - 难点：串词插入点若按目标时长估算，容易与实际歌曲边界错位；混音顺序须避免「整段歌先 crossfade 再插串词」导致的串词滞后。
   - 方案：
-    - 串词插入点以“segment 第一首歌真实开始边界”为准，顺序固定为：串词_i → segment_i。
-    - 过渡策略遵循 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入，串词不淡出。
-    - 在 `Mixer` 中先排完整时间线，再做歌曲-歌曲与串词边界过渡处理。
+    - 串词插入点以 plan 与 snapshot 展开后的**真实歌曲边界**为准；整期顺序为 串词1 → segment1（歌曲…）→ …（见 PRD v3.9.1 示例）。
+    - `Mixer` 按 **snapshot 单一时间线** 排布后再施加转场：**歌→串词**无 crossfade；**串词→歌**、**歌→歌**有 crossfade（v4.2 在串词→歌处叠加 intro 对齐逻辑）。
 - **5）LLM 与 TTS 调用的可靠性与成本**
   - 难点：网络调用存在失败与超时风险，同时需要控制 token 与调用次数。
   - 方案：
@@ -368,4 +369,15 @@ project-root/
   - **影响面**：
     - 主要影响 `infra/tts_client.py`、`infra/config.py`、`cli.py`、`modules/voiceover/tts_service.py`
     - 不改变 `pipeline` 编排、混音链路与数据模型主结构
+- **AD-2026-04-v4.2：串词→下一首歌 crossfade 与 intro 对齐（迭代二十）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**，不改变分层、单体形态与阶段二主流程
+  - **背景**：PRD v4.2 要求在「串词→下一首」边界用 librosa 估计下一首 **intro**，以设定 crossfade 时机与重叠长度，改善长串词尾部听感；**歌→歌** crossfade 语义须与 v3.9.1 保持一致
+  - **最小改动方案**：
+    - 能力收敛在 `modules/mixing`：在 `Mixer`（或同包内新增单一小模块，如 `intro_align.py`）实现 intro 估计纯函数 + 回退策略，由 `build_mix` 在应用「串词→歌」crossfade 时调用
+    - 不重构整条 `pipeline`；不新增跨服务；`AudioRenderConfig` 或 `config` 仅增加与 v4.2 相关的上限/开关（若 PRD 要求可配置则最小字段集）
+    - intro 估计失败或置信度过低：**必须**回退到与 v3.9.1 兼容的默认 crossfade，并打日志，禁止静默错位
+  - **影响面**：
+    - 主要影响 `modules/mixing/mixer.py`（及可选同目录辅助模块）、`infra/config.py`（若增加配置项）
+    - 不改变阶段一、`TrackSelector`、TTS 主抽象边界
 

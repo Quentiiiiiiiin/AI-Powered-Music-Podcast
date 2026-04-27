@@ -19,6 +19,7 @@ from pydub import AudioSegment  # type: ignore[import-untyped]
 
 from podcast_ai.core.models import AudioRenderConfig, SelectedTrack, VoiceoverSegment
 from podcast_ai.infra.audio_backend import crossfade_concat, export_audio, load_audio, simple_normalize
+from podcast_ai.modules.mixing.intro_align import estimate_track_intro_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,16 @@ class MixRenderSummary:
     actual_duration_seconds: float
     track_count: int
     voiceover_count: int
+
+
+@dataclass
+class _TimelineBlock:
+    kind: BlockKind
+    audio: AudioSegment
+    # music 块：块内时间顺序第一首 track 的路径；voice 块此字段为 None
+    first_track_path: Path | None = None
+    # voice 块：该 voice 后紧邻 music 块的第一首 track 路径；music 块此字段为 None
+    next_music_first_track_path: Path | None = None
 
 
 def _join_music_to_voice_hard(music: AudioSegment, voice: AudioSegment) -> AudioSegment:
@@ -133,7 +144,7 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
     voiceovers: list[VoiceoverSegment],
     crossfade_seconds: float,
     eps: float,
-) -> list[tuple[BlockKind, AudioSegment]]:
+) -> list[_TimelineBlock]:
     """
     将曲目（按 episode 时间线排序）与串词（按 insert_time 排序）合并为严格时间递增的块列表。
 
@@ -142,7 +153,7 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
     """
     tracks_sorted = sorted(selected_tracks, key=lambda st: float(st.start_time_in_episode))
     ordered_pairs = _validate_voiceovers_against_tracks(tracks_sorted, voiceovers, eps)
-    blocks: list[tuple[BlockKind, AudioSegment]] = []
+    blocks: list[_TimelineBlock] = []
     track_idx = 0
     n = len(tracks_sorted)
 
@@ -154,41 +165,119 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
             track_idx += 1
         music_seg = _music_chunk_from_tracks(flush_queue, crossfade_seconds)
         if len(music_seg) > 0:
-            blocks.append(("music", music_seg))
-        blocks.append(("voice", _load_voice_segment(vo)))
+            blocks.append(
+                _TimelineBlock(
+                    kind="music",
+                    audio=music_seg,
+                    first_track_path=flush_queue[0].track.file_path,
+                )
+            )
+        next_music_first = tracks_sorted[track_idx].track.file_path if track_idx < n else None
+        blocks.append(
+            _TimelineBlock(
+                kind="voice",
+                audio=_load_voice_segment(vo),
+                next_music_first_track_path=next_music_first,
+            )
+        )
 
     rest = tracks_sorted[track_idx:]
     tail = _music_chunk_from_tracks(rest, crossfade_seconds)
     if len(tail) > 0:
-        blocks.append(("music", tail))
+        blocks.append(
+            _TimelineBlock(
+                kind="music",
+                audio=tail,
+                first_track_path=rest[0].track.file_path,
+            )
+        )
     return blocks
 
 
+def _resolve_voice_music_vm_ms(
+    voice_audio: AudioSegment,
+    music_audio: AudioSegment,
+    *,
+    config: AudioRenderConfig,
+    next_music_first_track_path: Path | None,
+) -> int:
+    """v4.2：voice->music 动态 vm；策略为 max(默认下限, min(intro, 上限))。"""
+    base_vm_ms = int(round(config.voice_music_crossfade_seconds * 1000))
+    if base_vm_ms <= 0:
+        return 0
+
+    vm_ms = base_vm_ms
+    if config.voice_music_intro_align_enabled and next_music_first_track_path is not None:
+        estimate = estimate_track_intro_seconds(
+            next_music_first_track_path,
+            max_intro_seconds=config.voice_music_intro_align_max_seconds,
+        )
+        if estimate.intro_seconds is not None:
+            intro_ms = int(round(estimate.intro_seconds * 1000))
+            cap_ms = int(round(config.voice_music_intro_align_max_seconds * 1000))
+            if cap_ms > 0:
+                intro_ms = min(intro_ms, cap_ms)
+            if intro_ms > 0:
+                # 方案 1：保持 v3.9.1 的默认 vm 作为下限，intro/cap 仅用于放大上界。
+                vm_ms = max(base_vm_ms, intro_ms)
+                logger.info(
+                    "v4.2 intro 对齐生效: track=%s intro=%.2fs conf=%.2f vm=%dms(base=%dms)",
+                    next_music_first_track_path,
+                    estimate.intro_seconds,
+                    estimate.confidence,
+                    vm_ms,
+                    base_vm_ms,
+                )
+            else:
+                logger.info(
+                    "v4.2 intro 估计过小，回退默认 vm: track=%s reason=%s",
+                    next_music_first_track_path,
+                    estimate.reason,
+                )
+        else:
+            logger.warning(
+                "v4.2 intro 估计失败，回退默认 vm: track=%s reason=%s",
+                next_music_first_track_path,
+                estimate.reason,
+            )
+    elif config.voice_music_intro_align_enabled:
+        logger.info("v4.2 intro 对齐跳过：voice 后无 music 块，使用默认 vm。")
+
+    return min(vm_ms, len(voice_audio), len(music_audio))
+
+
 def _concat_ordered_blocks(
-    blocks: list[tuple[BlockKind, AudioSegment]],
-    crossfade_seconds: float,
-    voice_music_crossfade_seconds: float,
+    blocks: list[_TimelineBlock],
+    *,
+    config: AudioRenderConfig,
 ) -> AudioSegment:
     """按相邻块类型选择转场：歌→串词硬切；串词→歌 vm；歌→歌 crossfade_seconds；串词→串词硬拼。"""
     if not blocks:
         return AudioSegment.silent(duration=0)
-    vm_ms = int(round(voice_music_crossfade_seconds * 1000))
-    acc_kind, acc = blocks[0]
-    for kind, seg in blocks[1:]:
-        if acc_kind == "music" and kind == "voice":
-            acc = _join_music_to_voice_hard(acc, seg)
-            acc_kind = "voice"
-        elif acc_kind == "voice" and kind == "music":
-            acc = _join_voice_to_music_fade_music_only(acc, seg, vm_ms)
-            acc_kind = "music"
-        elif acc_kind == "music" and kind == "music":
-            acc = crossfade_concat([acc, seg], crossfade_seconds=crossfade_seconds)
-            acc_kind = "music"
-        elif acc_kind == "voice" and kind == "voice":
-            acc = acc + seg
-            acc_kind = "voice"
+    acc_block = blocks[0]
+    acc = acc_block.audio
+    for cur_block in blocks[1:]:
+        if acc_block.kind == "music" and cur_block.kind == "voice":
+            acc = _join_music_to_voice_hard(acc, cur_block.audio)
+            acc_block = _TimelineBlock(kind="voice", audio=acc, next_music_first_track_path=cur_block.next_music_first_track_path)
+        elif acc_block.kind == "voice" and cur_block.kind == "music":
+            vm_ms = _resolve_voice_music_vm_ms(
+                acc,
+                cur_block.audio,
+                config=config,
+                next_music_first_track_path=acc_block.next_music_first_track_path or cur_block.first_track_path,
+            )
+            acc = _join_voice_to_music_fade_music_only(acc, cur_block.audio, vm_ms)
+            acc_block = _TimelineBlock(kind="music", audio=acc, first_track_path=cur_block.first_track_path)
+        elif acc_block.kind == "music" and cur_block.kind == "music":
+            # v4.2 不改变歌->歌语义：仍仅使用 crossfade_seconds。
+            acc = crossfade_concat([acc, cur_block.audio], crossfade_seconds=config.crossfade_seconds)
+            acc_block = _TimelineBlock(kind="music", audio=acc, first_track_path=acc_block.first_track_path)
+        elif acc_block.kind == "voice" and cur_block.kind == "voice":
+            acc = acc + cur_block.audio
+            acc_block = _TimelineBlock(kind="voice", audio=acc, next_music_first_track_path=cur_block.next_music_first_track_path)
         else:
-            raise RuntimeError(f"未预期的块相邻: {acc_kind} -> {kind}")
+            raise RuntimeError(f"未预期的块相邻: {acc_block.kind} -> {cur_block.kind}")
     return acc
 
 
@@ -233,8 +322,7 @@ class Mixer:
             )
             mix = _concat_ordered_blocks(
                 blocks,
-                crossfade_seconds=cf,
-                voice_music_crossfade_seconds=config.voice_music_crossfade_seconds,
+                config=config,
             )
 
         export_audio(mix, output_path, format=output_path.suffix.lstrip(".") or "wav")
