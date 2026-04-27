@@ -8,24 +8,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-_SMART_QUOTE_MAP: dict[str, str] = {
-    "“": '"',
-    "”": '"',
-    "‘": "'",
-    "’": "'",
-}
-
-
 def standardize_llm_json_text(raw: str) -> str:
     """
     将常见 LLM raw 文本标准化为“更像 JSON”的文本：
     - 去除 code fence（```json / ```）
-    - 替换智能引号（smart quotes）
     - 清理前后空白
     """
     text = (raw or "").strip()
-    for k, v in _SMART_QUOTE_MAP.items():
-        text = text.replace(k, v)
 
     # 去掉 code fence 包裹：```json ... ``` / ``` ... ```
     # 注意：不假设 fence 一定位于首行，尽量全局替换。

@@ -645,16 +645,13 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
          Each ISSUE MUST include:
           - type
           - location
-          - problem
-          - suggestion
+          - ONE problem
+          - ONE suggestion
         
          Actions is based on the issues and MUST include:
           - target_agent
-          - instruction
-          and MUST be:
-          - specific
-          - executable
-          - single-decision (no multiple options)
+          - instruction (specific, executable, single-decision)
+         If an issue requires multiple agents to fix, you need to generate multiple actions.
 
          Next agent should be the one mentioned in the actions:
           - If multiple agents are mentioned in the actions, choose the one with highest priority.

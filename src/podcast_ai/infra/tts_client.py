@@ -282,7 +282,7 @@ class MiniMaxTTSClient(TTSClient):
                 "speed": 1,
                 "vol": 1,
                 "pitch": 0,
-                "emotion": "happy",
+                # "emotion": "happy",
             },
             "audio_setting": {
                 "sample_rate": 44100,

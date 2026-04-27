@@ -36,6 +36,7 @@ tts:
   minimax:
     api_key: ""
     model: "speech-2.8-hd"
-    voice_id: "English_Sharp_Commentator"
+    # voice_id: "English_Sharp_Commentator"
+    voice_id: "Chinese (Mandarin)_Crisp_Girl"
     query_interval_ms: 500
     query_timeout_seconds: 30
