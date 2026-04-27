@@ -7,6 +7,9 @@ v2.1：串词清晰度优先——「音乐→串词」硬切；「串词→音�
 v3.9.1：有串词时仅走「曲目时间线 + insert_time」主路径：将 `SelectedTrack` 与按 `insert_time_in_episode`
 排序的串词合并为严格时间递增的 (music|voice) 块序列，再按相邻块类型选转场拼接；不再先全曲
 crossfade 再在成品上插点。
+
+v4.3：`voice->music` 增加统一限幅：候选值（含 v4.2 intro 对齐）在最终应用前必须满足
+`crossfade <= voice_duration`，并受配置 min/max 约束；其余边界语义不变。
 """
 from __future__ import annotations
 
@@ -201,12 +204,18 @@ def _resolve_voice_music_vm_ms(
     config: AudioRenderConfig,
     next_music_first_track_path: Path | None,
 ) -> int:
-    """v4.2：voice->music 动态 vm；策略为 max(默认下限, min(intro, 上限))。"""
+    """
+    v4.3：voice->music 动态 vm。
+
+    规则顺序：
+    1) 先得到候选值（v4.2：intro 估计成功则放大，否则回退默认）；
+    2) 再统一限幅（配置 min/max + voice/music 时长上限），保证 crossfade<=voice_duration。
+    """
     base_vm_ms = int(round(config.voice_music_crossfade_seconds * 1000))
     if base_vm_ms <= 0:
         return 0
 
-    vm_ms = base_vm_ms
+    vm_candidate_ms = base_vm_ms
     if config.voice_music_intro_align_enabled and next_music_first_track_path is not None:
         estimate = estimate_track_intro_seconds(
             next_music_first_track_path,
@@ -219,13 +228,13 @@ def _resolve_voice_music_vm_ms(
                 intro_ms = min(intro_ms, cap_ms)
             if intro_ms > 0:
                 # 方案 1：保持 v3.9.1 的默认 vm 作为下限，intro/cap 仅用于放大上界。
-                vm_ms = max(base_vm_ms, intro_ms)
+                vm_candidate_ms = max(base_vm_ms, intro_ms)
                 logger.info(
-                    "v4.2 intro 对齐生效: track=%s intro=%.2fs conf=%.2f vm=%dms(base=%dms)",
+                    "v4.2 intro 对齐生效: track=%s intro=%.2fs conf=%.2f vm_candidate=%dms(base=%dms)",
                     next_music_first_track_path,
                     estimate.intro_seconds,
                     estimate.confidence,
-                    vm_ms,
+                    vm_candidate_ms,
                     base_vm_ms,
                 )
             else:
@@ -243,7 +252,66 @@ def _resolve_voice_music_vm_ms(
     elif config.voice_music_intro_align_enabled:
         logger.info("v4.2 intro 对齐跳过：voice 后无 music 块，使用默认 vm。")
 
-    return min(vm_ms, len(voice_audio), len(music_audio))
+    min_ms = base_vm_ms
+    max_ms = int(round(config.voice_music_intro_align_max_seconds * 1000))
+    vm_final_ms, clamp_reason = _clamp_voice_music_crossfade_ms(
+        candidate_ms=vm_candidate_ms,
+        voice_len_ms=len(voice_audio),
+        music_len_ms=len(music_audio),
+        min_ms=min_ms,
+        max_ms=max_ms,
+    )
+    logger.debug(
+        "v4.3 vm 限幅: candidate=%d final=%d min=%d max=%d voice_len=%d music_len=%d reason=%s",
+        vm_candidate_ms,
+        vm_final_ms,
+        min_ms,
+        max_ms,
+        len(voice_audio),
+        len(music_audio),
+        clamp_reason,
+    )
+    return vm_final_ms
+
+
+def _clamp_voice_music_crossfade_ms(
+    *,
+    candidate_ms: int,
+    voice_len_ms: int,
+    music_len_ms: int,
+    min_ms: int,
+    max_ms: int,
+) -> tuple[int, str]:
+    """
+    v4.3 统一限幅：候选值 -> 配置 min/max -> voice/music 时长上限。
+
+    保证输出：0 <= vm <= min(voice_len_ms, music_len_ms)。
+    当可行上限小于 min_ms（例如极短串词）时，允许降到可行上限。
+    """
+    feasible_cap = max(0, min(voice_len_ms, music_len_ms))
+    if feasible_cap == 0:
+        return 0, "cap_by_zero_length"
+
+    lo = max(0, min_ms)
+    hi = max(0, max_ms)
+    if hi > 0 and lo > hi:
+        lo, hi = hi, lo
+        logger.debug("v4.3 vm 配置 min/max 交换: min=%d max=%d", lo, hi)
+
+    v = max(0, candidate_ms)
+    if hi > 0:
+        v = min(v, hi)
+    if v < lo:
+        v = lo
+        reason = "raise_to_min"
+    else:
+        reason = "keep_candidate"
+
+    if v > feasible_cap:
+        v = feasible_cap
+        reason = "cap_by_voice_or_music_duration"
+
+    return v, reason
 
 
 def _concat_ordered_blocks(
