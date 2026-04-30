@@ -55,6 +55,22 @@ def get_mix_output_path(episode_root: Path, ext: str = "wav") -> Path:
     return get_mix_dir(episode_root) / f"mix.{ext}"
 
 
+def get_mix_params_dir(episode_root: Path) -> Path:
+    """
+    阶段二生成的可编辑混音参数目录：
+      {episode_root}/mix_params/
+    """
+    return episode_root.joinpath("mix_params")
+
+
+def get_mix_params_output_path(episode_root: Path, episode_id: str, *, ext: str = "json") -> Path:
+    """
+    阶段二输出的可编辑混音参数 JSON：
+      {episode_root}/mix_params/{episode_id}_mix_params.json
+    """
+    return get_mix_params_dir(episode_root) / f"{episode_id}_mix_params.{ext}"
+
+
 def get_final_audio_path(episode_root: Path, episode_id: str) -> Path:
     """
     最终导出音频路径：

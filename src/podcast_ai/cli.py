@@ -8,7 +8,11 @@ import typer
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.logging_config import configure_logging
 from podcast_ai.core.models import EpisodeRequest
-from podcast_ai.core.pipeline import create_episode as pipeline_create_episode
+from podcast_ai.core.pipeline import (
+    create_episode as pipeline_create_episode,
+    create_episode_stage2 as pipeline_create_episode_stage2,
+    finalize_episode_stage3 as pipeline_finalize_episode_stage3,
+)
 from podcast_ai.core.pipeline import plan_episode as pipeline_plan_episode
 from podcast_ai.infra.config import load_settings
 
@@ -265,6 +269,97 @@ def create_episode_cli(
     episode_root = result.audio_path.parent.parent
     show_notes_path = episode_root / "final" / f"{result.episode_id}_show_notes.md"
     typer.echo("制作完成：")
+    typer.echo(f"- 音频：{result.audio_path}")
+    typer.echo(f"- Show Notes：{show_notes_path}")
+    typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")
+
+
+@app.command("create-episode-stage2")
+def create_episode_stage2_cli(
+    snapshot_path: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="阶段一输出的 snapshot 路径（<episode_id>.json）。",
+    ),
+    music_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="本期节目音乐目录（已按目标歌单准备好歌曲）。",
+    ),
+    topic: str = typer.Option(
+        "",
+        "--topic",
+        "-t",
+        help="节目主题（用于 Show Notes 标题，可选）。",
+    ),
+    language: str = typer.Option(
+        "zh",
+        "--language",
+        "-l",
+        help="串词与 TTS 语言。",
+    ),
+    tts_provider: Literal["edge", "elevenlabs", "minimax"] | None = typer.Option(
+        None,
+        "--tts-provider",
+        help="覆盖配置中的 TTS 供应商（edge/elevenlabs/minimax）。",
+    ),
+) -> None:
+    """阶段二：生成可编辑混音参数 JSON（不导出最终音频）。"""
+    if not snapshot_path.exists():
+        typer.echo(f"[错误] snapshot 文件不存在：{snapshot_path}", err=True)
+        raise typer.Exit(code=1)
+    if not music_dir.exists() or not music_dir.is_dir():
+        typer.echo(f"[错误] 音乐目录不存在或非目录：{music_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        mix_params_json_path = pipeline_create_episode_stage2(
+            snapshot_path=snapshot_path,
+            music_dir=music_dir,
+            topic=topic or None,
+            language=language,
+            tts_provider=tts_provider,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] 阶段二失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("阶段二完成：")
+    typer.echo(f"- MixParamsJSON：{mix_params_json_path}")
+
+
+@app.command("finalize-episode-stage3")
+def finalize_episode_stage3_cli(
+    mix_params_json_path: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="阶段二生成的 MixParamsJSON 路径（*_mix_params.json）。",
+    ),
+    topic: str = typer.Option(
+        "",
+        "--topic",
+        "-t",
+        help="节目主题（覆盖 MixParamsJSON 中 topic，可选）。",
+    ),
+) -> None:
+    """阶段三：读取并校验 MixParamsJSON，完成最终混音导出。"""
+    if not mix_params_json_path.exists() or not mix_params_json_path.is_file():
+        typer.echo(f"[错误] MixParamsJSON 不存在或非文件：{mix_params_json_path}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        result = pipeline_finalize_episode_stage3(
+            mix_params_json_path=mix_params_json_path,
+            topic=topic or None,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] 阶段三失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    episode_root = result.audio_path.parent.parent
+    show_notes_path = episode_root / "final" / f"{result.episode_id}_show_notes.md"
+
+    typer.echo("阶段三完成：")
     typer.echo(f"- 音频：{result.audio_path}")
     typer.echo(f"- Show Notes：{show_notes_path}")
     typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")

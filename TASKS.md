@@ -1,116 +1,133 @@
-﻿## 版本 v4.4（迭代二十二：`estimate_track_intro_seconds` 判定逻辑增强）
+﻿## 版本 v4.5（迭代二十三：新增阶段三支持人工微调最终 crossfade）
 
-基于 PRD v4.4：本迭代仅增强 `src/podcast_ai/modules/mixing/intro_align.py` 中 `estimate_track_intro_seconds` 的内部判定逻辑，
-保持对外契约不变（返回字段仍为 `intro_seconds` / `confidence` / `reason`），不改上游调用接口与阶段二主流程。
+基于 PRD v4.5 + ARCHITECTURE 中 **AD-2026-04-v4.5**：将当前“两阶段（阶段一规划 + 阶段二直接混音导出）”扩展为“三阶段（阶段二生成可编辑参数、阶段三最终混音导出）”。
 
-核心方向：
-- **R1（抗噪）**：RMS 由“首帧超阈值”升级为“连续 N 帧 + 最短稳定时长”成立；
-- **R2（抗装饰音）**：onset 候选需满足强度分位阈值 + 后续短窗能量支持，避免把装饰音当主段进入点；
-- 对低动态曲风提供可解释的阈值放宽/自适应路径；失败分支继续稳定回退并给出明确 `reason`。
+本迭代的核心契约是：
+- **阶段二**：继续负责 TTS 串词文件生成，并生成“混音之前的重要参数 JSON”（含 `tracks`、`voiceovers`/tts 文件路径与串词文本、以及两段音频之间的转场参数如 `form=crossfade`、`intro/vm_candidate` 等），落盘并返回路径；阶段二不产出最终音频。
+- **阶段三**：读取用户微调后的参数 JSON，进行必要校验后完成最终混音与导出（`wav` + `mp3`），并保持与 v3.9.1 的转场语义一致：**歌→串词无 crossfade；串词→歌 crossfade；歌→歌 crossfade；段内 `between_tracks` 串词参与同一规则**。
+
+失败策略：
+- 阶段三入口对 JSON 做严格校验；非法编辑值必须明确报错并中止，不静默回退到旧参数。
 
 ---
 
-### Task 01 - 规则梳理与参数口径定稿
-- **Task name**: v4.4 - intro 判定规则与参数基线
-- **目标**: 将 v4.4 的 R1/R2 规则映射为可编码参数（如 `stable_frames`、`min_stable_ms`、`onset_percentile`、`support_window_ms`、低动态放宽条件），形成单一判定流程，避免分散 if-else。
+### Task 01 - 定义 MixParamsJSON（可编辑混音参数 JSON）与严格校验
+- **Task name**: v4.5 - MixParamsJSON schema & validators
+- **目标**: 在 `src/podcast_ai/core/models.py` 新增 `MixParamsJSON`（含 `meta/schema_version`、`tracks`、`voiceovers`、`transitions`），并提供“阶段三严格校验”所需的最小校验规则（非法值中止）。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 定义默认值（建议与 PRD 对齐：`N≈4`、`min_stable_ms≈120`、`onset_percentile≈70~80`、`support_window≈300ms`）。
-  - 约定低动态曲风判定信号（例如 RMS 动态范围阈值）和放宽策略（降低 onset 分位阈值或稳定帧要求）。
-  - 明确 `reason` 命名规范，确保后续日志/测试可区分主分支。
-- **Input**: PRD v4.4 条目 + 现有 `intro_align.py`
-- **Output**: 可直接实现的判定流程与参数表
+  - 设计 JSON 字段尽量复用现有模型：`SelectedTrack`、`VoiceoverSegment`（可序列化为 JSON），并在 `transitions` 中描述 voice→music 与 music→music 边界的可编辑 crossfade 参数。
+  - 明确约束：
+    - `transitions` 中的边界条目应能与 `voiceovers`（按 `segment_id`）或对应 timeline 位置稳定映射；
+    - 允许用户覆盖的字段包括（至少）`vm_candidate`/`intro`/（必要时的）`crossfade_seconds`；
+    - 阶段三校验时对非法数值（负数、NaN、超过允许重叠上限或不满足约束的 crossfade）直接抛错并终止。
+- **Input**: PRD v4.5、ARCHITECTURE 中对字段与校验要求
+- **Output**: 可被阶段二写入、阶段三读取且可严格校验的 schema 模型
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/intro_align.py`
-- **Estimated complexity**: S（0.5-1 小时）
-
----
-
-### Task 02 - 实现 R1：RMS 连续帧稳定判定（含快速通道）
-- **Task name**: v4.4 - RMS 稳定抬升检测
-- **目标**: 将 RMS 触发逻辑改为“连续 N 帧超阈值 + 最短稳定时长”判定，显著减少单帧噪声触发；并在满足条件时提供谨慎的快速通道，避免过晚。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 在 RMS 序列上实现连续段扫描，输出候选时间点与稳定性评分。
-  - 快速通道仅在“前段突增且后续有持续支撑”场景触发，避免放大噪声。
-  - 失败回退仍返回 `intro_seconds=None` 并带 `reason`，不抛异常中断主流程。
-- **Input**: 当前 `rms`、阈值参数
-- **Output**: 更稳健的 `rms_lift_t` 候选
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/intro_align.py`
-- **Estimated complexity**: M（1.5-2 小时）
-
----
-
-### Task 03 - 实现 R2：Onset 强度过滤 + 后续能量支持
-- **Task name**: v4.4 - Onset 候选双重过滤
-- **目标**: 不再直接使用首个 onset；仅接受强度超过分位阈值的 onset，且其后约 0.3s 窗口内有持续能量支持，降低装饰音误触发。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 从 onset 候选中筛掉低强度点，再做后续 RMS 支撑校验。
-  - 对低动态场景应用自适应放宽，避免系统性过晚。
-  - 记录分支 `reason`（如 `onset_filtered_out`、`onset_no_energy_support`、`low_dynamic_relaxed`）。
-- **Input**: onset_strength / onset_frames / rms
-- **Output**: 更可信的 `onset_t` 候选
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/intro_align.py`
-- **Estimated complexity**: M（1.5-2 小时）
-
----
-
-### Task 04 - 候选融合、confidence 重标定与 reason 体系
-- **Task name**: v4.4 - 候选融合与可解释输出
-- **目标**: 在保持返回结构不变的前提下，统一融合 `rms_lift_t` 与 `onset_t`，并重构 `confidence` 计算与 `reason` 分类，使其可用于后续策略分流。
-- **类型**: backend
-- **依赖关系**: Task 02, Task 03
-- **Description**:
-  - 融合策略保持简洁（例如按稳定度和一致性打分，而非复杂模型）。
-  - `confidence` 与失败/降级原因保持一致性（高置信度必须有足够证据）。
-  - 严格保持函数签名与返回字段不变（满足 PRD 验收 1）。
-- **Input**: R1/R2 候选与评分
-- **Output**: 稳定且可解释的 `IntroEstimate`
-- **Files involved**:
-  - `src/podcast_ai/modules/mixing/intro_align.py`
-- **Estimated complexity**: S（1 小时）
-
----
-
-### Task 05 - 单测扩展：噪声/装饰音/低动态三类场景
-- **Task name**: v4.4 - `estimate_track_intro_seconds` 回归测试
-- **目标**: 为 v4.4 的 R1/R2 规则补充可重复测试，验证过早/过晚误判下降，且失败分支与 `reason` 可追溯。
-- **类型**: backend
-- **依赖关系**: Task 02, Task 03, Task 04
-- **Description**:
-  - 场景覆盖：
-    1) 单帧/短突增噪声不应触发过早 intro；
-    2) 首个装饰音应被过滤，主段前后能量支持更优先；
-    3) 低动态样本在自适应放宽下不应系统性过晚；
-    4) librosa 不可用/加载失败/近静音等失败路径 reason 稳定。
-  - 优先使用可控合成波形或 mock，避免引入大体积测试素材。
-- **Input**: 现有测试框架
-- **Output**: `pytest` 通过，覆盖 PRD 验收 2/3/4/5
-- **Files involved**:
-  - `tests/test_mixing.py`（若现有集中在此）
-  - `tests/test_intro_align.py`（建议新增，保持职责清晰）
+  - `src/podcast_ai/core/models.py`
 - **Estimated complexity**: M（2-3 小时）
 
 ---
 
-### Task 06 - 冗余清理与最小文档同步
-- **Task name**: v4.4 - 判定路径清理与注释更新
-- **目标**: 清理 v4.2 留下的重复/弱判定分支，保留单一路径；补充简明注释，说明 R1/R2 与低动态放宽逻辑，避免未来继续堆叠条件分支。
+### Task 02 - Mixer 支持“生成转场参数”与“从参数渲染最终混音”
+- **Task name**: v4.5 - mixer mix-params apply
+- **目标**: 将当前 `modules/mixing/mixer.py` 从“只给 selected_tracks/voiceovers + config 直接渲染”扩展为：
+  1) 能基于当前算法生成 voice→music / music→music 的转场参数（阶段二用）；
+  2) 能从 MixParamsJSON 读取用户覆盖的转场参数并应用到最终渲染（阶段三用）。
 - **类型**: backend
-- **依赖关系**: Task 04
+- **依赖关系**: Task 01
 - **Description**:
-  - 移除不再使用的阈值常量与分支。
-  - 在函数 docstring 中写明“输入输出契约不变 + 主要判定流程”。
-  - 如需，补一条 README 中的实现说明（可选，最小改动）。
-- **Input**: v4.4 最终实现
-- **Output**: 代码更短、更可维护、行为更可解释
+  - 不改变 v3.9.1 转场语义分支：music→voice 硬切不变；voice→music vm 由 JSON 覆盖时采用覆盖值，否则用 v4.2/v4.3 估计值；
+  - 确保对 voice→music 的 crossfade 仍满足 v4.3 的“合法重叠区间”语义：阶段三负责“校验并拒绝非法编辑值”，不在阶段三静默回退；
+  - 阶段二只需输出参数，不做最终叠加渲染。
+- **Input**: selected_tracks、voiceovers、以及（阶段二）默认估计值或（阶段三）来自 MixParamsJSON 的覆盖值
+- **Output**: 两个接口（或一个接口拆分为两个模式）：
+  - `build_mix_params(...) -> transitions`
+  - `render_final_mix_from_mix_params(...) -> AudioSegment / Path`
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/intro_align.py`
-  - `README.md`（可选）
-- **Estimated complexity**: S（0.5-1 小时）
+  - `src/podcast_ai/modules/mixing/mixer.py`
+  - （可选）`src/podcast_ai/modules/mixing/intro_align.py`（仅复用现有估计）
+- **Estimated complexity**: L（3-4 小时）
+
+---
+
+### Task 03 - pipeline 阶段二：生成并落盘可编辑混音参数 JSON
+- **Task name**: v4.5 - create_episode_stage2
+- **目标**: 在 `src/podcast_ai/core/pipeline.py` 新增阶段二接口 `create_episode_stage2(...)`：
+  - 扫描/选曲；
+  - 生成 TTS 串词文件；
+  - 计算并落盘 MixParamsJSON；
+  - 返回 MixParamsJSON 路径（以及可选的 episode_root 便于 CLI 打印路径），不执行最终 mastering/export。
+- **类型**: backend
+- **依赖关系**: Task 02
+- **Description**:
+  - 复用现有 `create_episode` 中的库扫描/选曲/segment 边界计算/voiceovers 生成逻辑；
+  - 在“混音之前”插入 MixParamsJSON 生成与落盘；
+  - 保持旧 `create_episode` 的行为不回退：它可以内部调用 stage2+stage3 组合，给 CLI 仍可用的一键路径。
+- **Input**: snapshot_path（`<episode_id>.json`）、music_dir、topic/language（TTS）
+- **Output**: MixParamsJSON path
+- **Files involved**:
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/infra/storage/paths.py`（新增落盘/读取 mix_params json 的路径函数）
+- **Estimated complexity**: M（2-3 小时）
+
+---
+
+### Task 04 - pipeline 阶段三：读取用户编辑参数并最终混音导出
+- **Task name**: v4.5 - finalize_episode_stage3
+- **目标**: 新增阶段三接口 `finalize_episode_stage3(mix_params_json_path, ...) -> EpisodeResult`：
+  - 加载并严格校验 MixParamsJSON（非法编辑值中止）；
+  - 仅依赖 JSON 执行最终时间线混音与导出（`wav` + `mp3` + Show Notes）；
+  - 不依赖阶段二的中间运行时状态或 snapshot 内部变量。
+- **类型**: backend
+- **依赖关系**: Task 01, Task 02, Task 03
+- **Description**:
+  - 对 `transitions` 覆盖值做严格检查（数值合法性、范围约束、能量/时长约束、边界映射一致性）；
+  - 映射到当前 mixer 的 voice/music 边界时，如检测到 JSON 与当前 tracks/voiceovers 不一致，直接报错；
+  - 复用 `MasteringService` 与 `Exporter`（需要从 JSON 重建最小 `EpisodePlan` 或直接提供 exporter 可用字段）。
+- **Input**: 用户编辑后的 mix_params json path
+- **Output**: 最终 `EpisodeResult` 与导出音频路径
+- **Files involved**:
+  - `src/podcast_ai/core/pipeline.py`
+  - `src/podcast_ai/modules/mixing/mixer.py`（渲染从参数出发）
+  - `src/podcast_ai/infra/storage/paths.py`（最终音频/中间 wav 输出路径，复用现有函数）
+- **Estimated complexity**: L（3-4 小时）
+
+---
+
+### Task 05 - CLI：阶段二导出 JSON + 阶段三最终导出
+- **Task name**: v4.5 - CLI stage2/stage3 入口
+- **目标**: 在 `src/podcast_ai/cli.py` 增加：
+  - `create-episode-stage2`：生成 MixParamsJSON 并输出其路径；
+  - `finalize-episode-stage3`：读取用户编辑后的 JSON 并导出最终音频。
+- **类型**: api
+- **依赖关系**: Task 03, Task 04
+- **Description**:
+  - 非法输入（JSON 不存在/非法编辑）要返回明确错误信息并退出；
+  - 保留现有 `create-episode` 作为“一键 stage2+stage3”路径（内部组合），避免用户使用成本上升。
+- **Input**: snapshot_path、music_dir（stage2）；mix_params_json_path（stage3）
+- **Output**: JSON path / 最终音频 path
+- **Files involved**:
+  - `src/podcast_ai/cli.py`
+- **Estimated complexity**: S（1-2 小时）
+
+---
+
+### Task 06 - 测试：阶段二 JSON 生成 + 阶段三校验与覆盖生效
+- **Task name**: v4.5 - stage2/3 contract tests
+- **目标**: 增加针对 v4.5 的关键回归测试，覆盖：
+  - stage2 输出 JSON 的 schema 与关键字段存在性；
+  - stage3 校验：非法 crossfade/overlap 值必须失败中止；
+  - stage3 覆盖：修改 JSON 中某个 voice→music 的 vm_candidate/crossfade 参数，最终输出行为（至少 vm 或重叠时长相关的可观察结果）发生改变。
+- **类型**: backend
+- **依赖关系**: Task 03, Task 04
+- **Description**:
+  - 尽量 mock 或 stub 音频加载/渲染，避免真实 ffmpeg/大文件；
+  - 关键是“校验与应用逻辑”的正确性与可追溯 reason。
+- **Input**: 小样例 snapshot + stub 音频 / mock audio_backend
+- **Output**: `pytest` 通过
+- **Files involved**:
+  - `tests/test_pipeline.py`（扩展 stage2/stage3 用例）
+  - `tests/test_mixing.py`（如需要验证应用覆盖逻辑）
+- **Estimated complexity**: M（2-3 小时）

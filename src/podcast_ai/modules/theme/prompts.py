@@ -667,7 +667,8 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
           REVISION MODE
           ====================
           Your responsibility:
-          - Assess the CURRENT ISSUES to see if they are resolved, drop the resolved ISSUES, keep the unresolved ISSUES as ISSUES.
+          - Assess the remaining ISSUES to see if they are resolved, drop the resolved ISSUES, keep the unresolved ones.
+          - DO NOT generate new ISSUES or modify the existing ISSUES. You can only drop the resolved ISSUES.
           - Generate ACTIONS based on the ISSUES.
           - Evaluate the overall quality of the episode plan based on the RUBRIC. The score should be higher than the current score if the number of ISSUES is reduced.
           - Determine the NEXT AGENT to be the one that can fix the ISSUES.

@@ -40,7 +40,7 @@
   - **应用层（Application Layer）**
     - 主要文件：`core/pipeline.py`
     - 职责：
-      - 支持 **两阶段流程**：① 规划阶段（输出歌单）→ ② 制作阶段（用户准备好歌曲后继续）
+      - 支持 **三阶段流程（v4.5+）**：① 规划阶段（输出歌单）→ ② 制作阶段（生成可编辑混音参数 JSON）→ ③ 最终混音导出阶段
       - 阶段一（v3.0）采用 **多 Agent 规划流水线**：Planner / Music Curator / Script Writer / Critic，基于共享 state 进行有限迭代回修
       - 串联 7 个 PRD 定义的功能模块（主题生成 → 扫库 → 选曲 → 混音 → 主持 → 母带 → 导出）
       - 管理整体流程、错误处理、进度日志与时间统计
@@ -62,29 +62,26 @@
       - `infra/audio_backend.py`：封装 pydub / librosa / ffmpeg 的常用操作
       - `infra/storage/cache.py`：音乐库扫描结果缓存（JSON 或 SQLite）
       - `infra/config.py`：加载配置文件和环境变量
-- **主流程（两阶段时序）**
-**阶段一：规划与歌单输出（用户可仅执行此阶段）**
-  1. 用户通过 CLI 输入主题和时长 → 解析为 `EpisodeRequest`
-  2. `Pipeline.plan_episode(request)`：
-    - 调用 `ThemePlanner.generate_plan`（v3.0 多 Agent）：
-      - Planner：先生成全局结构与约束
-      - Music Curator：补齐各段目标歌单规划
-      - Script Writer：生成各段主持串词
-      - Critic：输出结构化反馈并驱动有限回修（默认最多 3 次）
-    - 产出：可追踪的 `EpisodePlan`（含评估反馈摘要）
-    - 将 `EpisodePlan` 持久化为 JSON 文件，并输出可读的「目标歌单」供用户查阅
-  3. 用户根据目标歌单到各平台搜索、下载或整理歌曲，放入指定本地目录
-  **阶段二：制作（用户准备好歌曲后执行）**
-  1. 用户再次运行 CLI，指定规划文件（或 episode_id）与音乐目录
-  2. `Pipeline.create_episode(plan_path, music_dir)` 或 `create_episode(request, plan=...)`：
-    - 加载已有 `EpisodePlan`（或可选：重新生成）
-    - 调用 `LibraryScanner.scan_or_load_cache`：扫描用户准备好的目录 → `list[TrackWithMetadata]`
-    - 调用 `TrackSelector.select_tracks`：按 plan 顺序做本地文件映射与缺失校验（不做 BPM 二次排序/贪心替代）→ `list[SelectedTrack]`
-    - 调用 `VoiceoverService.generate_voiceovers`：生成主持语音片段 → `list[VoiceoverSegment]`
-    - 调用 `Mixer.build_mix`：按 snapshot 单一时间线拼接歌曲与主持语音并施加转场（含 v4.2 intro 对齐的**串词→歌** crossfade）→ 中间混音结果
-    - 调用 `MasteringService.apply_mastering`：统一 Loudness → 最终音频
-    - 调用 `Exporter.export_episode`：输出 MP3 与 Show Notes → `EpisodeResult`
-  3. CLI 输出：文件路径、实际时长、选曲列表等摘要信息
+- **主流程（三阶段时序：v4.5+）**
+  - **阶段一：规划与歌单输出（用户可仅执行此阶段）**
+    1. 用户通过 CLI 输入主题和时长 → 解析为 `EpisodeRequest`
+    2. `Pipeline.plan_episode(request)`：
+      - 调用 `ThemePlanner.generate_plan`（v3.0 多 Agent）
+      - 产出：可追踪的 `EpisodePlan`（含评估反馈摘要）
+      - 将 `EpisodePlan` 持久化为 JSON，并输出可读的「目标歌单」供用户查阅
+    3. 用户根据目标歌单到各平台搜索、下载或整理歌曲，放入指定本地目录
+  - **阶段二：生成可编辑混音参数 JSON（中间产物，不导出最终音频）**
+    1. 用户再次运行 CLI，指定阶段一 snapshot 路径与音乐目录
+    2. `Pipeline.create_episode_stage2(...)`：
+      - 扫描音乐库 → 按 plan 顺序做本地曲目映射与缺失校验
+      - 生成 TTS 串词语音文件与插入策略
+      - 生成并保存「混音参数 JSON」（tracks、串词信息/tts 文件路径/文本，以及转场参数如 intro/vm_candidate 等）
+    3. CLI 输出：混音参数 JSON 路径（供用户编辑微调）
+  - **阶段三：读取用户编辑后的参数 JSON，完成最终混音与导出**
+    1. `Pipeline.finalize_episode_from_mix_params(mix_params_json_path, ...)`
+    2. 对 JSON 参数做必要校验（非法值中止，不静默降级）
+    3. 执行最终时间线混音（保持 v3.9.1 转场语义一致）→ `wav` + `mp3`，并导出 Show Notes
+    4. CLI 输出：最终音频、时长、选曲列表等摘要信息
 
 ---
 
@@ -161,6 +158,13 @@
     - `bitrate: str`
     - `crossfade_seconds: float`
     - `loudness_target_lufs: float`
+  - **（v4.5）可编辑混音参数 JSON（阶段二输出）**
+    - `MixParamsJSON`
+      - `meta`: episode/segment 关联信息、`schema_version`
+      - `tracks`: 阶段二选曲后对应的本地音轨及其在时间线上的位置（start/end 或等价字段）
+      - `voiceovers`: 每段串词对应的 TTS 音频落盘路径、串词文本与插入时间（insert_time）
+      - `transitions`: 各边界的转场参数集合（例如 `form=crossfade`；包含 `intro`/`vm_candidate` 等可编辑字段）
+      - **校验规则**：阶段三在执行前对 JSON 参数做必要校验，非法值明确报错并中止（不静默降级）
 
 ---
 
@@ -174,9 +178,11 @@
     - `plan_episode(request: EpisodeRequest) -> EpisodePlan`
       - **阶段一**：多 Agent 协同生成 Episode Plan（含目标歌单与评估回修），输出为 JSON 文件；用户据此手动下载歌曲
     - `create_episode(plan_path: Path, music_dir: Path, ...) -> EpisodeResult`
-      - **阶段二**：加载已有规划，从扫描用户准备好的音乐目录开始，执行选曲 → 混音 → 主持 → 母带 → 导出
-    - `create_episode(request: EpisodeRequest, plan: EpisodePlan | None = None) -> EpisodeResult`
-      - 可选：若传入 `plan` 且用户已准备好歌曲，可跳过阶段一直接执行阶段二
+      - 便捷封装：阶段二（生成可编辑混音参数 JSON）+ 阶段三（最终混音与导出）
+    - `create_episode_stage2(plan_path: Path, music_dir: Path, ...) -> MixParamsJsonPath`
+      - **阶段二**：生成 TTS 串词文件与「混音参数 JSON」（可编辑中间产物），不执行最终导出
+    - `finalize_episode_stage3(mix_params_json_path: Path, ...) -> EpisodeResult`
+      - **阶段三**：读取（并校验）用户编辑后的参数 JSON，执行最终时间线混音与导出（`wav` + `mp3`），保持与 v3.9.1 转场语义一致
 - **领域模块接口（示例）**
   - `ThemePlanner`（模块 1：主题生成门面）
     - 文件：`modules/theme/llm_planner.py`
@@ -328,6 +334,13 @@ project-root/
     - 应用启动或首次音频操作前检查 FFmpeg 是否可用，若不可用则给出明确错误提示与参考链接。
     - 所有对 FFmpeg 的调用统一通过 `infra/audio_backend.py`，避免在各模块中散落命令调用。
 
+- **8）（v4.5）阶段二→阶段三：可编辑参数校验与语义一致性**
+  - 难点：用户编辑 crossfade 参数后，若不校验容易产生静默错位、重叠非法、或与 v3.9.1 转场语义不一致。
+  - 方案：
+    - 阶段三入口只依赖「阶段二输出的混音参数 JSON」，并对所有可编辑字段做严格校验。
+    - 明确失败策略：非法值直接报错中止；必要时记录回溯信息，禁止静默回退到旧参数。
+    - 保持转场语义：**歌→串词无 crossfade；串词→歌 crossfade；歌→歌 crossfade**，由阶段三严格执行。
+
 ---
 
 ## 7. Architecture Decisions
@@ -380,4 +393,17 @@ project-root/
   - **影响面**：
     - 主要影响 `modules/mixing/mixer.py`（及可选同目录辅助模块）、`infra/config.py`（若增加配置项）
     - 不改变阶段一、`TrackSelector`、TTS 主抽象边界
+
+- **AD-2026-04-v4.5：新增阶段三支持人工微调最终 crossfade（迭代二十三）**
+  - **状态**：Accepted
+  - **结论**：**需要结构性但仍保持简单**的架构调整（由两阶段扩展为三阶段），不改变单体分层与主要模块边界
+  - **背景**：PRD v4.5 要求将「自动估计」与「最终混音导出」解耦：阶段二产出可编辑“混音参数 JSON”，阶段三仅依赖该 JSON 做最终混音与导出；用户可在最后 mix 前微调每段 crossfade 参数
+  - **最小改动方案**：
+    - 扩展主流程为三阶段：
+      - 阶段二：生成并落盘「混音参数 JSON（MixParamsJSON，可编辑）」，同时保留 TTS 串词音频与转场参数的可追溯字段
+      - 阶段三：读取（并校验）用户编辑后的 MixParamsJSON，执行最终时间线混音与导出（`wav` + `mp3`），并保持与 v3.9.1 转场语义一致
+    - 保持阶段二/阶段三的契约边界清晰：阶段三不再依赖阶段二内部的不可编辑中间状态；非法编辑值明确报错中止，不静默降级
+  - **影响面**：
+    - 主要影响 `core/pipeline.py`（增加阶段二/阶段三接口与编排方式）、`cli.py`（新增入口以承载“编辑参数 JSON → 最终导出”）
+    - `modules/mixing/mixer.py` 需要支持从 MixParamsJSON 读取并应用用户覆盖的 crossfade 参数（特别是 `intro/vm_candidate` 等）
 

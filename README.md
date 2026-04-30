@@ -71,12 +71,12 @@ PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
 # PODCAST_AI_TTS__PROVIDER=minimax
 # PODCAST_AI_TTS__MINIMAX__API_KEY=your_minimax_api_key_here
 # PODCAST_AI_TTS__MINIMAX__MODEL=speech-2.8-hd
-# PODCAST_AI_TTS__MINIMAX__VOICE_ID=male-qn-qingse
+# PODCAST_AI_TTS__MINIMAX__VOICE_ID=Chinese (Mandarin)_Crisp_Girl
 ```
 
 ---
 
-## 两阶段流程
+## 三阶段流程（v4.5）
 
 ### 阶段一：规划（生成目标歌单）
 
@@ -103,37 +103,55 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 - ep_xxx.json（阶段一快照）：output/episodes/ep_xxx/plans/ep_xxx.json
 ```
 
-### 阶段二：制作（从规划继续）
+### 阶段二：生成可编辑混音参数（MixParamsJSON）
 
 ```bash
 # 阶段二读取阶段一产物 `<episode_id>.json`
-podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目
+podcast-ai create-episode-stage2 output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目
 # 指定 TTS 供应商（覆盖配置）
-podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目 --tts-provider minimax
+podcast-ai create-episode-stage2 output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目 --tts-provider minimax
 ```
 
-- 扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出
-- 输出：`output/episodes/<episode_id>/final/<episode_id>.mp3`、`show_notes.md`
+- 扫描音乐库 → 选曲 → 主持 TTS → 计算转场参数
+- 产出并落盘可编辑 JSON：`output/episodes/<episode_id>/mix_params/<episode_id>_mix_params.json`
+- 该 JSON 含 `tracks`、`voiceovers`、`transitions`（如 `vm_seconds`、`vm_candidate_seconds`、`intro_seconds`），可人工微调后再进入阶段三
 
-**create-episode 示例输出：**
+**create-episode-stage2 示例输出：**
 
 ```
-制作完成：
-- 音频：output/episodes/ep_xxx/final/ep_xxx.mp3
-- Show Notes：output/episodes/ep_xxx/final/ep_xxx_show_notes.md
-- 时长：3600s，曲目：12 首
+阶段二完成：
+- MixParamsJSON：output/episodes/ep_xxx/mix_params/ep_xxx_mix_params.json
 ```
+
+### 阶段三：读取编辑后的 MixParamsJSON 并导出最终音频
+
+```bash
+podcast-ai finalize-episode-stage3 output/episodes/ep_xxx/mix_params/ep_xxx_mix_params.json
+```
+
+- 阶段三会严格校验 JSON（非法数值/边界映射不一致会直接失败，不静默回退）
+- 成功后导出：
+  - `output/episodes/<episode_id>/mix/mix.wav`
+  - `output/episodes/<episode_id>/final/<episode_id>.mp3`
+  - `output/episodes/<episode_id>/final/<episode_id>_show_notes.md`
+
+### 一键模式（兼容旧用法）
+
+```bash
+podcast-ai create-episode output/episodes/ep_xxx/plans/ep_xxx.json D:/Music/本期节目
+```
+
+- `create-episode` 仍保留，等价于“阶段二 + 阶段三”一键执行。
+- 适合不需要人工编辑 `mix_params` 的场景。
 
 ### 其他命令
 
 ```bash
-podcast-ai scan-library D:/Music          # 扫描音乐库并缓存元数据
-podcast-ai init-config --force            # 强制覆盖配置文件
-podcast-ai plan-episode "主题" 30 -l en   # 英文规划
-podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生成（输出 state 子集）
+podcast-ai scan-library D:/Music                               # 扫描音乐库并缓存元数据
+podcast-ai init-config --force                                 # 强制覆盖配置文件
+podcast-ai plan-episode "主题" 30 -l en                        # 英文规划
+podcast-ai plan-episode "主题" 30 --agent-mode single_agent    # 单 agent 生成（输出 state 子集）
 ```
-
----
 
 ## 配置说明
 
@@ -143,6 +161,7 @@ podcast-ai plan-episode "主题" 30 --agent-mode single_agent   # 单 agent 生�
 | `app.music_dir`              | 音乐目录                | `./music`    |
 | `app.output_dir`             | 输出目录                | `./output`   |
 | `audio.crossfade_seconds`    | 曲目过渡时长（秒）           | `8.0`        |
+| `audio.voice_music_crossfade_seconds` | 串词->歌基础叠化时长下限（秒） | `3.0` |
 | `audio.voice_music_intro_align_enabled` | 是否启用串词->下一首 intro 对齐（v4.2） | `true` |
 | `audio.voice_music_intro_align_max_seconds` | 串词->歌动态叠化上限（秒，v4.2） | `3.0` |
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
@@ -164,6 +183,8 @@ output/
       plans/           # 阶段一统一规划目录
         state.json     # 与 state_schema.json 同结构的统一状态
         <episode_id>.json  # 与 state 内容一致的快照（文件名 = episode_id）
+      mix_params/      # 阶段二输出：可编辑混音参数 JSON
+        <episode_id>_mix_params.json
       mix/             # 中间混音 wav
       final/           # 最终 MP3、Show Notes
 ```
@@ -214,52 +235,6 @@ PODCAST_AI_LOG_FILE=./logs/podcast.log
 
 ---
 
-## 日志与调试
-
-排查 Bug 时可通过日志输出到控制台或文件，查看更详细的运行信息。
-
-### 命令行参数
-
-```bash
-# 将日志等级设为 DEBUG，输出更详细的信息
-podcast-ai --log-level DEBUG plan-episode "主题" 60
-podcast-ai --log-level DEBUG create-episode <snapshot_path> <music_dir>
-
-# 将日志同时写入文件（追加模式，UTF-8）
-podcast-ai --log-level DEBUG --log-file ./logs/debug.log create-episode <snapshot_path> <music_dir>
-```
-
-### 环境变量
-
-在 `.env` 或系统环境中设置，作用于所有子命令：
-
-```
-PODCAST_AI_LOG_LEVEL=DEBUG
-PODCAST_AI_LOG_FILE=./output/debug.log
-```
-
-### 日志等级
-
-
-| 等级        | 说明                                 |
-| --------- | ---------------------------------- |
-| `DEBUG`   | 最详细，含 LLM 请求片段、TTS 缓存命中、FFmpeg 命令等 |
-| `INFO`    | 默认，主要流程与耗时                         |
-| `WARNING` | 仅警告与错误                             |
-| `ERROR`   | 仅错误                                |
-
-
-### 调试示例
-
-```powershell
-# Windows：开启 DEBUG 并写入文件
-$env:PODCAST_AI_LOG_LEVEL = "DEBUG"
-$env:PODCAST_AI_LOG_FILE = ".\output\debug.log"
-podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx.json D:\Music\本期节目
-```
-
----
-
 ## 常见错误排查
 
 
@@ -274,6 +249,8 @@ podcast-ai create-episode output\episodes\ep_xxx\plans\ep_xxx.json D:\Music\本�
 | `ElevenLabs TTS 调用失败：配额或频率受限` | 配额不足或触发限流                                       | 稍后重试或提升套餐                                                                                  |
 | `音乐目录为空或扫描失败`                 | 目录不存在或无 mp3/wav                                 | 检查路径，确保有音频文件                                                                               |
 | `选曲结果为空`                      | 曲库中无符合 BPM 区间的曲目                                | 放宽规划中的 BPM 范围或准备更多曲目                                                                       |
+| `读取或校验 mix_params_json 失败` | JSON 文件不存在、格式错误、字段缺失 | 确认使用阶段二输出的 JSON，或按 schema 修正编辑内容 |
+| `stage3 渲染失败` | `vm_seconds` 非法（负数、超上限、与边界映射不一致） | 按 `transitions` 逐条修正：保证 `voice_segment_id` 与 `next_music_first_track_file_path` 映射一致，`vm_seconds` 合法 |
 
 
 ---
