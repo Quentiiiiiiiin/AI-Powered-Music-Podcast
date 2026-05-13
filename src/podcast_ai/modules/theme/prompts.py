@@ -169,7 +169,7 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
         OUTPUT EXAMPLE FORMAT:
         {
           "meta": {
-            "theme_description": "Describe the theme of the episode in detail, including the overall style, design concept, and program arrangement ideas."
+            "theme_description": "A detailed narrative blueprint of the episode. It should be clearly describe: the core theme and concept of the episode, the storytelling arc, the emotional journey evolves across the episode, the number of segments and the purpose of each segment, the intended musical direction and storytelling role of each segment"
           },
           "global_constraints": {
             "tone": "The tone of the episode",
@@ -177,7 +177,7 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
             "avoid": ["The topics to avoid"]
           },
           "plan": {
-            "segments_design": "The structure of the episode",
+            "segments_design": "The structure of the episode. It must include: the number of segments, the roles and purpose of each segment, how each segment is connnected, the pacing and energy progression across the segments, and the narrative function of each segment. This should act as a high-level blueprint that guides segment-level design.",
             "emotion_curve": ["The emotion curve of the episode"]
           },
           "segments": [
@@ -188,7 +188,7 @@ def build_planner_agent_messages(state: dict, mode: str) -> list[dict[str, str]]
               "target_duration_seconds": 600,
               "bpm_range": [90, 105],
               "mood": "The mood of the segment",
-              "segment_design": "Describe the design of the segment in detail, based on the meta.theme_description and global_constraints.tone, without mentioning the playlist/track."
+              "segment_design": "A detailed design guide for this segment. It must include: the narrative purpose of this segment, the emotional tone and how it should evolve within the segment, Music selection strategy (genres, themes, tempo, lyrical direction), how songs should be sequenced to create a coherent flow, How this segment connects to the previous and next segments, Any storytelling or thematic elements that should be emphasized. This should provide clear guidance for both music selection and script writing."
             }
           ]
         }
@@ -711,7 +711,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     system = dedent(
         f"""
         GENERAL RULES:
-        You are a stable and disciplined CRITIC agent for the Music Podcast.
+        You are a stable and professional CRITIC agent for the Music Podcast.
         Your role is to improve the quality of the Music Podcast EpisodePlan.
         You must NOT introduce new evaluation criteria under any circumstances.
         Your goal is to help the system CONVERGE, not to endlessly criticize.
@@ -733,6 +733,8 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         PASS RULES:
         pass = true if:
           scores >= threshold
+          or
+          no issues remaining
        
         WRITE SCOPE:
         - critic.*
@@ -760,13 +762,13 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         issues, and executable actions.
 
         Requirements:
-        - Do not be overly strict on BPM; rough alignment with each segment's bpm_range is enough.
+        - Do not be overly strict on BPM; rough alignment with each segment's bpm_range is enough, null BPM is allowed.
         - Check whether tracks appear to be real recordings; flag likely invented or unidentifiable titles.
         - Check whether song meanings fit the theme; flag clear mismatches.
         - Check script coherence, tone, style, and pacing, make sure they look like a real radio host.
         - Check overall script length, it should be reasonable and not too long or too short.
         - Mentioning host name Nova and show name Luma Hits in the script in where it fits.
-        - script.between_tracks can be null where appropriate, keep the flow of the episode naturally.
+        - script.between_tracks should be null where appropriate, keep the flow of the episode naturally.
 
         Current state (JSON):
         {json.dumps(state, ensure_ascii=False)}
