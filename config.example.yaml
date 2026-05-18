@@ -31,6 +31,8 @@ llm:
   model: "gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v4.6：OpenRouter 供应方路由（仅当 base_url 指向 OpenRouter 时写入请求体；留空=自动选路）
+  # openrouter_provider: ""
   # v3.4：省略或 null = 仅当 base_url 为 OpenRouter 时附带 response_format；true/false 可强制开关
   # structured_output: false
 

@@ -142,9 +142,12 @@ llm:
   provider: "openai_compatible"
   api_key: ""
   base_url: "https://openrouter.ai/api/v1"
-  model: "minimax/minimax-m2.5"
+  model: "openai/gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v4.6：OpenRouter 供应方路由。留空=请求体不携带 provider（由 OpenRouter 自动选路）。
+  # 非空：填单个 slug（实现为 {"only":[slug]}）或 JSON 对象字符串（与官方 provider 字段一致）。
+  openrouter_provider: "azure/swedencentral"
 
 tts:
   provider: "elevenlabs"
@@ -171,6 +174,8 @@ tts:
 _INIT_ENV_EXAMPLE = """# LLM / TTS key 建议放环境变量
 PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 # PODCAST_AI_LLM__BASE_URL=https://openrouter.ai/api/v1
+# v4.6：OpenRouter 供应方路由（仅当 base_url 为 OpenRouter 时生效；留空=自动选路）
+# PODCAST_AI_LLM__OPENROUTER_PROVIDER=
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here

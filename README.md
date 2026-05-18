@@ -62,6 +62,10 @@ PODCAST_AI_LLM__API_KEY=sk-xxx
 PODCAST_AI_LLM__BASE_URL=https://api.openai.com/v1
 PODCAST_AI_LLM__MODEL=gpt-4o-mini
 
+# v4.6：经 OpenRouter 时可选供应方路由（仅当 base_url 为 OpenRouter 时写入请求体；留空=自动选路）
+# PODCAST_AI_LLM__OPENROUTER_PROVIDER=anthropic
+# 或 JSON：PODCAST_AI_LLM__OPENROUTER_PROVIDER={"order":["openai","anthropic"]}
+
 # v4.1：TTS 支持 edge / elevenlabs / minimax
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
@@ -167,6 +171,9 @@ podcast-ai plan-episode "主题" 30 --agent-mode single_agent    # 单 agent 生
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
 | `llm.base_url`               | LLM API 地址          | 需配置          |
 | `llm.api_key`                | LLM API Key         | 建议用环境变量      |
+| `llm.model`                  | 模型 id               | 见 `init-config` 默认 |
+| `llm.openrouter_provider`    | **v4.6** 经 OpenRouter 时的供应方路由：留空则请求体**不**带 `provider`（自动选路）；非空为单个 slug（实现为 `{"only":[slug]}`）或与官方一致的 JSON 对象字符串 | `""` |
+| `llm.structured_output`      | **v3.4** 是否附带 `response_format`（`null`/省略时仅当 `base_url` 为 OpenRouter 自动开启） | 省略（即 `null`） |
 | `tts.provider`               | TTS 供应商（`edge`/`elevenlabs`/`minimax`） | `elevenlabs` |
 | `tts.elevenlabs.voice_id`    | ElevenLabs Voice ID | 需配置          |
 | `tts.minimax.voice_id`       | MiniMax Voice ID | `male-qn-qingse` |

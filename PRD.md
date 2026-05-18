@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v4.4.1  
+**文档版本**：v4.6  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v4.4.1）
+**产品阶段**：迭代验证中（进入 v4.6）
 
 ---
 
@@ -334,6 +334,18 @@
     4. 阶段三执行时对 JSON 参数做必要校验；非法值应给出明确错误并中止，不静默降级到旧参数。
     5. 阶段二输出不被破坏：tts 串词文件生成路径与返回行为保持可用，便于阶段三接入。
 
+- **v4.6（迭代二十四：OpenRouter 可配置 LLM provider）**：
+  - **问题**：经 OpenRouter 调用时，目前仅能切换**模型标识**，无法在配置层显式选择不同 **LLM provider**（路由/供应方），调试不同 provider 与模型组合时需改代码或散落环境变量，效率低。
+  - **变更目标**：在 **`config.yaml`** 中增加 OpenRouter 的 **provider**（及与现有 **model** 并列）配置项，使调试时可快速切换「provider + 模型」组合；请求层读取配置并写入 OpenRouter 所需字段（与官方文档一致）。**语义约定**：`provider` **留空或未配置**时，不向请求强制写入供应方路由字段（或按 OpenRouter 约定省略），由 **OpenRouter 自动选择合适 provider**；`provider` **非空**时，则**按指定 provider** 访问。不改阶段一各 Agent 的业务契约与 `response_format`（v3.4）语义。
+  - **功能归类**：**优化**（可配置性与调试效率）+ **新功能**（显式 provider 选择能力，若此前未暴露）。
+  - **User Story（用户视角）**：作为开发者/创作者，我希望在 `config.yaml` 里改 OpenRouter 的 **model** 即可默认走自动路由；需要对比某家供应方时再把 **provider** 填上，这样我不用改代码就能在「自动 / 指定」两种模式间切换。
+  - **Acceptance Criteria（验收标准）**：
+    1. `config.yaml` 提供可编辑的 OpenRouter **`provider`（可为空，表示自动路由）** 与 **`model`**（字段名由实现约定并在 README 或示例配置中列出），修改后无需改业务代码即可生效。
+    2. 所有经 OpenRouter 的 LLM 请求（含多 agent 各 Agent）统一从配置读取 provider/model，并正确传递给 OpenRouter API。
+    3. **provider 为空**：请求不得因「未填写 provider」而失败；应走 **OpenRouter 自动选择 provider** 的路径（实现上为省略字段或传空值，以 OpenRouter 文档为准）。**provider 非空**：必须按指定值路由；若 OpenRouter 判定 **provider 非法或与 model 不兼容**，返回明确错误信息，不静默回退到未知默认。
+    4. 与 v3.4 的 `response_format` / `json_schema` 严格输出要求兼容，不因新增 provider 配置而破坏结构化输出链路。
+    5. 默认配置下行为与迭代前一致（向后兼容），仅在使用新字段时切换路由。
+
 
 ## 1. 产品背景
 
@@ -592,7 +604,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v4.5）
+### 6.4 当前版本成功指标（v4.6）
 
 | 指标 | 目标 |
 |------|------|
@@ -610,6 +622,7 @@
 | **串词→歌重叠合法性** | 任意边界均满足 `crossfade <= 串词时长`，避免出现 crossfade 大于串词时长导致的异常混音 |
 | **intro 估计稳定性** | `estimate_track_intro_seconds` 在噪声/装饰音场景下误触发率下降，`confidence/reason` 可用于后续策略分流 |
 | **阶段三可编辑混音参数** | 用户可在最终导出前基于阶段二输出 JSON 微调 crossfade 参数，并通过阶段三获得最终 `wav/mp3` |
+| **OpenRouter 可配置 provider** | 在 `config.yaml` 中可配置 `provider`（可留空走自动路由）与 `model`，便于调试且请求层行为一致 |
 
 ---
 
@@ -718,7 +731,7 @@ Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算�
 
 - **版权**：MVP 阶段不重点考虑，用户需确保音乐库中的音乐具有合法使用权
 - **技术栈**：以 Python 为主，音频处理可使用 librosa、pydub、essentia 等库
-- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 支持 Edge / ElevenLabs / MiniMax，模型通过 `.env` 配置选择，MiniMax 定制参数本轮使用代码内默认值
+- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；经 **OpenRouter** 时，`model` 与可选的 **`provider`**（**留空则自动路由**，非空则指定供应方）可在 **`config.yaml`** 中配置以便调试；TTS 支持 Edge / ElevenLabs / MiniMax，模型通过 `.env` 配置选择，MiniMax 定制参数本轮使用代码内默认值
 
 ---
 

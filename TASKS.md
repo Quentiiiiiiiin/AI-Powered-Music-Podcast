@@ -1,133 +1,92 @@
-﻿## 版本 v4.5（迭代二十三：新增阶段三支持人工微调最终 crossfade）
+﻿## 版本 v4.6（迭代二十四：OpenRouter 可配置 LLM provider）
 
-基于 PRD v4.5 + ARCHITECTURE 中 **AD-2026-04-v4.5**：将当前“两阶段（阶段一规划 + 阶段二直接混音导出）”扩展为“三阶段（阶段二生成可编辑参数、阶段三最终混音导出）”。
+基于 PRD v4.6：在经 **OpenRouter**（`llm.base_url` 指向 `openrouter.ai`）调用时，除现有 **`model`** 外，增加可在 **`config.yaml`** 中编辑的 **OpenRouter 供应方路由**配置；请求层读取后写入 OpenRouter **官方文档约定的** `chat/completions` 请求体字段（与 `messages`、`response_format` 等并列）。
 
-本迭代的核心契约是：
-- **阶段二**：继续负责 TTS 串词文件生成，并生成“混音之前的重要参数 JSON”（含 `tracks`、`voiceovers`/tts 文件路径与串词文本、以及两段音频之间的转场参数如 `form=crossfade`、`intro/vm_candidate` 等），落盘并返回路径；阶段二不产出最终音频。
-- **阶段三**：读取用户微调后的参数 JSON，进行必要校验后完成最终混音与导出（`wav` + `mp3`），并保持与 v3.9.1 的转场语义一致：**歌→串词无 crossfade；串词→歌 crossfade；歌→歌 crossfade；段内 `between_tracks` 串词参与同一规则**。
+**语义约定（与 PRD 对齐）**：
+- **留空 / 未配置**：请求体**不**携带 OpenRouter 的 `provider` 路由对象（或按官方文档等价省略），由 OpenRouter **自动选择** provider；不得因未填而报错。
+- **非空**：按配置路由；若 OpenRouter 返回 **provider 非法或与 model 不兼容** 等错误，**原样透出**可读错误，**不静默回退**到未知默认。
 
-失败策略：
-- 阶段三入口对 JSON 做严格校验；非法编辑值必须明确报错并中止，不静默回退到旧参数。
+**约束**：不改变阶段一各 Agent 业务契约；**v3.4** `response_format` / `json_schema` 严格输出语义保持不变。
 
 ---
 
-### Task 01 - 定义 MixParamsJSON（可编辑混音参数 JSON）与严格校验
-- **Task name**: v4.5 - MixParamsJSON schema & validators
-- **目标**: 在 `src/podcast_ai/core/models.py` 新增 `MixParamsJSON`（含 `meta/schema_version`、`tracks`、`voiceovers`、`transitions`），并提供“阶段三严格校验”所需的最小校验规则（非法值中止）。
+### Task 01 - 配置模型与命名（避免与 `llm.provider` 混淆）
+- **Task name**: v4.6 - LLMConfig 增加 OpenRouter 路由字段
+- **目标**: 在 `LLMConfig` 增加**独立字段**（建议 `openrouter_provider: str = ""`），表示 OpenRouter 的供应方路由；**不要**复用现有 `llm.provider`（该字段表示客户端实现类型，如 `openai_compatible`）。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 设计 JSON 字段尽量复用现有模型：`SelectedTrack`、`VoiceoverSegment`（可序列化为 JSON），并在 `transitions` 中描述 voice→music 与 music→music 边界的可编辑 crossfade 参数。
-  - 明确约束：
-    - `transitions` 中的边界条目应能与 `voiceovers`（按 `segment_id`）或对应 timeline 位置稳定映射；
-    - 允许用户覆盖的字段包括（至少）`vm_candidate`/`intro`/（必要时的）`crossfade_seconds`；
-    - 阶段三校验时对非法数值（负数、NaN、超过允许重叠上限或不满足约束的 crossfade）直接抛错并终止。
-- **Input**: PRD v4.5、ARCHITECTURE 中对字段与校验要求
-- **Output**: 可被阶段二写入、阶段三读取且可严格校验的 schema 模型
+  - 支持 `config.yaml` 与 `.env` 嵌套（如 `PODCAST_AI_LLM__OPENROUTER_PROVIDER`）加载。
+  - 默认值空串，保证「迭代前默认行为」：不传 OpenRouter `provider` 对象。
+- **Input**: PRD v4.6 验收 1、5
+- **Output**: 可序列化、可校验的配置字段
 - **Files involved**:
-  - `src/podcast_ai/core/models.py`
-- **Estimated complexity**: M（2-3 小时）
+  - `src/podcast_ai/infra/config.py`
+- **Estimated complexity**: S（0.5–1 小时）
 
 ---
 
-### Task 02 - Mixer 支持“生成转场参数”与“从参数渲染最终混音”
-- **Task name**: v4.5 - mixer mix-params apply
-- **目标**: 将当前 `modules/mixing/mixer.py` 从“只给 selected_tracks/voiceovers + config 直接渲染”扩展为：
-  1) 能基于当前算法生成 voice→music / music→music 的转场参数（阶段二用）；
-  2) 能从 MixParamsJSON 读取用户覆盖的转场参数并应用到最终渲染（阶段三用）。
+### Task 02 - 请求层：按 OpenRouter 文档组装 `provider` 请求体
+- **Task name**: v4.6 - OpenAICompatibleLLMClient 写入 provider
+- **目标**: 在 `OpenAICompatibleLLMClient.generate` 构建 `payload` 时：若 `base_url` 判定为 OpenRouter 且 `openrouter_provider` 非空，则附加官方约定的 **`provider` 对象**（例如 `only` / `order` 等，以实现为准并对照当前 OpenRouter 文档）；否则**完全不加入** `provider` 键。
 - **类型**: backend
 - **依赖关系**: Task 01
 - **Description**:
-  - 不改变 v3.9.1 转场语义分支：music→voice 硬切不变；voice→music vm 由 JSON 覆盖时采用覆盖值，否则用 v4.2/v4.3 估计值；
-  - 确保对 voice→music 的 crossfade 仍满足 v4.3 的“合法重叠区间”语义：阶段三负责“校验并拒绝非法编辑值”，不在阶段三静默回退；
-  - 阶段二只需输出参数，不做最终叠加渲染。
-- **Input**: selected_tracks、voiceovers、以及（阶段二）默认估计值或（阶段三）来自 MixParamsJSON 的覆盖值
-- **Output**: 两个接口（或一个接口拆分为两个模式）：
-  - `build_mix_params(...) -> transitions`
-  - `render_final_mix_from_mix_params(...) -> AudioSegment / Path`
+  - 非 OpenRouter 网关（`base_url` 不含 openrouter）时，**忽略** `openrouter_provider`，避免向非 OpenRouter 服务发送未知字段。
+  - 脱敏日志：`safe_payload` 中对 `provider` 做摘要（避免日志爆炸），与现有 `response_format` 脱敏风格一致。
+  - `kwargs`（含各 Agent 传入的 `response_format`）与 `model`/新增字段合并顺序保持不变，满足 PRD 验收 4。
+- **Input**: `src/podcast_ai/infra/llm_client.py`、OpenRouter 官方 provider routing 文档
+- **Output**: 所有经该客户端的 OpenRouter 请求统一携带正确 `provider` 行为
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - （可选）`src/podcast_ai/modules/mixing/intro_align.py`（仅复用现有估计）
-- **Estimated complexity**: L（3-4 小时）
+  - `src/podcast_ai/infra/llm_client.py`
+- **Estimated complexity**: M（1.5–2.5 小时）
 
 ---
 
-### Task 03 - pipeline 阶段二：生成并落盘可编辑混音参数 JSON
-- **Task name**: v4.5 - create_episode_stage2
-- **目标**: 在 `src/podcast_ai/core/pipeline.py` 新增阶段二接口 `create_episode_stage2(...)`：
-  - 扫描/选曲；
-  - 生成 TTS 串词文件；
-  - 计算并落盘 MixParamsJSON；
-  - 返回 MixParamsJSON 路径（以及可选的 episode_root 便于 CLI 打印路径），不执行最终 mastering/export。
+### Task 03 - 错误信息与向后兼容验收
+- **Task name**: v4.6 - Provider 相关 4xx 提示与兼容
+- **目标**: 当 OpenRouter 因 `provider` 与 `model` 不兼容返回 400 等错误时，错误信息足够定位（可附带响应体片段，已有逻辑上扩展即可）；**provider 为空**路径下现有成功调用不受影响（PRD 验收 3、5）。
 - **类型**: backend
 - **依赖关系**: Task 02
 - **Description**:
-  - 复用现有 `create_episode` 中的库扫描/选曲/segment 边界计算/voiceovers 生成逻辑；
-  - 在“混音之前”插入 MixParamsJSON 生成与落盘；
-  - 保持旧 `create_episode` 的行为不回退：它可以内部调用 stage2+stage3 组合，给 CLI 仍可用的一键路径。
-- **Input**: snapshot_path（`<episode_id>.json`）、music_dir、topic/language（TTS）
-- **Output**: MixParamsJSON path
+  - 仅在确有必要时扩展 `AIServiceError` 提示文案（避免过度分支）。
+  - 确认多 Agent 路径均通过 `get_default_llm_client` → 同一 `generate`，无旁路重复实现。
+- **Input**: 现有 `AIServiceError` 抛出点
+- **Output**: 调试时可读、空 provider 不回归
 - **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/infra/storage/paths.py`（新增落盘/读取 mix_params json 的路径函数）
-- **Estimated complexity**: M（2-3 小时）
+  - `src/podcast_ai/infra/llm_client.py`
+  - （只读核对）`src/podcast_ai/modules/theme/*_agent.py`、`llm_planner.py`
+- **Estimated complexity**: S（0.5–1 小时）
 
 ---
 
-### Task 04 - pipeline 阶段三：读取用户编辑参数并最终混音导出
-- **Task name**: v4.5 - finalize_episode_stage3
-- **目标**: 新增阶段三接口 `finalize_episode_stage3(mix_params_json_path, ...) -> EpisodeResult`：
-  - 加载并严格校验 MixParamsJSON（非法编辑值中止）；
-  - 仅依赖 JSON 执行最终时间线混音与导出（`wav` + `mp3` + Show Notes）；
-  - 不依赖阶段二的中间运行时状态或 snapshot 内部变量。
+### Task 04 - 示例配置与文档
+- **Task name**: v4.6 - README / init-config 示例
+- **目标**: 在 `README.md` 与 `cli.py` 内 `_INIT_CONFIG_YAML` 的 `llm:` 段补充 `openrouter_provider`（注释说明：留空=自动路由；非空=指定供应方 slug，具体形态以 OpenRouter 文档为准）。
 - **类型**: backend
-- **依赖关系**: Task 01, Task 02, Task 03
+- **依赖关系**: Task 01
 - **Description**:
-  - 对 `transitions` 覆盖值做严格检查（数值合法性、范围约束、能量/时长约束、边界映射一致性）；
-  - 映射到当前 mixer 的 voice/music 边界时，如检测到 JSON 与当前 tracks/voiceovers 不一致，直接报错；
-  - 复用 `MasteringService` 与 `Exporter`（需要从 JSON 重建最小 `EpisodePlan` 或直接提供 exporter 可用字段）。
-- **Input**: 用户编辑后的 mix_params json path
-- **Output**: 最终 `EpisodeResult` 与导出音频路径
+  - 若仓库存在 `config.example.yaml` / `.env.example`，同步一行说明即可，不展开长篇文档。
+- **Input**: PRD 验收 1
+- **Output**: 用户可复制即用的最小示例
 - **Files involved**:
-  - `src/podcast_ai/core/pipeline.py`
-  - `src/podcast_ai/modules/mixing/mixer.py`（渲染从参数出发）
-  - `src/podcast_ai/infra/storage/paths.py`（最终音频/中间 wav 输出路径，复用现有函数）
-- **Estimated complexity**: L（3-4 小时）
-
----
-
-### Task 05 - CLI：阶段二导出 JSON + 阶段三最终导出
-- **Task name**: v4.5 - CLI stage2/stage3 入口
-- **目标**: 在 `src/podcast_ai/cli.py` 增加：
-  - `create-episode-stage2`：生成 MixParamsJSON 并输出其路径；
-  - `finalize-episode-stage3`：读取用户编辑后的 JSON 并导出最终音频。
-- **类型**: api
-- **依赖关系**: Task 03, Task 04
-- **Description**:
-  - 非法输入（JSON 不存在/非法编辑）要返回明确错误信息并退出；
-  - 保留现有 `create-episode` 作为“一键 stage2+stage3”路径（内部组合），避免用户使用成本上升。
-- **Input**: snapshot_path、music_dir（stage2）；mix_params_json_path（stage3）
-- **Output**: JSON path / 最终音频 path
-- **Files involved**:
+  - `README.md`
   - `src/podcast_ai/cli.py`
-- **Estimated complexity**: S（1-2 小时）
+  - （若存在）`config.example.yaml`、`.env.example`
+- **Estimated complexity**: S（0.5 小时）
 
 ---
 
-### Task 06 - 测试：阶段二 JSON 生成 + 阶段三校验与覆盖生效
-- **Task name**: v4.5 - stage2/3 contract tests
-- **目标**: 增加针对 v4.5 的关键回归测试，覆盖：
-  - stage2 输出 JSON 的 schema 与关键字段存在性；
-  - stage3 校验：非法 crossfade/overlap 值必须失败中止；
-  - stage3 覆盖：修改 JSON 中某个 voice→music 的 vm_candidate/crossfade 参数，最终输出行为（至少 vm 或重叠时长相关的可观察结果）发生改变。
+### Task 05 - 单测：请求体是否包含 `provider`
+- **Task name**: v4.6 - LLM 请求 payload 断言
+- **目标**: 使用 `httpx` mock / 拦截，验证：① `openrouter_provider` 为空时 payload **无** `provider`；② 非空时 payload **有**符合实现约定的 `provider`；③ 非 OpenRouter `base_url` 时不发送 `provider`。
 - **类型**: backend
-- **依赖关系**: Task 03, Task 04
+- **依赖关系**: Task 02
 - **Description**:
-  - 尽量 mock 或 stub 音频加载/渲染，避免真实 ffmpeg/大文件；
-  - 关键是“校验与应用逻辑”的正确性与可追溯 reason。
-- **Input**: 小样例 snapshot + stub 音频 / mock audio_backend
+  - 不发起真实外网请求。
+  - 可选：断言 `response_format` 仍存在（与 kwargs 合并，满足验收 4）。
+- **Input**: `tests/` 现有 pytest 风格
 - **Output**: `pytest` 通过
 - **Files involved**:
-  - `tests/test_pipeline.py`（扩展 stage2/stage3 用例）
-  - `tests/test_mixing.py`（如需要验证应用覆盖逻辑）
-- **Estimated complexity**: M（2-3 小时）
+  - `tests/test_llm_client.py`（新建）或并入现有测试文件
+- **Estimated complexity**: M（1–2 小时）

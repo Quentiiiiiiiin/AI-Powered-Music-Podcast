@@ -667,7 +667,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
           REVISION MODE
           ====================
           Your responsibility:
-          - Assess the remaining ISSUES to see if they are resolved, drop the resolved ISSUES, keep the unresolved ones.
+          - Assess the the ISSUES from last iteration to see if they are resolved, drop the resolved ISSUES, keep the unresolved ones.
           - DO NOT generate new ISSUES or modify the existing ISSUES. You can only drop the resolved ISSUES.
           - Generate ACTIONS based on the ISSUES.
           - Evaluate the overall quality of the episode plan based on the RUBRIC. The score should be higher than the current score if the number of ISSUES is reduced.
@@ -755,6 +755,8 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     ).strip()
 
     state["critic"]["actions"] = []
+    issues_from_last_iteration = state.get("critic", {}).get("issues", [])
+    state["critic"]["issues"] = []
 
     user = dedent(
         f"""
@@ -770,7 +772,10 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         - Mentioning host name Nova and show name Luma Hits in the script in where it fits.
         - script.between_tracks should be null where appropriate, keep the flow of the episode naturally.
 
-        Current state (JSON):
+        ISSUES FROM LAST ITERATION:
+        {issues_from_last_iteration}
+
+        CURRENT STATE (JSON):
         {json.dumps(state, ensure_ascii=False)}
         """
     ).strip()

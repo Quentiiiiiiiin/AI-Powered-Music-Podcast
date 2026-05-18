@@ -26,6 +26,14 @@ class LLMConfig(BaseModel):
         default=None,
         description="OpenRouter 结构化 JSON：None 自动检测 host；True/False 覆盖",
     )
+    # v4.6：OpenRouter 供应方路由（与 llm.provider「客户端实现类型」无关）。留空=请求体不携带 provider，由 OpenRouter 自动选路。
+    # 非空：可为 JSON 对象字符串（与官方 provider 字段一致），或单个供应方 slug（实现为 {"only": [slug]}）。
+    openrouter_provider: str = ""
+
+
+def is_openrouter_base_url(url: str) -> bool:
+    """base_url 是否指向 OpenRouter 网关（用于附加 response_format / provider 等 OpenRouter 专有字段）。"""
+    return "openrouter.ai" in (url or "").strip().lower()
 
 
 def should_use_structured_output(cfg: LLMConfig) -> bool:
@@ -40,8 +48,7 @@ def should_use_structured_output(cfg: LLMConfig) -> bool:
         return True
     if cfg.structured_output is False:
         return False
-    url = (cfg.base_url or "").strip().lower()
-    return "openrouter.ai" in url
+    return is_openrouter_base_url(cfg.base_url)
 
 
 class ElevenLabsConfig(BaseModel):
