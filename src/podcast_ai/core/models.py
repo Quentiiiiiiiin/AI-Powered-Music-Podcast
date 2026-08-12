@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EpisodeRequest(BaseModel):
@@ -130,6 +130,10 @@ class AudioRenderConfig(BaseModel):
         ge=0,
         description="串词结束后音乐淡入的叠化窗口（秒）；不影响歌曲-歌曲 crossfade",
     )
+    # v4.2：开启后在「串词->歌」边界尝试用下一首 intro 估计值动态决定 vm（失败回退默认）。
+    voice_music_intro_align_enabled: bool = True
+    # v4.2：动态 vm 上限（秒）；关闭对齐时不生效。
+    voice_music_intro_align_max_seconds: float = Field(3.0, ge=0)
 
 
 class EpisodeResult(BaseModel):
@@ -190,4 +194,79 @@ class Stage2Snapshot(BaseModel):
     schema_: str = Field(alias="schema")
     meta: Stage2SnapshotMeta
     segments: List[Stage2Segment] = Field(default_factory=list, min_length=1)
+
+
+class MixParamsTransition(BaseModel):
+    """
+    阶段三可编辑的“串词 -> 下一首歌”转场参数（voice->music）。
+
+    - `vm_seconds`：最终用于渲染的重叠时长（用户可在阶段三编辑后生效）。
+    - `vm_candidate_seconds`：阶段二算法的候选值（用于展示/对比）。
+    - `intro_seconds/confidence/reason`：librosa intro 估计结果（用于展示/可解释性）。
+    """
+
+    voice_segment_id: str
+    next_music_first_track_file_path: Path
+
+    intro_seconds: float | None = None
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+    vm_candidate_seconds: float = Field(..., ge=0.0)
+    vm_seconds: float = Field(..., ge=0.0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MixPlanSegment(BaseModel):
+    """用于构建 Show Notes 所需的最小 segment 信息（给阶段三 exporter 复用）。"""
+
+    name: str
+    target_duration_seconds: int = Field(..., ge=1)
+    mood: str = ""
+    host_script: str = ""
+    # v3.9.x 的 Exporter 只使用 name/target_duration_seconds/mood/style_description；
+    # 这里为契约完整保留 target_playlist，但阶段三可置空。
+    target_playlist: list[PlaylistItem] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MixParamsMeta(BaseModel):
+    """MixParamsJSON 顶层 meta（用于阶段三校验/构建 EpisodePlan）。"""
+
+    schema_version: str = "v4.5"
+    theme: str
+    language: str
+    target_duration_seconds: int = Field(..., ge=1)
+    request_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MixParamsJSON(BaseModel):
+    """v4.5：阶段二输出的“可编辑混音参数 JSON”。"""
+
+    meta: MixParamsMeta
+
+    # 为了让阶段三能独立导出 Show Notes，直接把最小 EpisodePlan 信息写入 JSON。
+    plan_segments: list[MixPlanSegment]
+    style_description: str
+
+    # 阶段三从这些音频路径重建最终时间线与渲染输入。
+    tracks: list[SelectedTrack]
+    voiceovers: list[VoiceoverSegment]
+
+    # voice->music 边界转场参数列表（每个 voice_segment_id 至多一条）。
+    transitions: list[MixParamsTransition]
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _validate_transitions_unique_voice_segment_id(self) -> "MixParamsJSON":
+        ids = [t.voice_segment_id for t in self.transitions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("MixParamsJSON.transitions.voice_segment_id 必须唯一（同一串词只能有一条 voice->music 边界转场参数）")
+        return self
+
 

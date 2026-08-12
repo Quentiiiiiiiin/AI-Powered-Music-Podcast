@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v3.9.1  
+**文档版本**：v4.6  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v3.9.1）
+**产品阶段**：迭代验证中（进入 v4.6）
 
 ---
 
@@ -249,43 +249,103 @@
     4. 串词可懂度不因错误重叠而明显下降（主观试听：串词开头不被上一首歌尾部掩盖）。
     5. 与 v3.9 输入契约兼容：仍以 `<episode_id>.json` 为阶段二主输入，不引入新的计划文件格式。
 
-### 当前生效规则（v3.9.1）
-
-- 阶段二歌曲顺序严格按 plan 执行，不做 BPM 二次重排/贪心替换。
-- 阶段一（plan 生成）支持用户选择 `single_agent` / `multi_agent` 模式。
-- 无论单 agent 还是多 agent，阶段一最终输出契约都对齐 `state_schema` 体系；其中单 agent 输出为精简子集（`schema_version/meta/global_constraints/plan/segments`），不包含 `critic/control`。
-- 单 agent 模式阶段一输出文件名固定为 `state.json`。
-- 多 agent 模式下，经 OpenRouter 的四个 Agent 调用须携带 **`response_format`（json_schema / strict）**，以结构化输出为主路径；`json repair` 已移除，仅保留必要的 schema 校验作为最后兜底。
-- 单 agent 模式下，Theme Planner 调用同样采用结构化输出强约束（`response_format/json_schema`）以保证字段稳定。
-- 阶段一在单/多 agent 两种模式下统一输出：`state` 文件 + 以 `episode_id` 命名的新 JSON 文件；单 agent 历史 `playlist` 文件已移除。
-- 以 `episode_id` 命名的新文件为 state 的简化视图，字段仅保留：`schema`、`meta.request_id/theme/language/target_duration_seconds`、`segments[*].segment_id/name/target_duration_seconds/playlists/script`。
-- 阶段二当前主输入已切换为阶段一产出的 `<episode_id>.json`（按上方字段子集约定读取），旧 EpisodePlan 输入不再作为默认主路径。
-- 串词位置按 plan 的 segment 歌曲边界计算：串词_i 在 segment_i 之前（开场先串词）。
-- **阶段二混音（v3.9.1）**：以 `<episode_id>.json` snapshot 展开时间线；**歌→串词**不接 crossfade；**串词→歌**接 crossfade；**歌→歌**接 crossfade；段内 `between_tracks` 与上述一致。（历史 v2.1「串词结束前音乐短时淡入」由本规则中的「串词→歌 crossfade」承接听感目标，**不再**单独描述为先整段歌 crossfade 再插词。）
-- ThemePlanner 输出遵循强约束 prompt：严格 JSON、snake_case、语言一致、时长与结构可执行。
-- TTS 当前主路径为 ElevenLabs。
-- **多 agent 模式（v3.6）**：每一轮 refinement 须按约定落盘 `iteration[i]_[agent]` 与各轮合并后的 `iteration[i]_state`，便于审计 Critic 建议与后续 Agent 输出是否一致。
-
-### 已完成迭代（v3.0）
-
-- **v3.0（迭代八：阶段一 Episode Plan 多 Agent 化）**：
-  - **问题**：阶段一目前仍以“单次模型调用”生成 EpisodePlan，存在质量波动、结构失衡、风格不统一、局部难优化的问题。
-  - **变更目标**：将阶段一升级为多 Agent Pipeline（Planner / Music Curator / Script Writer / Critic），通过“共享 State + 结构化反馈 + 有限迭代”提升 plan 质量与稳定性。
-  - **功能描述（核心）**：
-    1. 采用共享 `state`（JSON）作为唯一事实源，Agent 间不自由对话，只读写受控字段。
-    2. 引入 Critic Agent 进行结构化评估（评分 + 问题定位 + 修复指令）。
-    3. 引入有限次 Refinement Loop（建议最多 2~3 次），达到阈值提前结束。
-    4. 增加异常处理：JSON 不合法、缺字段、偏离指令时的 fallback 与重试。
-  - **State Schema（v3.0 草案）**：以 `meta / global_constraints / plan / segments / critic / control` 为核心层级；其中 `control.max_iterations` 默认为 3，可配置。
-  - **State Schema 完善（本轮）**：补充 `schema_version`、`meta.language/request_id`、`segments.segment_id/order`、`critic.actions[]`（支持多点修复）以及 `control.next_agent/last_updated_by`，提升可追踪性与可编排性。
-  - **User Story（用户视角）**：作为内容创作者，我希望 episode plan 由多 Agent 协同生成并可被评估与回修，这样结果更稳定、结构更合理，也更容易按问题定向优化。
-  - **功能归类**：新功能（架构升级）+ 优化（质量稳定性提升）。
+- **v4.1（迭代十九：新增 MiniMax TTS + TTS 模块重构）**：
+  - **问题**：当前 TTS 供应商选择能力有限，难以在不同质量/成本/可用性之间灵活切换；同时 TTS 相关代码可读性与可扩展性不足，新增供应商改动成本高。
+  - **变更目标**：
+    1. 新增 **MiniMax** 作为第三个 TTS 供应商，并打通同步语音合成（HTTP 非流式）链路（参考 `MiniMax API Doc.md`）。
+    2. 对 TTS 模块重构为统一供应商抽象，收敛公共逻辑（输入、落盘、错误处理、日志），减少分散分支。
+    3. 命令新增 TTS 供应商选择字段，支持 `edge` / `elevenlabs` / `minimax`。
+    4. 各供应商模型改为从 `.env` 读取并由用户选择；MiniMax 的 `voice_setting` / `audio_setting` 等定制字段本轮先在代码中固定默认值。
+  - **功能归类**：**新功能**（引入 MiniMax）+ **优化**（TTS 架构与配置体验）。
+  - **User Story（用户视角）**：作为创作者，我希望在命令中直接选择 TTS 供应商，并通过环境变量切换模型，这样我可以按场景在 edge / elevenlabs / minimax 间快速切换，而不需要改代码。
   - **Acceptance Criteria（验收标准）**：
-    1. 阶段一输出不再是单次黑盒结果，流程可追踪到 Planner / Music Curator / Script Writer / Critic 各步骤。
-    2. 所有 Agent 输入/输出均为结构化 JSON，并遵循 state schema 的字段约束（仅允许修改自身负责字段）。
-    3. Critic 必须输出结构化评估：`pass`、评分维度、问题列表、修复 action（目标 agent + 指令）。
-    4. 系统支持有限迭代（max 2~3 次）与提前收敛；超过阈值时给出最终状态与未解决问题。
-    5. 异常路径可处理：JSON 非法、缺字段、输出偏离 schema 时可重试或回退，不直接产出不可用 plan。
+    1. CLI 支持 `edge` / `elevenlabs` / `minimax` 选择；非法值或缺失配置时返回明确错误提示。
+    2. MiniMax 路径可完成同步语音合成请求，并得到可用音频文件接入现有串词流程。
+    3. 三个供应商的模型配置均可通过 `.env` 生效，修改配置后无需改业务代码。
+    4. 重构后 edge 与 elevenlabs 既有能力不回退，公共流程保持一致且代码结构更清晰。
+    5. MiniMax 定制参数（如 `voice_setting`、`audio_setting`）在本轮以代码内默认值稳定运行，后续再配置化。
+
+- **v4.2（迭代二十：串词→下一首歌 crossfade 与 intro 对齐）**：
+  - **问题**：**较长串词**时，串词段落往往在较长时间内**没有背景音乐垫底**，听感偏干；若「串词→下一首」的 crossfade 起点过晚或时长与下一首结构不匹配，人声结束前很难自然带入音乐氛围。
+  - **变更目标**：在阶段二混音中，对**紧随串词之后**的每一首本地音频，用 **librosa** 估计 **intro（前奏）** 区间，并据此设定 **串词→歌** crossfade 的时机与重叠长度，使**在串词尾部（尤其长串词的后半段）能尽早、合理地叠入下一首的 intro**，既减轻「干讲」感，又尽量让**串词自然收尾时接近 intro 结束、主歌将起的边界**（允许工程容差）。**歌→歌** crossfade 仍按 v3.9.1 规则，不因本迭代改变语义。
+  - **技术路线（产品约束）**：使用 **librosa** 对音频做分析，综合 **RMS 能量包络、onset 强度峰值、节拍/强拍跟踪** 等信号变化，推断「低能量/弱节拍 → 能量与 onset 显著上升、节拍稳定」的过渡带作为 intro 区间；具体阈值、窗口与回退策略由实现定义并在代码注释中说明。**是否重构阶段二整体管线由架构师评估**，PRD 只要求结果契约与可验收行为。
+  - **功能归类**：**新功能**（基于音频分析的 intro 估计）+ **优化**（长串词听感：intro 垫底与过渡自然度）。
+  - **User Story（用户视角）**：作为听众，我希望主持人在说较长串词时，后半段能逐渐有下一首的**前奏音乐轻轻垫在底下**，不要长时间「干巴巴」只有人声；收尾时再自然接到主歌。
+  - **Acceptance Criteria（验收标准）**：
+    1. 对存在有效本地音频文件的「串词 → 下一首」边界，mixer 使用 intro 估计结果参与 crossfade 决策；在**保证串词可懂度**的前提下，**串词尾部应有可感知的 intro 音乐铺垫**（音量与起叠时刻由实现约束），且**串词结束尽量落在下一首 intro 尾部附近**（允许实现定义的时间容差）。
+    2. 当 intro 估计失败或置信度过低时，**必须**回退到明确文档化的默认 crossfade 行为（与 v3.9.1 兼容的固定/上限时长），并记录日志，不得静默产生不可解释的长静音或错位。
+    3. **歌→歌** crossfade 行为与 v3.9.1 一致，不因 intro 逻辑被错误改写。
+    4. 串词可懂度不因错误拉长 crossfade 或错误提前叠入主歌而明显下降（主观试听通过）。
+    5. 依赖 **librosa** 的分析路径在环境中可安装、可运行；若缺少依赖或分析异常，流程应降级为默认策略并给出可读提示。
+
+- **v4.3（迭代二十一：串词时长约束下的 crossfade 限幅）**：
+  - **问题**：v4.2 已引入基于 intro 的动态 crossfade，但在部分样本中，计算得到的「串词→下一首」crossfade 可能超过串词自身时长，造成重叠比例异常与听感不稳定。
+  - **变更目标**：在 v4.2 逻辑上增加**串词时长约束**，将最终 crossfade 时长限定在配置上下限与串词时长共同约束的可行区间内，避免出现 `crossfade > voiceover_duration`。
+  - **规则（明确）**：
+    1. 先按 v4.2（intro 估计 + 配置）得到候选值；
+    2. 应用 `voice_music_crossfade_seconds`（最小重叠）与 `voice_music_intro_align_max_seconds`（最大重叠）边界；
+    3. 再应用串词时长上限：`crossfade_seconds_final <= voiceover_duration_seconds`；若超出则截断为串词时长。
+  - **功能归类**：优化（稳态约束补强）+ bug 修复（防止非法重叠时长）。
+  - **User Story（用户视角）**：作为听众，我希望长短不同的串词都能稳定过渡，不会因为重叠时间超过串词长度而出现不自然的压叠或异常边界。
+  - **Acceptance Criteria（验收标准）**：
+    1. 对任意「串词→下一首」边界，最终 crossfade 时长满足：不小于 `voice_music_crossfade_seconds`（在可行前提下）、不大于 `voice_music_intro_align_max_seconds`，且**不大于串词时长**。
+    2. 当 v4.2 估计结果大于串词时长时，系统将 crossfade 自动截断为串词时长，并记录可追溯日志（或调试信息）。
+    3. 该约束仅作用于「串词→歌」边界，不改变「歌→歌」crossfade 既有行为。
+    4. 在极短串词场景下，流程可稳定完成，不出现负时长、异常重叠或崩溃。
+    5. 与现有配置兼容：不新增强制配置项即可运行，旧配置语义保持不变。
+
+- **v4.4（迭代二十二：`estimate_track_intro_seconds` 判定逻辑增强）**：
+  - **问题**：v4.2 的 intro 估计在部分曲目上仍存在稳定性不足：单帧噪声易触发过早判定、首个 onset 可能是装饰音而非主段进入点、固定阈值对不同风格泛化不足，导致 `confidence` 对策略分流价值有限。
+  - **变更目标**：仅优化 `intro_align.py` 中 `estimate_track_intro_seconds` 的**内部判定逻辑**，在不改变上游接口与返回结构（仍为 `intro_seconds / confidence / reason`）的前提下，提高 intro 结束点估计准确性与稳定性。
+  - **核心需求（R1 / R2）**：
+    1. **R1：RMS 连续帧判定（抗噪）**  
+       将“首个超阈值帧”改为“连续 N 帧超阈值才成立”。建议默认：`N=4`、`min_stable_ms≈120`；对前几秒仅出现一次短突增的场景，可设置快速通道放宽连续帧要求，避免过晚。
+    2. **R2：Onset 强度过滤（抗装饰音）**  
+       不直接取第一个 onset；仅接受强度超过分位数阈值（建议 `p70~p80`）的 onset，并要求其后 `~0.3s` 窗口内存在持续能量支持。对低动态曲风（ambient/lofi）可按 RMS 动态范围自适应降低阈值，避免过滤过严。
+  - **功能归类**：优化（算法稳定性与精度提升）。
+  - **User Story（用户视角）**：作为听众，我希望系统识别的 intro 结束点更稳定，让串词叠入音乐的时机更自然，不会忽早忽晚。
+  - **Acceptance Criteria（验收标准）**：
+    1. `estimate_track_intro_seconds` 对外输入输出契约不变：返回字段仍为 `intro_seconds`、`confidence`、`reason`，调用方无需改接口适配。
+    2. R1 生效：能量抬升判定必须满足连续帧/最短稳定时长条件，显著减少瞬态噪声触发的过早判定。
+    3. R2 生效：onset 候选需通过强度阈值与后续能量支持双重过滤，显著降低装饰音误触发。
+    4. 对低动态曲风存在可解释的阈值放宽/自适应路径，避免系统性过晚；失败路径仍有稳定回退与原因标记（`reason` 可区分主要分支）。
+    5. 相比 v4.2 基线，在抽样测试集上“明显过早/过晚”判定占比下降（具体统计口径由实现或测试文档定义）。
+
+- **v4.5（迭代二十三：新增阶段三支持人工微调最终 crossfade）**：
+  - **问题**：intro 识别仍可能不准确，需要用户在最终 mix 前对每段 crossfade 参数进行人工干预；但现有流程将计算与最终混音耦合，缺少“可编辑中间参数 + 最终导出”的拆分步骤。
+  - **变更目标**：
+    1. 将阶段二拆分为两个步骤：新增阶段三，阶段三仅负责根据用户编辑后的参数完成最终混音与导出。
+    2. 阶段二继续负责 TTS 串词文件生成与生成“混音之前的重要参数 JSON”（含 tracks、串词、以及两段音频之间的转场参数，如 crossfade 的 intro/vm_candidate 等字段）。
+    3. 在“最后 mix 之前”，提供用户编辑阶段二输出 JSON 的入口；用户可按意愿调整每段 crossfade 参数，再执行阶段三得到最终音频。
+  - **阶段二（保持不变为主）**：
+    - **输入**：节目策划 snapshot.json 路径、歌曲库路径
+    - **输出**：
+      - 本地保存并返回 TTS 串词文件路径；
+      - “混音之前的重要参数 JSON”（tracks、串词信息、以及转场参数：form=crossfade + intro/vm_candidate 等）。
+  - **阶段三（新增）**：
+    - **输入**：阶段二输出的重要参数 JSON（由用户微调后的版本）
+    - **输出**：最终混音后的音频（`wav` + `mp3`），并保持与阶段二所声明转场语义一致
+  - **功能归类**：**新功能**（流程拆分与可编辑中间产物）+ **优化**（支持人工微调以提升听感一致性）。
+  - **User Story（用户视角）**：作为创作者，我希望在最后导出音频前，能按每段交叉淡入淡出效果自行微调参数；当自动 intro 识别不准时，我能快速修正并得到最终成品。
+  - **Acceptance Criteria（验收标准）**：
+    1. 阶段二输出包含可编辑的“混音参数 JSON”，且字段覆盖 `tracks`、`串词（含 tts 文件路径与串词文本）`、以及两段音频之间的 crossfade 转场参数（如 `intro`、`vm_candidate` 等）。
+    2. 阶段三接口能仅依赖该 JSON 完成最终混音与导出，并且不再依赖阶段二内部不可编辑的中间状态。
+    3. 用户编辑 crossfade 参数后，最终输出在听感上反映用户修改（至少在 crossfade 对齐/重叠时长等维度可验证）。
+    4. 阶段三执行时对 JSON 参数做必要校验；非法值应给出明确错误并中止，不静默降级到旧参数。
+    5. 阶段二输出不被破坏：tts 串词文件生成路径与返回行为保持可用，便于阶段三接入。
+
+- **v4.6（迭代二十四：OpenRouter 可配置 LLM provider）**：
+  - **问题**：经 OpenRouter 调用时，目前仅能切换**模型标识**，无法在配置层显式选择不同 **LLM provider**（路由/供应方），调试不同 provider 与模型组合时需改代码或散落环境变量，效率低。
+  - **变更目标**：在 **`config.yaml`** 中增加 OpenRouter 的 **provider**（及与现有 **model** 并列）配置项，使调试时可快速切换「provider + 模型」组合；请求层读取配置并写入 OpenRouter 所需字段（与官方文档一致）。**语义约定**：`provider` **留空或未配置**时，不向请求强制写入供应方路由字段（或按 OpenRouter 约定省略），由 **OpenRouter 自动选择合适 provider**；`provider` **非空**时，则**按指定 provider** 访问。不改阶段一各 Agent 的业务契约与 `response_format`（v3.4）语义。
+  - **功能归类**：**优化**（可配置性与调试效率）+ **新功能**（显式 provider 选择能力，若此前未暴露）。
+  - **User Story（用户视角）**：作为开发者/创作者，我希望在 `config.yaml` 里改 OpenRouter 的 **model** 即可默认走自动路由；需要对比某家供应方时再把 **provider** 填上，这样我不用改代码就能在「自动 / 指定」两种模式间切换。
+  - **Acceptance Criteria（验收标准）**：
+    1. `config.yaml` 提供可编辑的 OpenRouter **`provider`（可为空，表示自动路由）** 与 **`model`**（字段名由实现约定并在 README 或示例配置中列出），修改后无需改业务代码即可生效。
+    2. 所有经 OpenRouter 的 LLM 请求（含多 agent 各 Agent）统一从配置读取 provider/model，并正确传递给 OpenRouter API。
+    3. **provider 为空**：请求不得因「未填写 provider」而失败；应走 **OpenRouter 自动选择 provider** 的路径（实现上为省略字段或传空值，以 OpenRouter 文档为准）。**provider 非空**：必须按指定值路由；若 OpenRouter 判定 **provider 非法或与 model 不兼容**，返回明确错误信息，不静默回退到未知默认。
+    4. 与 v3.4 的 `response_format` / `json_schema` 严格输出要求兼容，不因新增 provider 配置而破坏结构化输出链路。
+    5. 默认配置下行为与迭代前一致（向后兼容），仅在使用新字段时切换路由。
+
 
 ## 1. 产品背景
 
@@ -496,9 +556,9 @@
 
 | 项目 | 说明 |
 |------|------|
-| **功能（v3.9.1）** | 按 snapshot 将串词与曲目排成单一时间线后施加转场：**歌→串词**无 crossfade；**串词→歌** crossfade；**歌→歌** crossfade；段内 `between_tracks` 串词参与同一套规则。 |
-| **参数** | 歌曲-歌曲 crossfade 维持 6–10 秒量级（可配置）；串词→歌 crossfade 时长可单独配置或与歌-歌共用默认值，以实现自然衔接且不掩盖串词起首。 |
-| **目标** | 消除「先整段歌 crossfade 再插串词」导致的**串词滞后**；在串词清晰起首的前提下，串词结束进入下一首歌有足够过渡。 |
+| **功能（阶段二 + 阶段三，v4.5）** | 阶段二：生成混音所需关键参数 JSON（tracks、串词（含 tts 文件路径等）、以及 crossfade 转场参数）并保存本地中间产物，但不执行最终导出；阶段三：读取（并允许用户微调）该 JSON，完成最终时间线混音与导出（`wav` + `mp3`），保持与 v3.9.1 的转场语义一致：**歌→串词**无 crossfade；**串词→歌** crossfade；**歌→歌** crossfade；段内 `between_tracks` 串词参与同一套规则。 |
+| **参数** | 歌曲-歌曲 crossfade 维持 6–10 秒量级（可配置），串词→歌的 crossfade/对齐点由阶段二写入 JSON 初始值（可结合 librosa intro 估计）并受最小/最大重叠与 `crossfade_seconds <= 串词时长` 限幅约束；用户在进入阶段三前可按需覆盖 JSON 中的 crossfade 参数。 |
+| **目标** | 以可编辑的参数 JSON 解耦“自动估计”和“最终混音”，当 intro 识别不准确时允许用户修正 crossfade，使串词与下一首歌曲过渡更自然、导出更稳定。 |
 | **MVP 范围** | 不包含 beatmatching、key 匹配 |
 | **优先级** | P0 |
 
@@ -507,7 +567,7 @@
 | 项目 | 说明 |
 |------|------|
 | **流程** | AI 生成串词 → TTS 生成语音 → **按 plan 的 segment 所包含歌曲时间线计算插入点（串词在 segment 之前）** |
-| **TTS 供应商（v1.4）** | 默认使用 ElevenLabs（替代 Edge TTS）；具体调用路径可为官方 SDK 或 HTTP API（待最终实现验证）。 |
+| **TTS 供应商（v4.1）** | 支持 `edge` / `elevenlabs` / `minimax`；由命令参数选择供应商。MiniMax 采用同步语音合成（HTTP 非流式）。 |
 | **要求（语义时间线 + v3.9.1 混音）** | 主持语音期间背景音乐默认静音；整期顺序为 串词1 - segment 1 - …。**具体「串词↔歌」音量与 crossfade 由阶段二 mixer 按 v3.9.1 执行**（歌→串词无 crossfade；串词→歌、歌→歌有 crossfade）。 |
 | **定位策略（关键）** | 串词_i 的开始时间以 plan 中 segment_i 对应的**第一首歌播放开始边界**为准；不再使用 `target duration seconds` 预估插入位置。第一个串词在 episode 开头，最后一个串词在最后一个 segment 之前。 |
 | **优先级** | P0 |
@@ -524,7 +584,7 @@
 
 | 项目 | 说明 |
 |------|------|
-| **输出** | 完整 MP3 文件，时长符合目标 |
+| **输出** | 最终混音音频（`wav` + `mp3`），时长符合目标 |
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
@@ -544,7 +604,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v3.9.1）
+### 6.4 当前版本成功指标（v4.6）
 
 | 指标 | 目标 |
 |------|------|
@@ -557,6 +617,12 @@
 | **阶段一产物统一性** | 单/多 agent 均产出一致文件集（`state` + `episode_id` 新文件），且不再产出 `playlist` 文件 |
 | **阶段二输入契约对齐** | 阶段二可直接消费 `<episode_id>.json` 完成制作，避免依赖旧 EpisodePlan 格式转换 |
 | **串词 / 歌曲转场正确性** | 混音结果符合 v3.9.1 三类转场规则，主观试听无「下一首已播一小段串词才来」的系统性错位 |
+| **TTS 供应商可切换性** | 支持在 `edge` / `elevenlabs` / `minimax` 间切换，且模型可由 `.env` 配置，无需改业务代码 |
+| **串词→歌 intro 对齐** | 在可用分析路径下，长串词尾部有合理的 intro 垫底、收尾与主歌衔接更自然；失败时稳定回退 |
+| **串词→歌重叠合法性** | 任意边界均满足 `crossfade <= 串词时长`，避免出现 crossfade 大于串词时长导致的异常混音 |
+| **intro 估计稳定性** | `estimate_track_intro_seconds` 在噪声/装饰音场景下误触发率下降，`confidence/reason` 可用于后续策略分流 |
+| **阶段三可编辑混音参数** | 用户可在最终导出前基于阶段二输出 JSON 微调 crossfade 参数，并通过阶段三获得最终 `wav/mp3` |
+| **OpenRouter 可配置 provider** | 在 `config.yaml` 中可配置 `provider`（可留空走自动路由）与 `model`，便于调试且请求层行为一致 |
 
 ---
 
@@ -665,7 +731,7 @@ Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算�
 
 - **版权**：MVP 阶段不重点考虑，用户需确保音乐库中的音乐具有合法使用权
 - **技术栈**：以 Python 为主，音频处理可使用 librosa、pydub、essentia 等库
-- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；TTS 当前主路径为 ElevenLabs（替代 Edge TTS），可保留 OpenAI TTS/Coqui 作为后续备选
+- **AI 服务**：LLM 可选 OpenAI、Claude、本地模型等；经 **OpenRouter** 时，`model` 与可选的 **`provider`**（**留空则自动路由**，非空则指定供应方）可在 **`config.yaml`** 中配置以便调试；TTS 支持 Edge / ElevenLabs / MiniMax，模型通过 `.env` 配置选择，MiniMax 定制参数本轮使用代码内默认值
 
 ---
 

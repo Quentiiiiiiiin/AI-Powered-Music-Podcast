@@ -9,9 +9,45 @@ import httpx
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.logging_config import log_timing
-from podcast_ai.infra.config import LLMConfig, Settings, load_settings
+from podcast_ai.infra.config import LLMConfig, Settings, is_openrouter_base_url, load_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _openrouter_provider_object_from_config(raw: str) -> dict[str, Any]:
+    """
+    将 `llm.openrouter_provider` 解析为 OpenRouter `provider` 对象。
+
+    - 以 `{` 开头：按 JSON object 解析（需与 OpenRouter 文档字段一致，如 only/order 等）。
+    - 否则：视为单个供应方 slug，实现为 ``{"only": [slug]}``（显式限定路由）。
+    """
+    s = raw.strip()
+    if not s:
+        raise ValueError("openrouter_provider 为空")
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"openrouter_provider 不是合法 JSON object：{exc}") from exc
+        if not isinstance(obj, dict):
+            raise ValueError("openrouter_provider JSON 顶层必须是 object")
+        return obj
+    return {"only": [s]}
+
+
+def _summarize_provider_for_log(provider: Any) -> Any:
+    """日志脱敏：保留键与大致结构，避免打印过长列表/嵌套。"""
+    if not isinstance(provider, dict):
+        return "<non-dict>"
+    out: dict[str, Any] = {}
+    for k, v in provider.items():
+        if isinstance(v, (list, tuple)):
+            out[k] = f"<list len={len(v)}>"
+        elif isinstance(v, dict):
+            out[k] = "<dict>"
+        else:
+            out[k] = v
+    return out
 
 
 class LLMClient(ABC):
@@ -68,6 +104,15 @@ class OpenAICompatibleLLMClient(LLMClient):
         }
         payload.update(kwargs)
 
+        # v4.6：OpenRouter 且配置了供应方路由时写入官方 `provider` 字段（在 kwargs 之后注入，避免被覆盖）。
+        if is_openrouter_base_url(self._cfg.base_url) and "provider" not in payload:
+            raw_or = (self._cfg.openrouter_provider or "").strip()
+            if raw_or:
+                try:
+                    payload["provider"] = _openrouter_provider_object_from_config(raw_or)
+                except ValueError as exc:
+                    raise AIServiceError(f"llm.openrouter_provider 配置无效：{exc}") from exc
+
         # 日志中打印脱敏后的请求信息（不包含 api_key、不展开完整 json_schema）
         safe_payload = dict(payload)
         if "response_format" in safe_payload:
@@ -81,6 +126,8 @@ class OpenAICompatibleLLMClient(LLMClient):
                     "schema": "<omitted>",
                 },
             }
+        if "provider" in safe_payload:
+            safe_payload["provider"] = _summarize_provider_for_log(safe_payload["provider"])
         try:
             preview = json.dumps(safe_payload, ensure_ascii=False)[:512]
         except Exception:  # noqa: BLE001
@@ -101,6 +148,8 @@ class OpenAICompatibleLLMClient(LLMClient):
                         low = body_preview.lower()
                         if "response_format" in low or "json_schema" in low:
                             hint = "（可能与 response_format/结构化输出不被当前网关或模型支持有关）"
+                        elif "provider" in low or "routing" in low:
+                            hint = "（可能与 OpenRouter provider 路由与 model 不兼容或 slug 非法有关；请核对 llm.openrouter_provider 与官方文档）"
                     raise AIServiceError(f"LLM 请求失败（HTTP {resp.status_code}）：{body_preview}{hint}")
 
                 data = resp.json()

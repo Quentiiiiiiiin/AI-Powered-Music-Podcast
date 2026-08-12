@@ -487,6 +487,109 @@ def test_v14_create_episode_accepts_tts_client_parameter() -> None:
     """create_episode 支持注入 tts_client，便于 mock ElevenLabs 或回归单测。"""
     sig = inspect.signature(create_episode)
     assert "tts_client" in sig.parameters
+    assert "tts_provider" in sig.parameters
+
+
+@patch("podcast_ai.core.pipeline.Exporter.export_episode")
+@patch("podcast_ai.core.pipeline.MasteringService.apply_mastering")
+@patch("podcast_ai.core.pipeline.Mixer.build_mix")
+@patch("podcast_ai.core.pipeline.VoiceoverService.generate_voiceovers_from_snapshot")
+@patch("podcast_ai.core.pipeline.split_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.compute_segment_boundaries_from_snapshot")
+@patch("podcast_ai.core.pipeline.select_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+def test_v41_create_episode_tts_provider_override_applies_to_service_settings(
+    mock_scan: object,
+    mock_select: object,
+    mock_boundaries: object,
+    mock_split: object,
+    mock_generate_voiceovers: object,
+    mock_build_mix: object,
+    mock_mastering: object,
+    mock_export: object,
+    tmp_path: Path,
+) -> None:
+    """v4.1：create_episode 传入 tts_provider 时，应覆盖 settings.tts.provider。"""
+    from podcast_ai.core.models import EpisodeResult, SegmentBoundary, SelectedTrack, Track, TrackMetadata, TrackWithMetadata
+    from podcast_ai.infra.config import AppConfig, CacheConfig, Settings
+
+    output_dir = tmp_path / "out"
+    music_dir = tmp_path / "music"
+    output_dir.mkdir(parents=True)
+    music_dir.mkdir()
+    t1 = music_dir / "a.wav"
+    _export_short_wav(t1, 1000)
+    episode_id = "ep_provider"
+    snapshot = {
+        "schema": "v3.0",
+        "meta": {
+            "request_id": "r_provider",
+            "theme": "provider test",
+            "language": "zh-CN",
+            "target_duration_seconds": 600,
+        },
+        "segments": [
+            {
+                "segment_id": "seg_01",
+                "name": "开场",
+                "target_duration_seconds": 300,
+                "playlists": [{"track": "A", "artist": "X"}],
+                "script": {"segment_intro": "", "between_tracks": []},
+            }
+        ],
+    }
+    snapshot_path = output_dir / "episodes" / episode_id / "plans" / f"{episode_id}.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    selected = [
+        SelectedTrack(
+            track=Track(id="t1", file_path=t1, title="A", artist="X"),
+            start_time_in_episode=0.0,
+            end_time_in_episode=1.0,
+            effective_duration=1.0,
+        )
+    ]
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=t1, title="A", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=1.0, bpm=100.0, genre=None),
+        )
+    ]
+    mock_select.return_value = selected
+    mock_boundaries.return_value = [SegmentBoundary(music_start=0.0, music_end=1.0)]
+    mock_split.return_value = [selected]
+    mock_generate_voiceovers.return_value = []
+    mock_build_mix.return_value = MagicMock(
+        mix_path=output_dir / "episodes" / episode_id / "mix" / "mix.wav",
+        actual_duration_seconds=1.0,
+        track_count=1,
+        voiceover_count=0,
+    )
+    mock_mastering.side_effect = lambda mix_path, output_path, _config: output_path
+    mock_export.return_value = EpisodeResult(
+        episode_id=episode_id,
+        audio_path=output_dir / "episodes" / episode_id / "final" / f"{episode_id}.mp3",
+        actual_duration_seconds=1,
+        show_notes="ok",
+        tracks=[],
+    )
+
+    captured_provider: dict[str, str] = {}
+
+    def _check_provider(settings):
+        captured_provider["value"] = settings.tts.provider
+        return _FixedFileTTSClient(t1)
+
+    with patch("podcast_ai.modules.voiceover.tts_service.get_default_tts_client", side_effect=_check_provider):
+        create_episode(
+            snapshot_path,
+            music_dir,
+            settings=Settings(app=AppConfig(output_dir=str(output_dir)), cache=CacheConfig(enabled=False)),
+            tts_provider="minimax",
+        )
+
+    assert captured_provider["value"] == "minimax"
 
 
 def test_v39_create_episode_invalid_snapshot_raises_clear_error(tmp_path: Path) -> None:
@@ -917,4 +1020,385 @@ def test_v21_create_episode_passes_voice_music_crossfade_to_mixer(
     _args, kwargs = mock_build_mix.call_args
     cfg = _args[2]
     assert cfg.voice_music_crossfade_seconds == vm
+
+
+# ---------- v4.5：阶段二 JSON 合约 + 阶段三严格校验/覆盖生效 ----------
+
+
+@patch("podcast_ai.core.pipeline.LibraryScanner.scan_or_load_cache")
+@patch("podcast_ai.core.pipeline.select_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.compute_segment_boundaries_from_snapshot")
+@patch("podcast_ai.core.pipeline.split_tracks_by_snapshot")
+@patch("podcast_ai.core.pipeline.VoiceoverService.generate_voiceovers_from_snapshot")
+@patch("podcast_ai.core.pipeline.Mixer.build_mix_params")
+def test_v45_stage2_create_episode_stage2_writes_mix_params_json_schema(
+    mock_build_mix_params: object,
+    mock_generate_voiceovers: object,
+    mock_split: object,
+    mock_compute_boundaries: object,
+    mock_select_tracks: object,
+    mock_scan: object,
+    tmp_path: Path,
+) -> None:
+    """
+    v4.5 stage2 contract：
+    - 输出文件存在
+    - MixParamsJSON 的关键字段存在
+    - transitions 至少包含 1 条 voice->music 覆盖条目
+    """
+    from podcast_ai.core.models import (
+        MixParamsJSON,
+        MixParamsTransition,
+        SelectedTrack,
+        Track,
+        TrackMetadata,
+        TrackWithMetadata,
+        VoiceoverSegment,
+    )
+    from podcast_ai.core.pipeline import create_episode_stage2
+    from podcast_ai.infra.config import (
+        AppConfig,
+        AudioConfig,
+        CacheConfig,
+        ElevenLabsConfig,
+        Settings,
+        TTSConfig,
+    )
+    from podcast_ai.infra.storage.paths import get_mix_params_output_path
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+
+    episode_id = "ep_v45_stage2_contract"
+    plan_id = "plan_v45_stage2_contract"
+
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    track_path = music_dir / "Track A.wav"
+    track_path.write_bytes(b"")  # 仅用于序列化 path，不参与实际音频加载
+
+    # snapshot：只用到 segment_id/name/host_script 与 target_duration_seconds
+    plan = EpisodePlan(
+        segments=[
+            EpisodeSegment(
+                name="开场",
+                target_duration_seconds=120,
+                bpm_range=(90, 110),
+                mood="chill",
+                host_script="intro",
+                target_playlist=[
+                    PlaylistItem(
+                        segment_name="开场",
+                        recommended_tracks=["Track A"],
+                        search_hints={},
+                    )
+                ],
+            ),
+        ],
+        target_duration_seconds=600,
+        overall_bpm_range=(90, 120),
+        style_description="v45 stage2 contract",
+        plan_id=plan_id,
+    )
+    snapshot_path = _save_stage2_snapshot_from_plan(output_dir, episode_id, plan)
+
+    selected_track = SelectedTrack(
+        track=Track(id="t1", file_path=track_path, title="Track A", artist="X"),
+        start_time_in_episode=0.0,
+        end_time_in_episode=5.0,
+        effective_duration=5.0,
+    )
+
+    mock_scan.return_value = [
+        TrackWithMetadata(
+            track=Track(id="t1", file_path=track_path, title="Track A", artist="X"),
+            metadata=TrackMetadata(track_id="t1", duration_seconds=5.0, bpm=95.0, genre=None),
+        )
+    ]
+    mock_select_tracks.return_value = [selected_track]
+    mock_compute_boundaries.return_value = [
+        SegmentBoundary(music_start=0.0, music_end=5.0)  # type: ignore[name-defined]
+    ]
+    mock_split.return_value = [[selected_track]]
+
+    # voiceover：不参与实际混音，只需保证 insert_time 是合法锚点（0）
+    voiceover = VoiceoverSegment(
+        segment_id="seg_01",
+        text="intro",
+        audio_path=tmp_path / "vo.wav",
+        insert_time_in_episode=0.0,
+    )
+    mock_generate_voiceovers.return_value = [voiceover]
+
+    transition = MixParamsTransition(
+        voice_segment_id="seg_01",
+        next_music_first_track_file_path=track_path,
+        intro_seconds=1.0,
+        confidence=0.8,
+        reason="ok",
+        vm_candidate_seconds=3.0,
+        vm_seconds=3.0,
+    )
+    mock_build_mix_params.return_value = [transition]
+
+    settings = Settings(
+        app=AppConfig(output_dir=str(output_dir)),
+        audio=AudioConfig(crossfade_seconds=0.0, voice_music_crossfade_seconds=3.0, voice_music_intro_align_max_seconds=6.0),
+        cache=CacheConfig(enabled=False),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+
+    mix_params_json_path = create_episode_stage2(
+        snapshot_path=snapshot_path,
+        music_dir=music_dir,
+        settings=settings,
+        topic="T",
+        language="zh",
+    )
+
+    assert mix_params_json_path.exists()
+    assert mix_params_json_path.name.endswith("_mix_params.json")
+
+    mix_params = MixParamsJSON.model_validate_json(mix_params_json_path.read_text(encoding="utf-8"))
+    assert mix_params.tracks and mix_params.voiceovers and mix_params.transitions
+    assert mix_params.transitions[0].voice_segment_id == "seg_01"
+    assert mix_params.transitions[0].vm_seconds == 3.0
+
+    expected_path = get_mix_params_output_path(snapshot_path.parent.parent, episode_id)
+    assert mix_params_json_path == expected_path
+
+
+@_ffmpeg_required
+@patch("podcast_ai.core.pipeline.Exporter.export_episode")
+@patch.object(MasteringService, "apply_mastering")
+def test_v45_stage3_rejects_illegal_vm_seconds(
+    mock_master: object,
+    mock_exporter: object,
+    tmp_path: Path,
+) -> None:
+    """stage3：transitions.vm_seconds 超出可行重叠上限必须失败。"""
+    from podcast_ai.core.models import (
+        EpisodeResult,
+        MixParamsJSON,
+        MixParamsTransition,
+        MixPlanSegment,
+        SelectedTrack,
+        Track,
+        VoiceoverSegment,
+    )
+    from podcast_ai.core.pipeline import finalize_episode_stage3
+    from podcast_ai.infra.config import (
+        AppConfig,
+        AudioConfig,
+        CacheConfig,
+        ElevenLabsConfig,
+        Settings,
+        TTSConfig,
+    )
+
+    # stage3 会渲染 wav，但 mp3/show-notes 我们直接 stub
+    mock_master.side_effect = lambda mix_path, output_path, _config: output_path
+    mock_exporter.side_effect = lambda **kwargs: EpisodeResult(
+        episode_id=kwargs["episode_id"],
+        audio_path=kwargs["final_audio_path"],
+        actual_duration_seconds=0,
+        show_notes="",
+        tracks=kwargs["tracks"],
+    )
+
+    episode_id = "ep_v45_stage3_illegal_vm"
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    episode_root = output_dir / "episodes" / episode_id
+    mix_params_dir = episode_root / "mix_params"
+    mix_params_dir.mkdir(parents=True)
+
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    track_path = music_dir / "Track A.wav"
+    _export_short_wav(track_path, 5_000)  # 5s
+
+    vo_dir = tmp_path / "voice"
+    vo_dir.mkdir()
+    vo_path = vo_dir / "seg_intro.wav"
+    _export_short_wav(vo_path, 2_000)  # 2s
+
+    selected_track = SelectedTrack(
+        track=Track(id="t1", file_path=track_path, title="Track A", artist="X"),
+        start_time_in_episode=0.0,
+        end_time_in_episode=5.0,
+        effective_duration=5.0,
+    )
+
+    voiceover = VoiceoverSegment(
+        segment_id="seg_01",
+        text="intro",
+        audio_path=vo_path,
+        insert_time_in_episode=0.0,
+    )
+
+    # 由于 voice_len=2s, 可行上限 feasible_cap=2s，因此 vm_seconds=3s 必须失败
+    transition = MixParamsTransition(
+        voice_segment_id="seg_01",
+        next_music_first_track_file_path=track_path,
+        intro_seconds=None,
+        confidence=0.0,
+        reason="",
+        vm_candidate_seconds=3.0,
+        vm_seconds=3.0,
+    )
+
+    mix_params = MixParamsJSON(
+        meta={
+            "schema_version": "v4.5",
+            "theme": "T",
+            "language": "zh",
+            "target_duration_seconds": 600,
+            "request_id": "req_x",
+        },
+        plan_segments=[
+            MixPlanSegment(
+                name="开场",
+                target_duration_seconds=120,
+                mood="",
+                host_script="",
+                target_playlist=[],
+            )
+        ],
+        style_description="T",
+        tracks=[selected_track],
+        voiceovers=[voiceover],
+        transitions=[transition],
+    )
+
+    mix_params_path = mix_params_dir / f"{episode_id}_mix_params.json"
+    mix_params_path.write_text(mix_params.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8")
+
+    settings = Settings(
+        app=AppConfig(output_dir=str(output_dir)),
+        audio=AudioConfig(
+            crossfade_seconds=0.0,
+            voice_music_crossfade_seconds=3.0,
+            voice_music_intro_align_enabled=False,
+            voice_music_intro_align_max_seconds=10.0,
+            loudness_target_lufs=-14.0,
+        ),
+        cache=CacheConfig(enabled=False),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+
+    with pytest.raises(PodcastAIError):
+        finalize_episode_stage3(mix_params_json_path=mix_params_path, settings=settings, topic="T")
+
+
+@_ffmpeg_required
+@patch("podcast_ai.core.pipeline.Exporter.export_episode")
+@patch.object(MasteringService, "apply_mastering")
+def test_v45_stage3_vm_override_changes_wav_duration(
+    mock_master: object,
+    mock_exporter: object,
+    tmp_path: Path,
+) -> None:
+    """stage3：修改 transitions.vm_seconds 应改变最终 wav 时长。"""
+    from podcast_ai.core.models import EpisodeResult, MixParamsJSON, MixParamsTransition, MixPlanSegment
+    from podcast_ai.core.pipeline import finalize_episode_stage3
+    from podcast_ai.core.models import SelectedTrack, Track, VoiceoverSegment
+    from podcast_ai.infra.config import AppConfig, AudioConfig, CacheConfig, ElevenLabsConfig, Settings, TTSConfig
+
+    mock_master.side_effect = lambda mix_path, output_path, _config: output_path
+    mock_exporter.side_effect = lambda **kwargs: EpisodeResult(
+        episode_id=kwargs["episode_id"],
+        audio_path=kwargs["final_audio_path"],
+        actual_duration_seconds=0,
+        show_notes="",
+        tracks=kwargs["tracks"],
+    )
+
+    episode_id = "ep_v45_stage3_vm_override"
+    output_dir = tmp_path / "out"
+    episode_root = output_dir / "episodes" / episode_id
+    mix_params_dir = episode_root / "mix_params"
+    mix_params_dir.mkdir(parents=True)
+
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    track_path = music_dir / "Track A.wav"
+    _export_short_wav(track_path, 5_000)  # 5s music
+
+    vo_dir = tmp_path / "voice"
+    vo_dir.mkdir()
+    vo_path = vo_dir / "seg_intro.wav"
+    _export_short_wav(vo_path, 2_000)  # 2s voice
+
+    selected_track = SelectedTrack(
+        track=Track(id="t1", file_path=track_path, title="Track A", artist="X"),
+        start_time_in_episode=0.0,
+        end_time_in_episode=5.0,
+        effective_duration=5.0,
+    )
+    voiceover = VoiceoverSegment(
+        segment_id="seg_01",
+        text="intro",
+        audio_path=vo_path,
+        insert_time_in_episode=0.0,
+    )
+
+    plan_segments = [MixPlanSegment(name="开场", target_duration_seconds=120, mood="", host_script="", target_playlist=[])]
+
+    settings = Settings(
+        app=AppConfig(output_dir=str(output_dir)),
+        audio=AudioConfig(
+            crossfade_seconds=0.0,
+            voice_music_crossfade_seconds=3.0,
+            voice_music_intro_align_enabled=False,
+            voice_music_intro_align_max_seconds=10.0,
+            loudness_target_lufs=-14.0,
+        ),
+        cache=CacheConfig(enabled=False),
+        tts=TTSConfig(provider="elevenlabs", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v")),
+    )
+
+    def _write_and_render(vm_seconds: float) -> float:
+        mix_params = MixParamsJSON(
+            meta={
+                "schema_version": "v4.5",
+                "theme": "T",
+                "language": "zh",
+                "target_duration_seconds": 600,
+                "request_id": "req_x",
+            },
+            plan_segments=plan_segments,
+            style_description="T",
+            tracks=[selected_track],
+            voiceovers=[voiceover],
+            transitions=[
+                MixParamsTransition(
+                    voice_segment_id="seg_01",
+                    next_music_first_track_file_path=track_path,
+                    intro_seconds=None,
+                    confidence=0.0,
+                    reason="",
+                    vm_candidate_seconds=vm_seconds,
+                    vm_seconds=vm_seconds,
+                )
+            ],
+        )
+        mix_params_path = mix_params_dir / f"{episode_id}_mix_params.json"
+        mix_params_path.write_text(mix_params.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8")
+
+        finalize_episode_stage3(mix_params_json_path=mix_params_path, settings=settings, topic="T")
+
+        # wav 输出：{episode_root}/mix/mix.wav
+        from podcast_ai.infra.storage.paths import get_mix_output_path
+
+        wav_path = get_mix_output_path(episode_root, ext="wav")
+        dur_s = len(load_audio(wav_path)) / 1000.0
+        return dur_s
+
+    dur1 = _write_and_render(vm_seconds=1.0)  # 2+5-1 = 6s
+    assert abs(dur1 - 6.0) <= 0.08
+
+    dur2 = _write_and_render(vm_seconds=1.5)  # 2+5-1.5 = 5.5s
+    assert abs(dur2 - 5.5) <= 0.08
+    assert dur1 - dur2 >= 0.4
 

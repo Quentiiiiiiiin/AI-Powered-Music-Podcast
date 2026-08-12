@@ -1,102 +1,92 @@
-## 版本 v3.9.1（迭代十八：Mixer 串词 / 歌曲转场与 snapshot 对齐）
+﻿## 版本 v4.6（迭代二十四：OpenRouter 可配置 LLM provider）
 
-基于 PRD v3.9.1：阶段二混音**不再**采用「先把全部歌曲 `crossfade_concat` 串完，再按 `insert_time` 往音乐时间线里插串词」的顺序（该顺序会导致「下一首已起一小段串词才接上」）；改为以 `<episode_id>.json` snapshot 与阶段二已生成的 `VoiceoverSegment` 为**单一时间线来源**，按「串词 ↔ 曲目」真实顺序编排，并统一三类转场：
+基于 PRD v4.6：在经 **OpenRouter**（`llm.base_url` 指向 `openrouter.ai`）调用时，除现有 **`model`** 外，增加可在 **`config.yaml`** 中编辑的 **OpenRouter 供应方路由**配置；请求层读取后写入 OpenRouter **官方文档约定的** `chat/completions` 请求体字段（与 `messages`、`response_format` 等并列）。
 
-1. **歌 → 串词**：无 crossfade（硬切 / 自然结束接人声，串词开头清晰）。
-2. **串词 → 歌**：crossfade（串词尾与下一首进入重叠过渡，沿用 `voice_music_crossfade_seconds` 语义）。
-3. **歌 → 歌**：crossfade（沿用 `crossfade_seconds`）。
+**语义约定（与 PRD 对齐）**：
+- **留空 / 未配置**：请求体**不**携带 OpenRouter 的 `provider` 路由对象（或按官方文档等价省略），由 OpenRouter **自动选择** provider；不得因未填而报错。
+- **非空**：按配置路由；若 OpenRouter 返回 **provider 非法或与 model 不兼容** 等错误，**原样透出**可读错误，**不静默回退**到未知默认。
 
-段内 `between_tracks` 与段首 `segment_intro` 均走同一套相邻边界规则。与 v3.9 输入契约兼容：仍以 `<episode_id>.json` 为主输入，不新增计划文件格式。
+**约束**：不改变阶段一各 Agent 业务契约；**v3.4** `response_format` / `json_schema` 严格输出语义保持不变。
 
 ---
 
-### Task 01 - 现状审计与单一编排路径设计（Mixer）
-- **Task name**: v3.9.1 - Mixer 编排路径收敛设计
-- **目标**: 梳理 `src/podcast_ai/modules/mixing/mixer.py` 内现有分支（`plan` 分段拼接、`_insert_voiceovers_on_music_timeline`、无主持全曲 crossfade），明确 v3.9.1 后**唯一主路径**与可删除/合并的冗余分支。
+### Task 01 - 配置模型与命名（避免与 `llm.provider` 混淆）
+- **Task name**: v4.6 - LLMConfig 增加 OpenRouter 路由字段
+- **目标**: 在 `LLMConfig` 增加**独立字段**（建议 `openrouter_provider: str = ""`），表示 OpenRouter 的供应方路由；**不要**复用现有 `llm.provider`（该字段表示客户端实现类型，如 `openai_compatible`）。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 对照 PRD 示例时间片顺序，写出目标状态机：相邻块类型 `(music|voice)` → 应用哪条转场规则。
-  - 确认与 `pipeline.create_episode` 当前调用方式一致：`build_mix(..., plan=None)` 且 `voiceovers` 已带 `insert_time_in_episode`（由 `VoiceoverService.generate_voiceovers_from_snapshot` 产出）。
-  - 输出一页内可执行的伪代码/步骤列表（不落文档文件也可，写在 `Mixer.build_mix` docstring 内即可）。
-- **Input**: 当前 `mixer.py` + PRD v3.9.1
-- **Output**: 明确「删哪些分支、新主路径如何拼」
+  - 支持 `config.yaml` 与 `.env` 嵌套（如 `PODCAST_AI_LLM__OPENROUTER_PROVIDER`）加载。
+  - 默认值空串，保证「迭代前默认行为」：不传 OpenRouter `provider` 对象。
+- **Input**: PRD v4.6 验收 1、5
+- **Output**: 可序列化、可校验的配置字段
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - （只读）`src/podcast_ai/core/pipeline.py`
-- **Estimated complexity**: S（1 小时）
+  - `src/podcast_ai/infra/config.py`
+- **Estimated complexity**: S（0.5–1 小时）
 
 ---
 
-### Task 02 - 从「曲目时间线 + 串词时间点」构造有序音频块序列
-- **Task name**: v3.9.1 - 时间线展开为 music/voice 块列表
-- **目标**: 将 `SelectedTrack`（全曲顺序）与按 `insert_time_in_episode` 排序的 `VoiceoverSegment` 合并为**严格时间递增**的块序列，每块为已 `load_audio`+`simple_normalize` 的 `AudioSegment`，并携带块类型（music/voice）。
+### Task 02 - 请求层：按 OpenRouter 文档组装 `provider` 请求体
+- **Task name**: v4.6 - OpenAICompatibleLLMClient 写入 provider
+- **目标**: 在 `OpenAICompatibleLLMClient.generate` 构建 `payload` 时：若 `base_url` 判定为 OpenRouter 且 `openrouter_provider` 非空，则附加官方约定的 **`provider` 对象**（例如 `only` / `order` 等，以实现为准并对照当前 OpenRouter 文档）；否则**完全不加入** `provider` 键。
 - **类型**: backend
 - **依赖关系**: Task 01
 - **Description**:
-  - 在 `mixer.py` 内新增小函数（示例）：`_build_ordered_blocks_from_tracks_and_voiceovers(selected_tracks, voiceovers) -> list[tuple[Literal[\"music\",\"voice\"], AudioSegment]]`。
-  - 规则：按 `insert_time` 将 voice 插入**全局曲目时间线**的正确位置（与 snapshot 语义一致：串词不应落在「下一首已开始」之后）。
-  - 若 `insert_time` 冲突或越界，抛 `ValueError`/`PodcastAIError` 并带 segment_id / insert_time。
-- **Input**: `selected_tracks`、`voiceovers`
-- **Output**: 有序块列表
+  - 非 OpenRouter 网关（`base_url` 不含 openrouter）时，**忽略** `openrouter_provider`，避免向非 OpenRouter 服务发送未知字段。
+  - 脱敏日志：`safe_payload` 中对 `provider` 做摘要（避免日志爆炸），与现有 `response_format` 脱敏风格一致。
+  - `kwargs`（含各 Agent 传入的 `response_format`）与 `model`/新增字段合并顺序保持不变，满足 PRD 验收 4。
+- **Input**: `src/podcast_ai/infra/llm_client.py`、OpenRouter 官方 provider routing 文档
+- **Output**: 所有经该客户端的 OpenRouter 请求统一携带正确 `provider` 行为
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-- **Estimated complexity**: M（2-3 小时）
+  - `src/podcast_ai/infra/llm_client.py`
+- **Estimated complexity**: M（1.5–2.5 小时）
 
 ---
 
-### Task 03 - 重构 `Mixer.build_mix`：按相邻块类型统一施加三条转场规则
-- **Task name**: v3.9.1 - 单一 `build_mix` 主路径
-- **目标**: 用 Task 02 的块序列，自左向右拼接；对每一对相邻块 `(prev, next)` 仅按类型选择：`music+voice` 硬接、`voice+music` 用现有 `_join_voice_to_music_fade_music_only`、`music+music` 用 `crossfade_concat` 的两段等价拼接（或抽 2 段专用 helper，避免整轨先拼）。
+### Task 03 - 错误信息与向后兼容验收
+- **Task name**: v4.6 - Provider 相关 4xx 提示与兼容
+- **目标**: 当 OpenRouter 因 `provider` 与 `model` 不兼容返回 400 等错误时，错误信息足够定位（可附带响应体片段，已有逻辑上扩展即可）；**provider 为空**路径下现有成功调用不受影响（PRD 验收 3、5）。
 - **类型**: backend
 - **依赖关系**: Task 02
 - **Description**:
-  - **删除/停用**「先 `crossfade_concat(track_audios)` 再 `_insert_voiceovers_on_music_timeline`」分支（PRD 验收 1 明确禁止该顺序）。
-  - `voice_music_crossfade_seconds` 仅用于 **voice→music**；`crossfade_seconds` 仅用于 **music→music**；**music→voice** 禁止叠化。
-  - 无 `voiceovers` 时保留「全曲 music→music crossfade」短路径（可复用现有逻辑）。
-- **Input**: 有序块序列 + `AudioRenderConfig`
-- **Output**: 最终 `AudioSegment` 混音结果
+  - 仅在确有必要时扩展 `AIServiceError` 提示文案（避免过度分支）。
+  - 确认多 Agent 路径均通过 `get_default_llm_client` → 同一 `generate`，无旁路重复实现。
+- **Input**: 现有 `AIServiceError` 抛出点
+- **Output**: 调试时可读、空 provider 不回归
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - `src/podcast_ai/infra/audio_backend.py`（仅复用 `crossfade_concat` / `export_audio` 等，尽量不扩展）
-- **Estimated complexity**: L（3 小时）
+  - `src/podcast_ai/infra/llm_client.py`
+  - （只读核对）`src/podcast_ai/modules/theme/*_agent.py`、`llm_planner.py`
+- **Estimated complexity**: S（0.5–1 小时）
 
 ---
 
-### Task 04 - 冗余清理与接口收敛（保持简洁）
-- **Task name**: v3.9.1 - 删除旧编排分支与死代码
-- **目标**: 在 Task 03 主路径稳定后，移除不再被 snapshot 阶段二调用的冗余实现，降低维护成本。
+### Task 04 - 示例配置与文档
+- **Task name**: v4.6 - README / init-config 示例
+- **目标**: 在 `README.md` 与 `cli.py` 内 `_INIT_CONFIG_YAML` 的 `llm:` 段补充 `openrouter_provider`（注释说明：留空=自动路由；非空=指定供应方 slug，具体形态以 OpenRouter 文档为准）。
 - **类型**: backend
-- **依赖关系**: Task 03
+- **依赖关系**: Task 01
 - **Description**:
-  - 删除或内联：`_insert_voiceovers_on_music_timeline`、`_concat_parts_with_voice_music_crossfade`、`_split_tracks_into_groups` 等若已无任何调用路径。
-  - 移除 `Mixer.build_mix` 的 `plan: Optional[EpisodePlan]` 参数（若全局已无调用方）；或保留但标记弃用并确保 `pipeline` 不再传入——**优先删除**以符合「去除冗余」。
-  - 清理 `from podcast_ai.modules.selection.selector import split_tracks_by_plan` 等未使用 import。
-  - 同步更新 `pipeline.create_episode` 中对 `build_mix` 的调用签名（若 Task 04 删除参数）。
-- **Input**: 全仓库 rg 引用检查
-- **Output**: `mixer.py` 更短、单一路径
+  - 若仓库存在 `config.example.yaml` / `.env.example`，同步一行说明即可，不展开长篇文档。
+- **Input**: PRD 验收 1
+- **Output**: 用户可复制即用的最小示例
 - **Files involved**:
-  - `src/podcast_ai/modules/mixing/mixer.py`
-  - `src/podcast_ai/core/pipeline.py`
-  - `tests/test_mixing.py`（若签名变更）
-- **Estimated complexity**: S（1-2 小时）
+  - `README.md`
+  - `src/podcast_ai/cli.py`
+  - （若存在）`config.example.yaml`、`.env.example`
+- **Estimated complexity**: S（0.5 小时）
 
 ---
 
-### Task 05 - 单测：锁定三类转场与「禁止先拼全曲再插词」
-- **Task name**: v3.9.1 - Mixer 行为回归测试
-- **目标**: 用可控 stub（静音/短音频或 mock `load_audio`）验证：相邻边界应用正确；**不再**出现「整段音乐先 crossfade 再插入串词」的代码路径（可通过 monkeypatch `crossfade_concat` 调用次数/顺序断言）。
+### Task 05 - 单测：请求体是否包含 `provider`
+- **Task name**: v4.6 - LLM 请求 payload 断言
+- **目标**: 使用 `httpx` mock / 拦截，验证：① `openrouter_provider` 为空时 payload **无** `provider`；② 非空时 payload **有**符合实现约定的 `provider`；③ 非 OpenRouter `base_url` 时不发送 `provider`。
 - **类型**: backend
-- **依赖关系**: Task 03（Task 04 后若有签名变更则依赖 Task 04）
+- **依赖关系**: Task 02
 - **Description**:
-  - 覆盖最小场景：
-    1) `music → voice → music`：第一段 music 与 voice 硬接；voice 与第二段 music 发生 voice→music crossfade。
-    2) `music → music`（无中间 voice）：两段 music 走 song crossfade。
-    3) 多 `insert_time` 的 voice 交错插入，顺序与 `insert_time` 一致。
-  - 可选：段内两条 `between_tracks` 的简化 snapshot fixture（不必跑完整 ffmpeg，若现有测试已 mock）。
-- **Input**: stub segments + voiceovers
+  - 不发起真实外网请求。
+  - 可选：断言 `response_format` 仍存在（与 kwargs 合并，满足验收 4）。
+- **Input**: `tests/` 现有 pytest 风格
 - **Output**: `pytest` 通过
 - **Files involved**:
-  - `tests/test_mixing.py`
-  - `src/podcast_ai/modules/mixing/mixer.py`
-- **Estimated complexity**: M（2 小时）
+  - `tests/test_llm_client.py`（新建）或并入现有测试文件
+- **Estimated complexity**: M（1–2 小时）

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from podcast_ai.core.exceptions import ConfigError
 from pydantic_settings import (
@@ -26,6 +26,14 @@ class LLMConfig(BaseModel):
         default=None,
         description="OpenRouter 结构化 JSON：None 自动检测 host；True/False 覆盖",
     )
+    # v4.6：OpenRouter 供应方路由（与 llm.provider「客户端实现类型」无关）。留空=请求体不携带 provider，由 OpenRouter 自动选路。
+    # 非空：可为 JSON 对象字符串（与官方 provider 字段一致），或单个供应方 slug（实现为 {"only": [slug]}）。
+    openrouter_provider: str = ""
+
+
+def is_openrouter_base_url(url: str) -> bool:
+    """base_url 是否指向 OpenRouter 网关（用于附加 response_format / provider 等 OpenRouter 专有字段）。"""
+    return "openrouter.ai" in (url or "").strip().lower()
 
 
 def should_use_structured_output(cfg: LLMConfig) -> bool:
@@ -40,8 +48,7 @@ def should_use_structured_output(cfg: LLMConfig) -> bool:
         return True
     if cfg.structured_output is False:
         return False
-    url = (cfg.base_url or "").strip().lower()
-    return "openrouter.ai" in url
+    return is_openrouter_base_url(cfg.base_url)
 
 
 class ElevenLabsConfig(BaseModel):
@@ -60,14 +67,43 @@ class ElevenLabsConfig(BaseModel):
     output_format: str = "mp3_44100_128"
 
 
+class MiniMaxConfig(BaseModel):
+    """MiniMax TTS 专用字段（v4.1）。"""
+
+    api_key: str = ""
+    model: str = "speech-2.8-hd"
+    # v4.1：先固定默认 voice_setting/audio_setting，仅暴露最小必填 voice_id。
+    voice_id: str = "male-qn-qingse"
+    # 为后续异步查询接口预留；同步路径暂不使用
+    query_interval_ms: int = 500
+    query_timeout_seconds: int = 30
+
+
 class TTSConfig(BaseModel):
-    # v1.4 默认主路径为 ElevenLabs；仍可通过 provider=edge_tts 回退 Edge
+    # v4.1 默认主路径为 ElevenLabs；标准值：edge / elevenlabs / minimax
     provider: str = "elevenlabs"
     api_key: str = ""
     voice: str = ""
     elevenlabs: ElevenLabsConfig = Field(default_factory=ElevenLabsConfig)
+    minimax: MiniMaxConfig = Field(default_factory=MiniMaxConfig)
     timeout_seconds: int = 60
     max_retries: int = 2
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value: object) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "edge_tts": "edge",
+            "edge-tts": "edge",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in {"edge", "elevenlabs", "minimax"}:
+            raise ValueError(
+                "tts.provider 仅支持 edge / elevenlabs / minimax "
+                f"（收到：{value!r}）"
+            )
+        return normalized
 
 
 class AudioConfig(BaseModel):
@@ -75,6 +111,9 @@ class AudioConfig(BaseModel):
     loudness_target_lufs: float = -14.0
     # v2.0：串词-歌曲边界 crossfade（默认约 2–4s 区间的中值；置 0 可回退为硬切）
     voice_music_crossfade_seconds: float = 3.0
+    # v4.2：开启后对「串词->歌」按下一首 intro 估计动态决定 vm；失败回退默认 vm。
+    voice_music_intro_align_enabled: bool = True
+    voice_music_intro_align_max_seconds: float = 3.0
 
 
 class CacheConfig(BaseModel):
@@ -219,5 +258,48 @@ def require_elevenlabs_tts_config(tts: TTSConfig) -> ElevenLabsConfig:
         voice_id=voice_id,
         model=model,
         output_format=output_format,
+    )
+
+
+def require_minimax_tts_config(tts: TTSConfig) -> MiniMaxConfig:
+    """
+    在调用 MiniMax TTS 前做最小必填校验，并返回可直接用于客户端的配置副本。
+
+    - 仅当 `tts.provider` 为 `minimax` 时生效；否则抛出 `ConfigError`。
+    - `api_key` 优先取 `tts.minimax.api_key`，为空时回退到 `tts.api_key`。
+    - `model` / `voice_id` 为空时回退到 `MiniMaxConfig` 默认值。
+    """
+    prov = (tts.provider or "").strip().lower()
+    if prov != "minimax":
+        raise ConfigError(
+            f"当前 TTS provider 为 {tts.provider!r}，需要 minimax 才能使用 MiniMax 配置。"
+            "请在 config.yaml 或环境变量 PODCAST_AI_TTS__PROVIDER 中设置 provider: minimax。"
+        )
+
+    mm = tts.minimax.model_copy()
+    defaults = MiniMaxConfig()
+    api_key = (mm.api_key or tts.api_key or "").strip()
+    model = (mm.model or "").strip() or defaults.model
+    voice_id = (mm.voice_id or tts.voice or "").strip() or defaults.voice_id
+
+    missing: list[str] = []
+    if not api_key:
+        missing.append(
+            "api_key 未设置：请配置 tts.minimax.api_key 或环境变量 PODCAST_AI_TTS__MINIMAX__API_KEY 或 tts.api_key"
+        )
+    if not voice_id:
+        missing.append(
+            "voice_id 未设置：请配置 tts.minimax.voice_id 或环境变量 PODCAST_AI_TTS__MINIMAX__VOICE_ID"
+        )
+
+    if missing:
+        raise ConfigError("MiniMax TTS 配置不完整：\n" + "\n".join(f"  - {m}" for m in missing))
+
+    return MiniMaxConfig(
+        api_key=api_key,
+        model=model,
+        voice_id=voice_id,
+        query_interval_ms=mm.query_interval_ms,
+        query_timeout_seconds=mm.query_timeout_seconds,
     )
 

@@ -571,3 +571,171 @@ def test_v391_no_single_crossfade_of_entire_tracklist(monkeypatch, tmp_path: Pat
     mixer.build_mix(selected, voiceovers, config, out)
     assert 4 not in chunk_lengths, "不应一次性叠化全部 4 首曲目"
     assert 2 in chunk_lengths
+
+
+# ---------- v4.2：voice->music intro 对齐 ----------
+
+
+@_ffmpeg_required
+def test_v42_voice_to_music_uses_intro_estimate_when_available(monkeypatch, tmp_path: Path) -> None:
+    """估计成功且高于默认 vm 时，应放大 vm。"""
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    _make_silent_wav(tmp_path / "t1.wav", 4000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=4.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=4.0, effective_duration=4.0)
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 3000, 0.0)]
+
+    class _Est:
+        intro_seconds = 1.2
+        confidence = 0.9
+        reason = "ok"
+
+    monkeypatch.setattr(mixer_mod, "estimate_track_intro_seconds", lambda *args, **kwargs: _Est())
+    config = AudioRenderConfig(
+        crossfade_seconds=0.0,
+        voice_music_crossfade_seconds=0.5,
+        voice_music_intro_align_enabled=True,
+        voice_music_intro_align_max_seconds=2.0,
+    )
+    mixer = Mixer()
+    out = tmp_path / "mix_v42_intro.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    # vm=max(0.5, min(1.2,2.0))=1.2 => 3.0 + 4.0 - 1.2 = 5.8
+    assert abs(summary.actual_duration_seconds - 5.8) < 0.2
+
+
+@_ffmpeg_required
+def test_v42_voice_to_music_uses_base_vm_as_lower_bound(monkeypatch, tmp_path: Path) -> None:
+    """方案1：当 intro 估计小于默认 vm 时，仍使用默认 vm 作为下限。"""
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    _make_silent_wav(tmp_path / "t1.wav", 4000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=4.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=4.0, effective_duration=4.0)
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 3000, 0.0)]
+
+    class _Est:
+        intro_seconds = 0.7
+        confidence = 0.8
+        reason = "ok"
+
+    monkeypatch.setattr(mixer_mod, "estimate_track_intro_seconds", lambda *args, **kwargs: _Est())
+    config = AudioRenderConfig(
+        crossfade_seconds=0.0,
+        voice_music_crossfade_seconds=3.0,
+        voice_music_intro_align_enabled=True,
+        voice_music_intro_align_max_seconds=8.0,
+    )
+    mixer = Mixer()
+    out = tmp_path / "mix_v42_base_lb.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    # vm=max(3.0, min(0.7,8.0))=3.0 => 3.0 + 4.0 - 3.0 = 4.0
+    assert abs(summary.actual_duration_seconds - 4.0) < 0.2
+
+
+@_ffmpeg_required
+def test_v42_voice_to_music_fallback_to_default_vm_on_intro_fail(monkeypatch, caplog, tmp_path: Path) -> None:
+    """估计失败时回退默认 vm，并打 warning。"""
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    _make_silent_wav(tmp_path / "t1.wav", 4000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=4.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=4.0, effective_duration=4.0)
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 3000, 0.0)]
+
+    class _Est:
+        intro_seconds = None
+        confidence = 0.0
+        reason = "librosa_unavailable"
+
+    monkeypatch.setattr(mixer_mod, "estimate_track_intro_seconds", lambda *args, **kwargs: _Est())
+    caplog.set_level("WARNING")
+    config = AudioRenderConfig(
+        crossfade_seconds=0.0,
+        voice_music_crossfade_seconds=1.0,
+        voice_music_intro_align_enabled=True,
+        voice_music_intro_align_max_seconds=1.0,
+    )
+    mixer = Mixer()
+    out = tmp_path / "mix_v42_fallback.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    # 回退默认 vm=1.0：3.0 + 4.0 - 1.0 = 6.0
+    assert abs(summary.actual_duration_seconds - 6.0) < 0.2
+    assert "intro 估计失败" in caplog.text
+
+
+# ---------- v4.3：voice 时长约束限幅 ----------
+
+
+@_ffmpeg_required
+def test_v43_caps_vm_by_voice_duration_when_candidate_too_large(monkeypatch, tmp_path: Path) -> None:
+    """当候选 vm 过大时，最终 vm 必须 <= voice_duration。"""
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    _make_silent_wav(tmp_path / "t1.wav", 5000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=5.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=5.0, effective_duration=5.0)
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 800, 0.0)]
+
+    class _Est:
+        intro_seconds = 8.0
+        confidence = 0.9
+        reason = "ok"
+
+    monkeypatch.setattr(mixer_mod, "estimate_track_intro_seconds", lambda *args, **kwargs: _Est())
+    config = AudioRenderConfig(
+        crossfade_seconds=0.0,
+        voice_music_crossfade_seconds=3.0,
+        voice_music_intro_align_enabled=True,
+        voice_music_intro_align_max_seconds=8.0,
+    )
+    mixer = Mixer()
+    out = tmp_path / "mix_v43_cap_by_voice.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    # 期望 vm 被截断到 voice=0.8s => 0.8 + 5.0 - 0.8 = 5.0
+    assert abs(summary.actual_duration_seconds - 5.0) < 0.2
+
+
+@_ffmpeg_required
+def test_v43_voice_shorter_than_min_uses_voice_duration(monkeypatch, tmp_path: Path) -> None:
+    """当 voice 时长小于 min_crossfade 时，返回可行值（voice 时长），不报错。"""
+    from podcast_ai.modules.mixing import mixer as mixer_mod
+
+    _make_silent_wav(tmp_path / "t1.wav", 3000)
+    twm1 = TrackWithMetadata(
+        track=Track(id="t1", file_path=tmp_path / "t1.wav", title="A", artist="X"),
+        metadata=TrackMetadata(track_id="t1", duration_seconds=3.0, bpm=100.0, genre=None),
+    )
+    st1 = SelectedTrack(track=twm1.track, start_time_in_episode=0.0, end_time_in_episode=3.0, effective_duration=3.0)
+    voiceovers = [_make_voiceover(tmp_path / "vo1.wav", 500, 0.0)]
+
+    class _Est:
+        intro_seconds = 0.6
+        confidence = 0.9
+        reason = "ok"
+
+    monkeypatch.setattr(mixer_mod, "estimate_track_intro_seconds", lambda *args, **kwargs: _Est())
+    config = AudioRenderConfig(
+        crossfade_seconds=0.0,
+        voice_music_crossfade_seconds=3.0,  # min=3s
+        voice_music_intro_align_enabled=True,
+        voice_music_intro_align_max_seconds=8.0,
+    )
+    mixer = Mixer()
+    out = tmp_path / "mix_v43_short_voice.wav"
+    summary = mixer.build_mix([st1], voiceovers, config, out)
+    # vm=min(voice=0.5, music=3.0, min策略后结果)=0.5 => 0.5 + 3.0 - 0.5 = 3.0
+    assert abs(summary.actual_duration_seconds - 3.0) < 0.2

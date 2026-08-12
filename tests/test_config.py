@@ -8,16 +8,23 @@ from podcast_ai.core.models import AudioRenderConfig
 from podcast_ai.infra.config import (
     AppConfig,
     ElevenLabsConfig,
+    MiniMaxConfig,
     Settings,
     TTSConfig,
     require_elevenlabs_tts_config,
+    require_minimax_tts_config,
 )
-from podcast_ai.infra.tts_client import EdgeTTSSimpleClient, ElevenLabsTTSClient, get_default_tts_client
+from podcast_ai.infra.tts_client import (
+    EdgeTTSSimpleClient,
+    ElevenLabsTTSClient,
+    MiniMaxTTSClient,
+    get_default_tts_client,
+)
 
 
 def test_require_elevenlabs_rejects_wrong_provider() -> None:
     """非 elevenlabs provider 时不得使用 ElevenLabs 专用校验路径。"""
-    tts = TTSConfig(provider="edge_tts", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v"))
+    tts = TTSConfig(provider="edge", elevenlabs=ElevenLabsConfig(api_key="k", voice_id="v"))
     with pytest.raises(ConfigError, match="elevenlabs"):
         require_elevenlabs_tts_config(tts)
 
@@ -72,13 +79,36 @@ def test_get_default_tts_client_elevenlabs() -> None:
 
 
 def test_get_default_tts_client_edge() -> None:
-    """provider=edge_tts 时仍返回 Edge 客户端。"""
+    """provider=edge 时返回 Edge 客户端。"""
     s = Settings(
         app=AppConfig(output_dir="."),
-        tts=TTSConfig(provider="edge_tts", voice="zh-CN-XiaoxiaoNeural"),
+        tts=TTSConfig(provider="edge", voice="zh-CN-XiaoxiaoNeural"),
     )
     client = get_default_tts_client(s)
     assert isinstance(client, EdgeTTSSimpleClient)
+
+
+def test_require_minimax_ok_with_fallback_api_key() -> None:
+    tts = TTSConfig(
+        provider="minimax",
+        api_key="fallback_mm_key",
+        minimax=MiniMaxConfig(api_key="", model="speech-2.8-hd", voice_id="male-qn-qingse"),
+    )
+    mm = require_minimax_tts_config(tts)
+    assert mm.api_key == "fallback_mm_key"
+    assert mm.model == "speech-2.8-hd"
+
+
+def test_get_default_tts_client_minimax() -> None:
+    s = Settings(
+        app=AppConfig(output_dir="."),
+        tts=TTSConfig(
+            provider="minimax",
+            minimax=MiniMaxConfig(api_key="k", model="speech-2.8-hd", voice_id="male-qn-qingse"),
+        ),
+    )
+    client = get_default_tts_client(s)
+    assert isinstance(client, MiniMaxTTSClient)
 
 
 def test_v14_ttsconfig_default_provider_is_elevenlabs() -> None:

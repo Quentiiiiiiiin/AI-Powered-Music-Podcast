@@ -94,3 +94,27 @@ def test_parse_agent_json_response_non_structured_repair_fallback_used(tmp_path:
     assert out == {"a": 1}
     assert calls, "expected repair fallback to be invoked"
 
+
+def test_parse_agent_json_response_prefers_raw_before_standardize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = initialize_plan_state(_request(tmp_path))
+    calls: list[str] = []
+
+    def _repair_should_not_be_called(raw: str) -> str:  # noqa: ARG001
+        calls.append("called")
+        raise AssertionError("repair_and_standardize_json should not be called for valid raw JSON")
+
+    monkeypatch.setattr(parser_mod, "repair_and_standardize_json", _repair_should_not_be_called)
+
+    # 该文本中的 “元歌曲” 在 JSON 中是合法字符；若先标准化替换引号会被破坏。
+    raw = '{"text":"而《土耳其冰淇淋》是一首关于音乐本身的“元歌曲”，很有趣。"}'
+    out = parse_agent_json_response(
+        agent_label="TestAgent",
+        raw=raw,
+        state=state,
+        structured=True,
+        allow_repair_fallback=False,
+        output_dir=tmp_path,
+    )
+    assert out["text"].endswith("很有趣。")
+    assert not calls
+

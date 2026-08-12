@@ -1,358 +1,278 @@
-## 1. 技术选型
+# AI 音乐 Podcast 自动生成工具 — 系统技术架构文档
 
-- **编程语言与运行环境**
-  - **Python 3.10+**（PRD 已指定，生态成熟、音频与 AI 库丰富）
-  - 本地运行，优先支持 **Windows**，兼容 macOS
-  - 依赖管理：`venv + pip` 或 `poetry`（根据个人偏好选择其一）
-- **核心第三方库（MVP）**
-  - **音频处理**
-    - `pydub`：音频切片、拼接、音量调整、crossfade 淡入淡出（依赖 FFmpeg，API 简单）
-    - `librosa`：BPM、时长和基础音频特征分析
-    - 系统依赖：**FFmpeg**（单次安装，作为全局依赖）
-  - **元数据读取**
-    - `mutagen`：读取 mp3/wav 标签与基础元数据（时长、编码、标题等）
-    - 或基于 `ffprobe` 的轻量封装作为备选
-  - **LLM**
-    - 抽象接口：`LLMClient`
-    - 默认实现：接入 OpenAI / Claude / 其它兼容 LLM，模型名称与 API Key 通过环境变量或配置文件注入
-  - **TTS**
-    - 抽象接口：`TTSClient`
-    - 默认实现：`ElevenLabs`（v1.4 主路径）
-    - 备选实现（可选，非默认）：OpenAI TTS / Coqui
-  - **配置与数据校验**
-    - `pydantic` / `pydantic-settings`：用于配置加载、数据模型定义与校验
-- **工具与基础设施**
-  - CLI 框架：`Typer`（构建命令行工具，自动文档与良好帮助信息）
-  - 日志：Python 标准库 `logging`，统一配置命令行与文件输出
-  - 配置文件：`config.yaml`（音乐库路径、API 配置、默认参数等）
+**文档角色**：面向贡献者与二次开发者的技术架构说明，与 [`PRD.md`](PRD.md) 中的产品需求互为补充：PRD 描述「要什么」，本文描述「代码里如何实现、模块如何划分、数据如何流转」。  
+**代码布局**：`src/podcast_ai/`（Typer CLI + 分层模块）。  
+**运行时形态**：本地单体 Python 应用，无内置 HTTP 服务；通过 CLI 调用 LLM（默认 OpenAI 兼容端点，常见为 OpenRouter）与 TTS。
 
 ---
 
-## 2. 系统架构
+## 1. 系统目标与边界
 
-整体采用 **单体应用 + 分层架构**，以“个人开发、架构简单、易于扩展”为设计目标。
-
-- **分层结构**
-  - **接口层（Interface Layer）**
-    - 形式：命令行工具（CLI），后续可加简单 GUI
-    - 主要文件：`cli.py`
-    - 职责：解析命令行参数、读取配置、调用应用服务；不包含业务逻辑
-  - **应用层（Application Layer）**
-    - 主要文件：`core/pipeline.py`
-    - 职责：
-      - 支持 **两阶段流程**：① 规划阶段（输出歌单）→ ② 制作阶段（用户准备好歌曲后继续）
-      - 阶段一（v3.0）采用 **多 Agent 规划流水线**：Planner / Music Curator / Script Writer / Critic，基于共享 state 进行有限迭代回修
-      - 串联 7 个 PRD 定义的功能模块（主题生成 → 扫库 → 选曲 → 混音 → 主持 → 母带 → 导出）
-      - 管理整体流程、错误处理、进度日志与时间统计
-      - 提供高层 API：`plan_episode`（仅规划）、`create_episode`（完整制作或从规划继续）
-  - **领域模块层（Domain / Modules Layer）**
-    - 按“功能模块”划分子包，每个模块只关注自己的业务规则与实现：
-      - `modules/theme`：阶段一 Episode Plan 多 Agent 生成（LLM、共享 `PlanState`、编排与评估回修；具体文件见 §5 `modules/theme/`）
-      - `modules/library`：本地音乐库扫描与元数据提取
-      - `modules/selection`：按 plan 做本地曲目映射与缺失校验（不做二次重排）
-      - `modules/mixing`：音轨拼接、crossfade 混音逻辑
-      - `modules/voiceover`：主持串词生成与 TTS 语音生成
-      - `modules/mastering`：Loudness normalization 与母带处理
-      - `modules/exporter`：最终 MP3 导出与 Show Notes 输出
-    - 模块之间通过核心数据模型（`core/models.py`）交互，避免相互直接耦合
-  - **基础设施层（Infrastructure Layer）**
-    - 对外部世界的全部访问集中在此层，提供可替换实现：
-      - `infra/llm_client.py`：封装 LLM 调用（统一重试与日志）
-      - `infra/tts_client.py`：封装 TTS 调用（默认 ElevenLabs，支持 SDK/HTTP 两种接入路径二选一）
-      - `infra/audio_backend.py`：封装 pydub / librosa / ffmpeg 的常用操作
-      - `infra/storage/cache.py`：音乐库扫描结果缓存（JSON 或 SQLite）
-      - `infra/config.py`：加载配置文件和环境变量
-- **主流程（两阶段时序）**
-**阶段一：规划与歌单输出（用户可仅执行此阶段）**
-  1. 用户通过 CLI 输入主题和时长 → 解析为 `EpisodeRequest`
-  2. `Pipeline.plan_episode(request)`：
-    - 调用 `ThemePlanner.generate_plan`（v3.0 多 Agent）：
-      - Planner：先生成全局结构与约束
-      - Music Curator：补齐各段目标歌单规划
-      - Script Writer：生成各段主持串词
-      - Critic：输出结构化反馈并驱动有限回修（默认最多 3 次）
-    - 产出：可追踪的 `EpisodePlan`（含评估反馈摘要）
-    - 将 `EpisodePlan` 持久化为 JSON 文件，并输出可读的「目标歌单」供用户查阅
-  3. 用户根据目标歌单到各平台搜索、下载或整理歌曲，放入指定本地目录
-  **阶段二：制作（用户准备好歌曲后执行）**
-  1. 用户再次运行 CLI，指定规划文件（或 episode_id）与音乐目录
-  2. `Pipeline.create_episode(plan_path, music_dir)` 或 `create_episode(request, plan=...)`：
-    - 加载已有 `EpisodePlan`（或可选：重新生成）
-    - 调用 `LibraryScanner.scan_or_load_cache`：扫描用户准备好的目录 → `list[TrackWithMetadata]`
-    - 调用 `TrackSelector.select_tracks`：按 plan 顺序做本地文件映射与缺失校验（不做 BPM 二次排序/贪心替代）→ `list[SelectedTrack]`
-    - 调用 `VoiceoverService.generate_voiceovers`：生成主持语音片段 → `list[VoiceoverSegment]`
-    - 调用 `Mixer.build_mix`：拼接歌曲与主持语音，做 crossfade → 中间混音结果
-    - 调用 `MasteringService.apply_mastering`：统一 Loudness → 最终音频
-    - 调用 `Exporter.export_episode`：输出 MP3 与 Show Notes → `EpisodeResult`
-  3. CLI 输出：文件路径、实际时长、选曲列表等摘要信息
+- **目标**：从「主题 + 目标时长」生成可执行的节目策划（含段落、目标歌单、串词结构），在用户自备本地曲库的前提下，完成 **按策划顺序** 的映射、TTS、时间线混音、响度处理与导出。
+- **明确边界**：
+  - 不抓取版权音乐；曲库由用户放入目录。
+  - 阶段二 **严格按策划顺序** 映射本地文件，不做 BPM 重排或贪心替换（见 `modules/selection/`）。
+  - LLM/TTS 依赖网络与 API Key；音频处理依赖 **FFmpeg**（经 `pydub` 等间接调用）。
 
 ---
 
-## 3. 数据模型
+## 2. 技术栈（与实现对齐）
 
-（建议使用 Pydantic 数据模型统一管理与校验）
-
-- **请求与整体结果**
-  - `EpisodeRequest`
-    - `topic: str`：节目主题
-    - `duration_minutes: int`：目标时长（分钟）
-    - `language: Literal["zh", "en"]`：串词与 TTS 语言
-    - `output_dir: Path`：输出目录
-  - `EpisodeResult`
-    - `episode_id: str`
-    - `audio_path: Path`
-    - `actual_duration_seconds: int`
-    - `show_notes: str`
-    - `tracks: list[SelectedTrack]`
-- **节目规划与结构**
-  - `EpisodePlan`
-    - `segments: list[EpisodeSegment]`
-    - `target_duration_seconds: int`
-    - `overall_bpm_range: tuple[int, int] | None`
-    - `style_description: str`
-    - `plan_id: str`（用于与制作阶段关联、持久化与加载）
-    - `critic_summary: dict | None`（多 Agent 评估与回修摘要）
-    - `generation_trace: list[dict] | None`（可选：记录 Planner/Curator/Writer/Critic 的关键步骤）
-  - `PlanState`（v3.0 共享 state，阶段一内部使用）
-    - `meta: dict`
-    - `global_constraints: dict`
-    - `plan: dict`
-    - `segments: list[dict]`
-    - `critic: dict`
-    - `control: dict`（含 `max_iterations`，默认 3）
-  - `EpisodeSegment`
-    - `name: str`（如「开场」「中段」「收尾」）
-    - `target_duration_seconds: int`
-    - `bpm_range: tuple[int, int] | None`
-    - `mood: str`
-    - `host_script: str`（该段串词草稿）
-    - `target_playlist: list[PlaylistItem]`（该段目标歌单规划，供用户按此下载）
-  - `PlaylistItem`（目标歌单中的单条推荐）
-    - `segment_name: str`
-    - `recommended_tracks: list[str]`（推荐曲目名称或描述）
-    - `search_hints: dict`（搜索条件：艺术家、曲风、BPM 区间、关键词等，便于用户在各平台搜索）
-- **音乐库与选曲**
-  - `Track`
-    - `id: str`
-    - `file_path: Path`
-    - `title: str | None`
-    - `artist: str | None`
-  - `TrackMetadata`
-    - `track_id: str`
-    - `duration_seconds: float`
-    - `bpm: float | None`
-    - `genre: str | None`
-  - `TrackWithMetadata`
-    - `track: Track`
-    - `metadata: TrackMetadata`
-  - `SelectedTrack`
-    - `track: Track`
-    - `start_time_in_episode: float`
-    - `end_time_in_episode: float`
-    - `effective_duration: float`（考虑 crossfade 后的有效占用时长）
-- **主持与音频渲染配置**
-  - `VoiceoverSegment`
-    - `segment_id: str`
-    - `text: str`
-    - `audio_path: Path`
-    - `insert_time_in_episode: float`
-  - `AudioRenderConfig`
-    - `sample_rate: int`
-    - `bitrate: str`
-    - `crossfade_seconds: float`
-    - `loudness_target_lufs: float`
+| 类别 | 选型 | 说明 |
+|------|------|------|
+| 语言 | Python 3.10+ | |
+| CLI | Typer | `cli.py` |
+| 配置 | YAML + 环境变量（pydantic-settings） | `infra/config.py` |
+| LLM | OpenAI Chat Completions 兼容 HTTP | `infra/llm_client.py`，支持请求体附加 `response_format`（OpenRouter 结构化输出） |
+| TTS | 可插拔供应商 | `infra/tts_client.py`：`edge` / `elevenlabs` / `minimax` |
+| 音频 | pydub、librosa、FFmpeg | 混音与时间线在 `modules/mixing/`；intro 估计在 `intro_align.py` |
+| 元数据 | mutagen 等 | `modules/library/scanner.py` |
+| 校验 | Pydantic | `core/models.py` 等 |
 
 ---
 
-## 4. API 设计
+## 3. 分层架构
 
-当前阶段 API 以 **内部 Python 接口 + CLI 命令** 为主，非网络服务，便于本地个人使用。
-
-- **应用层高阶 API**
-  - 文件：`core/pipeline.py`
-  - 主要函数：
-    - `plan_episode(request: EpisodeRequest) -> EpisodePlan`
-      - **阶段一**：多 Agent 协同生成 Episode Plan（含目标歌单与评估回修），输出为 JSON 文件；用户据此手动下载歌曲
-    - `create_episode(plan_path: Path, music_dir: Path, ...) -> EpisodeResult`
-      - **阶段二**：加载已有规划，从扫描用户准备好的音乐目录开始，执行选曲 → 混音 → 主持 → 母带 → 导出
-    - `create_episode(request: EpisodeRequest, plan: EpisodePlan | None = None) -> EpisodeResult`
-      - 可选：若传入 `plan` 且用户已准备好歌曲，可跳过阶段一直接执行阶段二
-- **领域模块接口（示例）**
-  - `ThemePlanner`（模块 1：主题生成门面）
-    - 文件：`modules/theme/llm_planner.py`
-    - `generate_plan(request: EpisodeRequest, use_orchestrator: bool = False) -> EpisodePlan`
-    - `use_orchestrator=False`：单次 LLM 调用（v2.x）
-    - `use_orchestrator=True`（v3.0）：方法内懒加载 `PlanOrchestrator`，对返回的 `PlanState` 经 `_episode_plan_from_state` 转为 `EpisodePlan`
-    - 输出包含：节目结构、段落、情绪、BPM 区间、串词与**目标歌单规划**（v2/v3 schema 细节以 PRD 与 `state` 为准）
-  - `PlanOrchestrator`（v3.0，阶段一内部编排）
-    - 文件：`modules/theme/orchestrator.py`；依赖 `planner_agent.PlannerAgent`、`music_curator_agent.MusicCuratorAgent`、`script_writer_agent.ScriptWriterAgent` 与 `critic_agent.CriticAgent`
-    - `run(request: EpisodeRequest, initial_state: PlanState | None = None) -> PlanState`
-    - 协调 Planner / Music Curator / Script Writer / Critic，按共享 state 执行有限回修迭代；**不**在此转换为 `EpisodePlan`
-  - `LibraryScanner`（模块 2：音乐库扫描）
-    - `scan_library(root_dir: Path) -> list[TrackWithMetadata]`
-    - `scan_or_load_cache(root_dir: Path) -> list[TrackWithMetadata]`
-    - 默认假设用户已根据目标歌单规划将本期候选歌曲放入指定目录
-  - `TrackSelector`（模块 3：自动选曲与排序）
-    - `select_tracks(plan: EpisodePlan, library: list[TrackWithMetadata]) -> list[SelectedTrack]`
-    - 严格按 plan 的歌曲序列执行映射；若 plan 曲目无法映射到本地文件则报错并中断
-  - `Mixer`（模块 4：自动混音）
-    - `build_mix(selected_tracks: list[SelectedTrack], voiceovers: list[VoiceoverSegment], config: AudioRenderConfig) -> Path`
-  - `VoiceoverService`（模块 5：主持语音）
-    - `generate_voiceovers(plan: EpisodePlan) -> list[VoiceoverSegment]`
-    - 默认使用 ElevenLabs 生成主持语音；若调用失败，返回清晰错误信息（不静默失败）
-  - `MasteringService`（模块 6：母带处理）
-    - `apply_mastering(mix_path: Path, config: AudioRenderConfig) -> Path`
-  - `Exporter`（模块 7：导出）
-    - `export_episode(final_audio_path: Path, result_meta) -> EpisodeResult`
-- **CLI 命令（基于 Typer）**
-  - `podcast-ai init-config`
-    - 生成默认配置文件 `config.yaml` 与 `.env.example`
-  - `podcast-ai plan-episode --topic "Late Night Chill" --duration 60`
-    - **阶段一**：生成节目结构与**目标歌单规划**，输出 JSON 与可读歌单；用户据此手动下载歌曲
-  - `podcast-ai create-episode --plan-file "episode_xxx.json" --music-dir "D:\Music\本期节目"`
-    - **阶段二**：用户准备好歌曲后，从规划文件继续，扫描目录 → 选曲 → 混音 → 主持 → 母带 → 导出
-  - `podcast-ai scan-library --music-dir "D:\Music"`
-    - 扫描音乐库并缓存分析结果（可选，用于提前了解已有曲目）
-
----
-
-## 5. 项目目录结构
-
-采用单仓库、单体应用、`src` 布局，方便个人开发与未来扩展：
-
-```text
-project-root/
-  pyproject.toml / requirements.txt
-  README.md
-  PRD.md
-  ARCHITECTURE.md
-  config.example.yaml
-  .env.example              # API Key 示例（不提交真实 Key）
-
-  src/
-    podcast_ai/
-      __init__.py
-      cli.py                # Typer 命令行入口
-
-      core/
-        models.py           # EpisodeRequest / Plan / Track 等核心模型
-        pipeline.py         # create_episode 流水线
-        logging_config.py
-        exceptions.py
-
-      infra/
-        config.py           # 配置加载（config.yaml + 环境变量）
-        llm_client.py       # LLMClient 抽象 + 默认实现
-        tts_client.py       # TTSClient 抽象 + 默认实现（ElevenLabs）
-        audio_backend.py    # 对 pydub / librosa / ffmpeg 的统一封装
-        storage/
-          cache.py          # 音乐库扫描缓存（JSON/SQLite）
-          paths.py          # 输出与临时文件目录管理；规划文件（EpisodePlan JSON）的保存与加载路径
-
-      modules/
-        theme/
-          llm_planner.py            # ThemePlanner；v2 单次规划；PlanState→EpisodePlan；v3 内懒加载 PlanOrchestrator
-          planner_agent.py          # PlannerAgent；sanitize_planner_patch（公开）
-          music_curator_agent.py    # MusicCuratorAgent；_sanitize_curator_patch
-          script_writer_agent.py    # ScriptWriterAgent；_sanitize_script_writer_patch
-          critic_agent.py           # CriticAgent；_sanitize_critic_patch
-          orchestrator.py           # PlanOrchestrator；调度四 Agent 与迭代控制
-          state.py                  # PlanState、initialize/merge/assert
-          prompts.py                # 各 Agent / v2 ThemePlanner 的 message 构建
-        library/
-          scanner.py        # 扫描目录、提取元数据
-        selection/
-          selector.py       # 按 plan 映射本地曲目与缺失校验（不做二次重排）
-        mixing/
-          mixer.py          # crossfade、音轨合成
-        voiceover/
-          tts_service.py    # 主持语音生成与管理
-        mastering/
-          processor.py      # Loudness normalization
-        exporter/
-          exporter.py       # 导出 MP3 + Show Notes
-
-  tests/
-    test_pipeline.py
-    test_selection.py
-    test_mixing.py
+```
+┌─────────────────────────────────────────────────────────┐
+│ 接口层：cli.py（Typer）                                     │
+│  解析参数、加载 Settings、调用 pipeline、退出码与用户输出      │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────┐
+│ 应用层：core/pipeline.py                                   │
+│  plan_episode / create_episode / create_episode_stage2 /   │
+│  finalize_episode_stage3                                   │
+└───────────────────────────┬─────────────────────────────┘
+         ┌──────────────────┼──────────────────┐
+         ▼                  ▼                  ▼
+   modules/theme    modules/library +      modules/mixing +
+   （规划/多 Agent）  selection + voiceover   mastering + exporter
+         │                  │                  │
+         └──────────────────┼──────────────────┘
+                            ▼
+                   infra/（llm、tts、config、storage、audio_backend）
 ```
 
-如需后续增加简单 GUI（如 Streamlit / PySimpleGUI），可在 `src/ui/` 下新增，不影响现有核心结构。
+- **接口层**：只做 I/O 与装配，不含领域规则。
+- **应用层**：编排阶段流程、统一计时与异常语义（`PodcastAIError` / `PlanMappingError` 等）。
+- **领域模块**：按 PRD 功能拆分，`core/models.py` 提供跨模块数据结构。
+- **基础设施**：对外部系统（HTTP API、文件系统、缓存）的封装，便于替换实现。
 
 ---
 
-## 6. 关键技术难点与应对方案
+## 4. 端到端阶段划分与命令映射
 
-- **1）音频分析与性能（BPM & 时长）**
-  - 难点：本地音乐库规模较大时，BPM 计算与元数据提取会比较耗时。
-  - 方案：
-    - 首次全量扫描后，将结果缓存为 JSON/SQLite，后续只对新增或修改文件做增量扫描。
-    - BPM 计算可采用近似方法（降低采样密度、只分析前 N 秒）以换取速度。
-- **2）plan 一致性与本地曲目映射**
-  - 难点：阶段二必须严格按 plan 播放顺序执行，且 plan 曲目未必能在本地目录找到同名或可匹配文件。
-  - 方案：
-    - `TrackSelector` 仅负责“按顺序映射 + 缺失检测”，不做 BPM 重排或贪心替代。
-    - 引入明确的映射失败报告（缺失曲目清单、建议补齐项），失败即中断，避免 silently fallback。
-    - 将“时长精度”从阶段二强约束中移除，优先保障 plan 一致性。
-- **3）Crossfade 混音与音量一致性**
-  - 难点：不同来源的音轨音量差异大，直接拼接容易出现忽大忽小或削波。
-  - 方案：
-    - 在混音前，对每首歌做一次粗略的音量归一化（RMS 或简单 LUFS 估计）。
-    - 使用 pydub 的 `fade_in` / `fade_out` 和自定义 crossfade 秒数，实现固定 6–10 秒的过渡。
-    - 在最终导出前，调用 `MasteringService` 使用 ffmpeg 的 `loudnorm` 或类似方案进行整体 Loudness normalization。
-- **4）主持语音与歌曲边界对齐（v1.3/v2.1）**
-  - 难点：串词插入点若按目标时长估算，容易与实际歌曲边界错位；边界过渡还需兼顾可懂度。
-  - 方案：
-    - 串词插入点以“segment 第一首歌真实开始边界”为准，顺序固定为：串词_i → segment_i。
-    - 过渡策略遵循 v2.1：歌曲→串词不做 crossfade；串词结束前仅音乐淡入，串词不淡出。
-    - 在 `Mixer` 中先排完整时间线，再做歌曲-歌曲与串词边界过渡处理。
-- **5）LLM 与 TTS 调用的可靠性与成本**
-  - 难点：网络调用存在失败与超时风险，同时需要控制 token 与调用次数。
-  - 方案：
-    - 在 `LLMClient` / `TTSClient` 中内建重试、超时与基础日志机制。
-    - 将模型名称、最大字数/时长、语言等参数配置化，方便按需调优成本与效果。
-    - 通过 prompt 约束串词长度与风格，降低无效生成。
-- **6）阶段一多 Agent 状态一致性（v3.0）**
-  - 难点：多 Agent 协作时容易出现 JSON 非法、字段漂移、越权写入、回修循环失控。
-  - 方案：
-    - 以 `PlanState` 为唯一事实源，按读写契约限制每个 Agent 的可写字段。
-    - `Critic` 输出结构化问题与修复动作；`Orchestrator` 控制有限迭代（默认 `max_iterations=3`）与提前收敛。
-    - 对非法 JSON/缺字段增加重试与回退，确保最终 `EpisodePlan` 可执行。
-- **7）跨平台依赖安装（尤其是 FFmpeg）**
-  - 难点：Windows 与 macOS 上 FFmpeg 安装方式与路径各异，易导致运行时错误。
-  - 方案：
-    - 在 README 中提供面向 Windows/macOS 的简明安装步骤与验证命令。
-    - 应用启动或首次音频操作前检查 FFmpeg 是否可用，若不可用则给出明确错误提示与参考链接。
-    - 所有对 FFmpeg 的调用统一通过 `infra/audio_backend.py`，避免在各模块中散落命令调用。
+产品演进后在代码中形成 **清晰的「规划 →（可选）拆解的制作 → 导出」链路了**，与 CLI 对应如下。
+
+### 4.1 阶段一：节目策划（Plan）
+
+- **入口**：`podcast-ai plan-episode …`
+- **核心 API**：`core.pipeline.plan_episode(request, agent_mode=...)`
+- **行为**：
+  1. `ThemePlanner.generate_plan_and_state()` 生成内存中的 `EpisodePlan` + `PlanState`。
+  2. `validate_state_conforms_to_schema(state, agent_mode=...)` 做契约校验。
+  3. 生成 `episode_id`，落盘：
+     - **完整状态**：`{output_dir}/episodes/{episode_id}/plans/state.json`
+     - **阶段二输入子集**：`…/plans/{episode_id}.json`（由 `build_episode_snapshot_from_state` 从 state 剪枝而来，字段见 `infra/storage/paths.py`）
+
+- **`agent_mode`**：
+  - `multi_agent`（默认）：`PlanOrchestrator` 驱动四角色 + Critic 迭代。
+  - `single_agent`：单次 LLM 调用产出 **无 `critic`/`control` 的 state 子集**，同样经校验后写入上述两文件。
+
+阶段一 **不再以旧版独立 EpisodePlan 文件作为主产物路径**；阶段二默认读取 `<episode_id>.json`（`Stage2Snapshot`）。
+
+### 4.2 阶段二（制作）：一站式导出 vs 可编辑参数拆分
+
+**路径 A — 一站式（适合无需微调转场参数）**
+
+- **命令**：`podcast-ai create-episode <snapshot.json> <music_dir>`
+- **API**：`create_episode(snapshot_path, music_dir, …)`
+- **顺序**：加载 snapshot → 扫库 → `select_tracks_by_snapshot` → 计算 segment 边界 → TTS → `Mixer.build_mix` → 母带 → 导出 Show Notes。
+
+**路径 B — v4.5 拆分（适合人工微调 crossfade / intro 相关参数后再导出）**
+
+1. **命令**：`podcast-ai create-episode-stage2 …`  
+   **API**：`create_episode_stage2`  
+   **产出**：`{episode_root}/mix_params/{episode_id}_mix_params.json`（`MixParamsJSON`：tracks、voiceovers、`transitions` 等），**不导出最终音频**。
+
+2. **命令**：`podcast-ai finalize-episode-stage3 <*_mix_params.json>`  
+   **API**：`finalize_episode_stage3`  
+   **行为**：`MixParamsJSON.model_validate_json` 严格校验 → `Mixer.render_final_mix_from_mix_params` → 母带 → 导出。
+
+### 4.3 阶段二输入契约：`Stage2Snapshot`
+
+由阶段一的 `{episode_id}.json` 解析而来（`core.pipeline._load_stage2_snapshot`），结构与 `build_episode_snapshot_from_state` 一致：
+
+- 顶层：`schema`、`meta`（含 `request_id`、`theme`、`language`、`target_duration_seconds`）、`segments`。
+- 每段 `segments[i]`：`segment_id`、`name`、`target_duration_seconds`、`playlists`（即 state 中的 `playlist` 列表）、`script`（`segment_intro`、`between_tracks` 等）。
+
+阶段二 **不再以旧 EpisodePlan JSON 为主输入**；内存里仍会构造 `EpisodePlan` 的简化视图供导出/Show Notes 复用（`_episode_plan_from_snapshot`）。
 
 ---
 
-## 7. Architecture Decisions
+## 5. 多 Agent 架构（阶段一核心）
 
-- **AD-2026-03-v1.4：TTS 供应商切换到 ElevenLabs（迭代四）**
-  - **状态**：Accepted
-  - **结论**：**不需要调整系统架构（否）**，仅需实现层最小改动
-  - **背景**：PRD v1.4 指出 Edge TTS 音质不满足发布要求，目标切换至 ElevenLabs
-  - **最小改动方案**：
-    - 保持现有分层与模块边界不变（`VoiceoverService` + `TTSClient` 抽象继续沿用）
-    - 将 `TTSClient` 默认实现从 Edge 路径切换为 ElevenLabs
-    - 在 `config.yaml` 增加/确认 ElevenLabs 配置项（`api_key`、`voice_id`、`model`、`output_format`）
-    - 明确失败策略：TTS 调用失败时返回可读错误并中断当前流程，不静默降级
-  - **影响面**：
-    - 主要影响 `infra/tts_client.py`、`modules/voiceover/tts_service.py` 与配置文件
-    - 对 Pipeline、数据模型、目录结构无结构性变更
-- **AD-2026-03-v3.0：阶段一 Episode Plan 多 Agent 化（迭代八）**
-  - **状态**：Accepted
-  - **结论**：**需要小幅架构调整（是）**，但不改变整体分层与单体形态
-  - **背景**：PRD v3.0 要求阶段一从单次模型调用升级为 Planner / Music Curator / Script Writer / Critic 的多 Agent Pipeline，并基于共享 state 做有限回修迭代
-  - **最小改动方案**：
-    - 保持现有两阶段流程、CLI 入口和应用层边界不变
-    - 仅在 `modules/theme` 内新增 `orchestrator + 4 agents + state schema`，由 `plan_episode` 调用
-    - `EpisodePlan` 增加可选追踪字段（`critic_summary`、`generation_trace`），用于可解释性与问题回溯
-    - 迭代控制参数仅保留 `max_iterations`（默认 3），避免过度配置
-  - **影响面**：
-    - 主要影响 `modules/theme/*` 与 `core/pipeline.py` 的阶段一编排
-    - 阶段二混音链路、TTS 链路、导出链路保持不变
-  - **实现落地（当前仓库）**：阶段一四 Agent 各独占 `*_agent.py`，类与同文件内 `_sanitize_*_patch`（Planner 为公开 `sanitize_planner_patch`）共存；`PlanOrchestrator` 仅依赖上述四模块与 `state` 等；`ThemePlanner` 在 v3 路径方法内懒加载 `orchestrator`。
+### 5.1 设计要点
 
+- **共享事实源**：所有协作围绕 `PlanState`（`modules/theme/state.py` 中的 `Dict` 约定 + 校验函数）进行，而非各自独立的文本。
+- **有限迭代**：外层循环由 `PlanOrchestrator` 控制；`control.max_iterations` 限制 Critic 评估轮数上限（初始化见 `initialize_plan_state`，默认 `DEFAULT_MAX_ITERATIONS`，当前代码为 **5**）。
+- **结构化输出**：各 Agent 在支持的 LLM 配置下通过 `response_format` + JSON Schema（`agent_response_schemas.py` / `build_openrouter_response_format`）约束输出；解析统一走 `agent_json_parser.parse_agent_json_response`（非结构化路径下可回退 JSON 修复模块）。
+- **写权限隔离**：每个 Agent 输出经 `_sanitize_*_patch`（Planner 为公开的 `sanitize_planner_patch`）裁剪后，`merge_plan_state` 合并进全局 state，防止越权改写字段。
+
+### 5.2 角色与编排顺序
+
+固定顺序（见 `orchestrator.py` 中 `_AGENT_ORDER`）：
+
+1. **Planner** — `planner_agent.py`：更新 `meta.theme_description`、`global_constraints`、`plan`、`segments` 的设计字段（不含 playlist/script）。
+2. **Music Curator** — `music_curator_agent.py`：仅写各 segment 的 `playlist`（曲目与顺序）。
+3. **Script Writer** — `script_writer_agent.py`：仅写 `segments[*].script`（段首与曲间串词）。
+4. **Critic** — `critic_agent.py`：只写 `critic.*` 与 `control.next_agent` 等控制字段，不直接改业务段落内容。
+
+**一轮（iteration）语义**：从 `control.next_agent` 指定的角色起，**依次执行到 Critic（含）**。  
+若 `critic.pass == True`，置 `control.status = "completed"` 并提前结束；否则递增 `control.iteration`，进入下一轮，下一轮起点由 Critic 写入的 `next_agent` 决定。  
+若在某轮中捕获 `AIServiceError`，将 `control.status = "error"` 并中断；若用尽迭代仍未通过，则 `status = "max_iterations_reached"`。
+
+### 5.3 与 PRD 契约表的关系
+
+PRD §6.3 的「可读 / 可写 / 禁止写」字段表是设计与代码的共同契约；实现上通过 **prompt 约束 + sanitize + merge** 三层减小漂移。新增字段时应同步：
+
+- `state_schema.json`（仓库根目录，外部契约参考）
+- `state.py` 内校验逻辑
+- `prompts.py` 与各 Agent 的 response schema
+
+### 5.4 可审计落盘（v3.6）
+
+当 `settings.app.multi_agent_audit_enabled` 为真时，`PlanOrchestrator` 构造 `FilePlanAuditSink`，目录为：
+
+`{output_dir}/audit/multi_agent/{request_id}/`
+
+写入内容包括（详见 `plan_audit.py`）：
+
+- 每次 Agent 调用：`iteration{i}_{agent_slug}.json`（含 raw 文本、解析后的 patch 等）。
+- 每轮 state 合并完成后：`iteration{i}_state.json`。
+- 异常时可选：`iteration{i}_state_partial.json`。
+
+写盘失败 **记录日志但不阻断主流程**，避免与模型错误混淆。
+
+### 5.5 单 Agent 模式差异
+
+- **产出结构**：顶层仅 `schema_version`、`meta`、`global_constraints`、`plan`、`segments`（无 `critic`/`control`）。
+- **调用**：`ThemePlanner._generate_plan_state_single_agent_subset` 使用 `build_theme_planner_messages` + 可选结构化输出 schema `SINGLE_AGENT_STATE_SUBSET_SCHEMA`。
+- **校验**：`validate_state_subset_for_single_agent`；pipeline 出口仍调用 `validate_state_conforms_to_schema(..., agent_mode="single_agent")`。
+
+---
+
+## 6. 制作链路关键技术（阶段二 / 三）
+
+### 6.1 选曲与顺序
+
+- `modules/selection/selector.py`：`select_tracks_by_snapshot` 按 snapshot 中 playlist **顺序** 映射本地库；缺失则抛错中断（`PlanMappingError`），符合 PRD「不让贪心算法替换 plan」。
+
+### 6.2 Segment 边界与串词时序
+
+- `compute_segment_boundaries_from_snapshot`：在已知 crossfade 策略下计算 **真实歌曲时间边界**，供 TTS 段对齐（继承 PRD v1.3+：不按 `target_duration_seconds` 估算插词点）。
+- `VoiceoverService.generate_voiceovers_from_snapshot`：基于边界与脚本生成各语音切片路径。
+
+### 6.3 混音时间线与转场语义（v3.9.1+）
+
+`modules/mixing/mixer.py` 按 **snapshot 展开的时间线** 交替编排串词与曲目，三类边界：
+
+| 边界类型 | Crossfade |
+|----------|-----------|
+| 歌 → 串词 | 否 |
+| 串词 → 歌 | 是（v4.2+ 可结合 intro 估计） |
+| 歌 → 歌 | 是 |
+
+### 6.4 Intro 估计与串词→歌限幅（v4.2–v4.4）
+
+- `modules/mixing/intro_align.py`：`estimate_track_intro_seconds` 返回 `intro_seconds`、`confidence`、`reason`。
+- 配置项（`Settings.audio`）：如 `voice_music_intro_align_enabled`、`voice_music_intro_align_max_seconds`、`voice_music_crossfade_seconds` 等，与 PRD v4.3「crossfade 不超过串词时长」一致，由 mixer 在构建参数与渲染阶段执行。
+
+### 6.5 母带与导出
+
+- `modules/mastering/processor.py`：对混音结果做响度归一化等到导出友好状态。
+- `modules/exporter/exporter.py`：写入最终 MP3 与 Show Notes 等。
+
+---
+
+## 7. 核心数据模型索引
+
+| 模型 / 别名 | 定义位置 | 用途 |
+|-------------|----------|------|
+| `EpisodeRequest` | `core/models.py` | CLI / pipeline 输入 |
+| `EpisodePlan` | `core/models.py` | 内存规划视图、导出元数据、旧接口兼容 |
+| `PlanState` | `modules/theme/state.py` | 阶段一共享状态（dict） |
+| `Stage2Snapshot` | `core/models.py` | 阶段二输入（Pydantic） |
+| `MixParamsJSON` | `core/models.py` | v4.5 阶段二产出 / 阶段三输入 |
+| `AudioRenderConfig` | `core/models.py` | crossfade、响度、比特率等渲染参数 |
+
+仓库根 `state_schema.json` 为 PlanState 的结构化参考；代码中另有运行时校验函数与之对齐。
+
+---
+
+## 8. 目录与文件布局（磁盘）
+
+在 `app.output_dir` 下（默认来自 `config.yaml`），典型一期节目：
+
+```text
+output/
+  episodes/
+    {episode_id}/
+      plans/
+        state.json              # 完整 PlanState
+        {episode_id}.json       # Stage2Snapshot（阶段二主输入）
+      mix/
+        mix.wav                 # 中间混音（一站式 create-episode）
+      mix_params/
+        {episode_id}_mix_params.json   # v4.5 阶段二产出（可选流程）
+      final/
+        {episode_id}.mp3
+        {episode_id}_show_notes.md
+  cache/                        # 扫库缓存、TTS 缓存等
+  audit/multi_agent/{request_id}/   # 多 Agent 审计（可选）
+```
+
+---
+
+## 9. 配置与安全
+
+- **配置文件**：`config.yaml`（`podcast-ai init-config` 生成模板）。
+- **密钥**：优先环境变量（如 `PODCAST_AI_LLM__API_KEY`、`PODCAST_AI_TTS__…`），避免把真实 Key 写入仓库。
+- **日志**：`core/logging_config.py`，CLI 支持 `--log-level`、`--log-file`。
+
+---
+
+## 10. 测试与质量
+
+- 测试位于 `tests/`，覆盖 orchestrator、各 Agent、sselection、mixing、TTS、pipeline 等关键路径；结构化输出与 JSON 解析有专项用例（如 `test_llm_structured_output.py`、`test_agent_json_parser.py`）。
+
+---
+
+## 11. 架构决策摘录（历史结论）
+
+以下结论仍适用；细节见 PRD 迭代说明与 git 历史。
+
+- **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
+- **AD-v4.1**：TTS 供应商抽象收敛到 `infra/tts_client.py`，CLI 仅切换 provider。
+- **AD-v4.2 / v4.5**：intro 估计与「阶段二参数 JSON + 阶段三渲染」拆分，混音语义 backward compatible（歌→歌规则不因 intro 改动）。
+
+---
+
+## 12. 常见问题（给新贡献者）
+
+1. **阶段二读哪个文件？**  
+   阶段一打印的 `{episode_id}.json`（在 `episodes/.../plans/`），不是旧的 `plans/<plan_id>.json` 主路径。
+
+2. **多 Agent 从哪读状态机？**  
+   `modules/theme/orchestrator.py` 的 `while iteration <= max_iterations` 与 `_run_round_from`。
+
+3. **为何仍保留 `EpisodePlan`？**  
+   兼容导出、Show Notes 与部分测试；主输入契约已迁移到 `Stage2Snapshot`。
+
+4. **JSON 修复是否主路径？**  
+   OpenRouter 结构化输出开启时以严格 schema 为主；`json_repair` 主要作为非结构化或兜底路径（见 `parse_agent_json_response` 参数）。
+
+---
+
+*文档维护建议：当修改 `pipeline.py` 阶段划分、`orchestrator.py` 状态机或 snapshot 字段时，请同步更新本文与 PRD 中的契约描述。*

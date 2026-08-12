@@ -5,6 +5,8 @@ app:
 audio:
   crossfade_seconds: 8.0
   voice_music_crossfade_seconds: 3.0
+  voice_music_intro_align_enabled: true
+  voice_music_intro_align_max_seconds: 15.0
   loudness_target_lufs: -14.0
 
 cache:
@@ -16,6 +18,7 @@ llm:
   api_key: ""
   base_url: "https://openrouter.ai/api/v1"
   model: "deepseek/deepseek-v3.2"
+  # model: "qwen/qwen3.6-flash"
   timeout_seconds: 60
   max_retries: 2
 
@@ -30,5 +33,14 @@ tts:
   elevenlabs:
     api_key: ""
     voice_id: ""
-    model: "eleven_multilingual_v2"
+    # model: "eleven_multilingual_v2"
+    model: "eleven_v3"
     output_format: "mp3_44100_128"
+  # v4.1：MiniMax（同步非流式）
+  minimax:
+    api_key: ""
+    model: "speech-2.8-hd"
+    # voice_id: "English_Sharp_Commentator"
+    voice_id: "Chinese (Mandarin)_Crisp_Girl"
+    query_interval_ms: 500
+    query_timeout_seconds: 30

@@ -1,0 +1,143 @@
+GLOBAL STYLE:
+The script should always sound like a real radio host speaking live — not like an essay, not like a poem, and not like a scripted performance.
+
+============================================================================
+OPENING:
+Write an opening script for a music radio show.
+
+STRUCTURE:
+1. Start with a casual greeting that welcomes both returning and first-time listeners.
+2. Briefly introduce the show by describing the playlist (mention genres, variety, and overall vibe).
+3. Include a line that connects with different listener motivations (e.g. music, mood, companionship).
+4. End with a short, energetic transition into the show (e.g. “Let’s go”, “Let’s get into it”).
+
+TONE & STYLE:
+- Conversational and natural (like a real human speaking, not writing)
+- Upbeat, positive, and confident
+- Relaxed and friendly, not formal
+- Inclusive and welcoming
+
+LANGUAGE GUIDELINES:
+- Use short to medium-length sentences
+- Use spoken English, not literary or poetic language
+- Avoid abstract or overly emotional expressions
+- Use casual phrases (e.g. “a mix of…”, “we’ve got you”, “let’s go”)
+- You may use dashes (—) to create natural pauses
+
+AVOID:
+- Overly poetic or reflective tone
+- Long monologues or deep emotional buildup
+- Complex vocabulary or philosophical statements
+
+GOAL:
+Make the listener feel immediately welcomed, lightly energized, and ready to start listening to music.
+
+**********************************************************
+EXAMPLE:
+Hey, welcome back — or welcome for the first time.
+
+Today’s show is packed with some seriously good tracks. A mix of pop, a bit of indie, maybe a few surprises — but overall, it’s all about good energy.
+
+So whether you’re here for the music, the mood, or just something to keep you company — we’ve got you.
+
+Let’s go.
+**********************************************************
+
+============================================================================
+CLOSING:
+
+Write a closing script for a music radio show.
+
+STRUCTURE:
+1. Start with a short and clear ending signal (e.g. “That’s a wrap”, “That’s it for today”).
+2. Include a line that carries the show’s energy or mood forward (e.g. encouraging the listener to take the feeling with them).
+3. End with a casual thank-you and goodbye.
+
+TONE & STYLE:
+- Light, positive, and effortless
+- Friendly and human (like talking to a listener directly)
+- Calm but slightly uplifting
+
+LANGUAGE GUIDELINES:
+- Keep sentences short and clean
+- Use simple, everyday vocabulary
+- Use casual expressions (e.g. “thanks for hanging out”, “see you soon”)
+- Focus on clarity and flow, not depth
+
+AVOID:
+- Long summaries of the show
+- Moral lessons or “big conclusions”
+- Emotional or poetic overstatement
+- Formal or scripted-sounding language
+
+GOAL:
+End the show smoothly, leave the listener with a positive feeling, and maintain a sense of easy companionship.
+
+**********************************************************
+EXAMPLE:
+And that’s a wrap.
+
+Take that energy with you — wherever you’re headed next.
+
+Thanks for hanging out, and I’ll see you soon.
+**********************************************************
+============================================================================
+TRANSITION:
+Write a natural transition script for a music radio show between two songs where you think is appropriate.
+
+
+CORE TASK:
+Create a smooth, engaging transition that connects the two songs. The transition must reflect the relationship between them (e.g. energy shift, emotional contrast, stylistic similarity, or artist context).
+
+TONE & STYLE:
+- Conversational and natural (like a real radio host speaking live)
+- Smooth, relaxed, and human
+- Lightly engaging, not overly dramatic
+- Confident but not scripted
+- Suitable for a modern pop / R&B / playlist-style show
+
+LANGUAGE GUIDELINES:
+- Use short to medium-length sentences
+- Use spoken English (not poetic or literary)
+- Avoid abstract or vague statements
+- Be specific to the songs/artists when possible
+- It should sound like something actually said on air
+
+---
+
+TECHNIQUE USAGE:
+
+Each transition should combine:
+- 2–4 FUNCTION techniques (what you say)
+- 1–2 EXPRESSION techniques (how you say it)
+
+Do NOT overload. Keep it natural.
+
+---
+
+FUNCTION TECHNIQUES (choose naturally):
+
+1. Song Reflection — briefly describe the previous song’s vibe or impact  
+2. Song Intro — introduce the next song naturally  
+3. Theme Talk — connect to the show’s theme or emotional direction  
+4. Companion Talk — speak directly to the listener (“you”)  
+5. Music Context — add relevant artist/song info (collab, era, style)  
+6. Storytelling — suggest a simple scene or relatable moment  
+7. Branding — lightly reference the show or host  
+8. Energy Shift — highlight how the mood is changing or continuing  
+
+---
+
+EXPRESSION TECHNIQUES (enhance naturally):
+
+1. Sensory Language — make the music feel physical or emotional (“feel that”, “hits”, “wraps around you”)  
+2. Physical Engagement — invite listener movement (“nod your head”, “let it move you”)  
+3. Emotional Carryover — extend the feeling forward (“take that energy with you”)  
+4. Tone Control — keep it light, medium, or slightly expressive (avoid heavy/poetic tone)
+
+---
+
+OUTPUT:
+- Write 2–3 variations
+- Each variation should feel slightly different
+- Keep each transition concise (2–5 lines max)

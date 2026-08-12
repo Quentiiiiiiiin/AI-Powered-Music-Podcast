@@ -11,13 +11,12 @@ from podcast_ai.modules.theme.json_repair import (
 )
 
 
-def test_standardize_llm_json_text_removes_code_fence_and_smart_quotes() -> None:
+def test_standardize_llm_json_text_removes_code_fence_only() -> None:
     raw = "```json\n{“a”: 1,}\n```"
     standardized = standardize_llm_json_text(raw)
-    # 应去掉 code fence，并把 smart quotes 变回普通引号
+    # 仅去掉 code fence；不改写内容字符
     assert "```" not in standardized
-    assert "“" not in standardized
-    assert "”" not in standardized
+    assert "“a”" in standardized
 
 
 def test_repair_and_standardize_json_can_be_parsed() -> None:

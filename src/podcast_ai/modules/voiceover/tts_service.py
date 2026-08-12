@@ -25,7 +25,7 @@ from podcast_ai.infra.tts_client import TTSClient, get_default_tts_client
 
 logger = logging.getLogger(__name__)
 
-# 语言 -> edge-tts 默认发音人（仅 provider=edge_tts 且未配置 tts.voice 时使用）
+# 语言 -> Edge 默认发音人（仅 provider=edge 且未配置 tts.voice 时使用）
 _DEFAULT_VOICE_BY_LANG = {
     "zh": "zh-CN-XiaoxiaoNeural",
     "en": "en-US-JennyNeural",
@@ -225,13 +225,16 @@ def _get_voice_for_language(language: str, settings: Settings) -> str:
     """
     返回传给 TTSClient.synthesize 的 voice 参数。
 
-    - ElevenLabs：默认用配置中的 voice_id（在客户端内解析）；此处仅在用户显式设置
-      `tts.voice` 时作为 voice_id 覆盖，否则返回空串，避免把 Edge 发音人名传给 ElevenLabs。
-    - Edge：优先 `tts.voice`，否则按语言选 Edge 默认发音人。
+    - `tts.voice` 显式配置时始终优先，作为跨供应商临时覆盖值。
+    - ElevenLabs：返回空串，由客户端使用 `tts.elevenlabs.voice_id`。
+    - MiniMax：优先 `tts.minimax.voice_id`，未配置再回退空串由客户端兜底。
+    - Edge：按语言回退默认发音人。
     """
     if settings.tts.voice and settings.tts.voice.strip():
         return settings.tts.voice.strip()
     prov = (settings.tts.provider or "").strip().lower()
     if prov == "elevenlabs":
         return ""
+    if prov == "minimax":
+        return (settings.tts.minimax.voice_id or "").strip()
     return _DEFAULT_VOICE_BY_LANG.get(language, "zh-CN-XiaoxiaoNeural")

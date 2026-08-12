@@ -8,7 +8,11 @@ import typer
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.logging_config import configure_logging
 from podcast_ai.core.models import EpisodeRequest
-from podcast_ai.core.pipeline import create_episode as pipeline_create_episode
+from podcast_ai.core.pipeline import (
+    create_episode as pipeline_create_episode,
+    create_episode_stage2 as pipeline_create_episode_stage2,
+    finalize_episode_stage3 as pipeline_finalize_episode_stage3,
+)
 from podcast_ai.core.pipeline import plan_episode as pipeline_plan_episode
 from podcast_ai.infra.config import load_settings
 
@@ -126,6 +130,8 @@ _INIT_CONFIG_YAML = """app:
 audio:
   crossfade_seconds: 8.0
   voice_music_crossfade_seconds: 3.0
+  voice_music_intro_align_enabled: true
+  voice_music_intro_align_max_seconds: 3.0
   loudness_target_lufs: -14.0
 
 cache:
@@ -136,9 +142,12 @@ llm:
   provider: "openai_compatible"
   api_key: ""
   base_url: "https://openrouter.ai/api/v1"
-  model: "minimax/minimax-m2.5"
+  model: "openai/gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v4.6：OpenRouter 供应方路由。留空=请求体不携带 provider（由 OpenRouter 自动选路）。
+  # 非空：填单个 slug（实现为 {"only":[slug]}）或 JSON 对象字符串（与官方 provider 字段一致）。
+  openrouter_provider: "azure/swedencentral"
 
 tts:
   provider: "elevenlabs"
@@ -153,14 +162,27 @@ tts:
     voice_id: ""
     model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
+  # v4.1：MiniMax（同步非流式）
+  minimax:
+    api_key: ""
+    model: "speech-2.8-hd"
+    voice_id: "male-qn-qingse"
+    query_interval_ms: 500
+    query_timeout_seconds: 30
 """
 
 _INIT_ENV_EXAMPLE = """# LLM / TTS key 建议放环境变量
 PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 # PODCAST_AI_LLM__BASE_URL=https://openrouter.ai/api/v1
+# v4.6：OpenRouter 供应方路由（仅当 base_url 为 OpenRouter 时生效；留空=自动选路）
+# PODCAST_AI_LLM__OPENROUTER_PROVIDER=
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
+# PODCAST_AI_TTS__PROVIDER=minimax
+# PODCAST_AI_TTS__MINIMAX__API_KEY=your_minimax_api_key_here
+# PODCAST_AI_TTS__MINIMAX__MODEL=speech-2.8-hd
+# PODCAST_AI_TTS__MINIMAX__VOICE_ID=male-qn-qingse
 """
 
 
@@ -223,6 +245,11 @@ def create_episode_cli(
         "-l",
         help="串词与 TTS 语言。",
     ),
+    tts_provider: Literal["edge", "elevenlabs", "minimax"] | None = typer.Option(
+        None,
+        "--tts-provider",
+        help="覆盖配置中的 TTS 供应商（edge/elevenlabs/minimax）。",
+    ),
 ) -> None:
     """
     阶段二：从规划文件继续，扫描音乐库 → 选曲 → 主持 TTS → 混音 → 母带 → 导出。
@@ -239,6 +266,7 @@ def create_episode_cli(
             music_dir=music_dir,
             topic=topic or None,
             language=language,
+            tts_provider=tts_provider,
         )
     except PodcastAIError as exc:
         typer.echo(f"[错误] 制作失败：{exc}", err=True)
@@ -246,6 +274,97 @@ def create_episode_cli(
     episode_root = result.audio_path.parent.parent
     show_notes_path = episode_root / "final" / f"{result.episode_id}_show_notes.md"
     typer.echo("制作完成：")
+    typer.echo(f"- 音频：{result.audio_path}")
+    typer.echo(f"- Show Notes：{show_notes_path}")
+    typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")
+
+
+@app.command("create-episode-stage2")
+def create_episode_stage2_cli(
+    snapshot_path: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="阶段一输出的 snapshot 路径（<episode_id>.json）。",
+    ),
+    music_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="本期节目音乐目录（已按目标歌单准备好歌曲）。",
+    ),
+    topic: str = typer.Option(
+        "",
+        "--topic",
+        "-t",
+        help="节目主题（用于 Show Notes 标题，可选）。",
+    ),
+    language: str = typer.Option(
+        "zh",
+        "--language",
+        "-l",
+        help="串词与 TTS 语言。",
+    ),
+    tts_provider: Literal["edge", "elevenlabs", "minimax"] | None = typer.Option(
+        None,
+        "--tts-provider",
+        help="覆盖配置中的 TTS 供应商（edge/elevenlabs/minimax）。",
+    ),
+) -> None:
+    """阶段二：生成可编辑混音参数 JSON（不导出最终音频）。"""
+    if not snapshot_path.exists():
+        typer.echo(f"[错误] snapshot 文件不存在：{snapshot_path}", err=True)
+        raise typer.Exit(code=1)
+    if not music_dir.exists() or not music_dir.is_dir():
+        typer.echo(f"[错误] 音乐目录不存在或非目录：{music_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        mix_params_json_path = pipeline_create_episode_stage2(
+            snapshot_path=snapshot_path,
+            music_dir=music_dir,
+            topic=topic or None,
+            language=language,
+            tts_provider=tts_provider,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] 阶段二失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("阶段二完成：")
+    typer.echo(f"- MixParamsJSON：{mix_params_json_path}")
+
+
+@app.command("finalize-episode-stage3")
+def finalize_episode_stage3_cli(
+    mix_params_json_path: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="阶段二生成的 MixParamsJSON 路径（*_mix_params.json）。",
+    ),
+    topic: str = typer.Option(
+        "",
+        "--topic",
+        "-t",
+        help="节目主题（覆盖 MixParamsJSON 中 topic，可选）。",
+    ),
+) -> None:
+    """阶段三：读取并校验 MixParamsJSON，完成最终混音导出。"""
+    if not mix_params_json_path.exists() or not mix_params_json_path.is_file():
+        typer.echo(f"[错误] MixParamsJSON 不存在或非文件：{mix_params_json_path}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        result = pipeline_finalize_episode_stage3(
+            mix_params_json_path=mix_params_json_path,
+            topic=topic or None,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] 阶段三失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    episode_root = result.audio_path.parent.parent
+    show_notes_path = episode_root / "final" / f"{result.episode_id}_show_notes.md"
+
+    typer.echo("阶段三完成：")
     typer.echo(f"- 音频：{result.audio_path}")
     typer.echo(f"- Show Notes：{show_notes_path}")
     typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")
