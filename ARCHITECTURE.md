@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 — 系统技术架构文档
 
 **文档角色**：面向贡献者与二次开发者的技术架构说明，与 [`PRD.md`](PRD.md) 中的产品需求互为补充：PRD 描述「要什么」，本文描述「代码里如何实现、模块如何划分、数据如何流转」。  
-**代码布局**：`src/podcast_ai/`（Typer CLI + 分层模块）。  
-**运行时形态**：本地单体 Python 应用，无内置 HTTP 服务；通过 CLI 调用 LLM（默认 OpenAI 兼容端点，常见为 OpenRouter）与 TTS。
+**代码布局**：`src/podcast_ai/`（Typer CLI + 可选 Gradio Developer Console + 分层模块）。  
+**运行时形态**：本地单体 Python 应用；主入口仍为 CLI。v5.0 起可另启本机 Gradio 开发者控制台（浏览器访问，默认如 `localhost:7860`），**仅作调试/实验入口，非正式 C 端产品前端**；业务仍经 `core/pipeline.py` 调用 LLM（默认 OpenAI 兼容端点，常见为 OpenRouter）与 TTS。
 
 ---
 
@@ -22,6 +22,7 @@
 |------|------|------|
 | 语言 | Python 3.10+ | |
 | CLI | Typer | `cli.py` |
+| Developer Console（v5.0） | Gradio | 本地开发者调试 UI；复用 pipeline，不引入 React |
 | 配置 | YAML + 环境变量（pydantic-settings） | `infra/config.py` |
 | LLM | OpenAI Chat Completions 兼容 HTTP | `infra/llm_client.py`，支持请求体附加 `response_format`（OpenRouter 结构化输出） |
 | TTS | 可插拔供应商 | `infra/tts_client.py`：`edge` / `elevenlabs` / `minimax` |
@@ -35,8 +36,9 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ 接口层：cli.py（Typer）                                     │
-│  解析参数、加载 Settings、调用 pipeline、退出码与用户输出      │
+│ 接口层                                                    │
+│  · cli.py（Typer）：解析参数、调用 pipeline、退出码           │
+│  · console/（Gradio，v5.0）：本机开发者控制台，只装配/展示     │
 └───────────────────────────┬─────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────┐
@@ -54,7 +56,7 @@
                    infra/（llm、tts、config、storage、audio_backend）
 ```
 
-- **接口层**：只做 I/O 与装配，不含领域规则。
+- **接口层**：只做 I/O 与装配，不含领域规则。CLI 与 Developer Console **并列**，均只调用 `pipeline` / Settings，不复制业务逻辑。
 - **应用层**：编排阶段流程、统一计时与异常语义（`PodcastAIError` / `PlanMappingError` 等）。
 - **领域模块**：按 PRD 功能拆分，`core/models.py` 提供跨模块数据结构。
 - **基础设施**：对外部系统（HTTP API、文件系统、缓存）的封装，便于替换实现。
@@ -256,6 +258,19 @@ output/
 - **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
 - **AD-v4.1**：TTS 供应商抽象收敛到 `infra/tts_client.py`，CLI 仅切换 provider。
 - **AD-v4.2 / v4.5**：intro 估计与「阶段二参数 JSON + 阶段三渲染」拆分，混音语义 backward compatible（歌→歌规则不因 intro 改动）。
+- **AD-v5.0：Developer Console — Gradio 本地开发者控制台（迭代二十五）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**——扩展接口层，不改变应用层/领域层/基础设施层边界与阶段划分
+  - **背景**：PRD v5.0 要求交付本机 Gradio **开发者调试控制台**（非正式 C 端前端），用于可视化改参、Run、结构化观察 Pipeline 状态与产物；CLI 必须保留
+  - **最小改动方案**：
+    - 新增接口入口（建议包路径 `src/podcast_ai/console/`，如 `app.py` / `launch`），用 Gradio 做表单与状态展示
+    - Console **只调用**现有 `core.pipeline`（`plan_episode` / `create_episode` / `create_episode_stage2` / `finalize_episode_stage3` 等）与 `Settings`；禁止在 UI 层重写选曲、混音、TTS 逻辑
+    - 本轮至少支持：核心参数编辑、参数集保存/加载（快照级）、Run 后展示阶段状态/产物路径/日志与错误/耗时；完整 Experiment 对比可后续迭代
+    - 依赖：将 `gradio` 加入可选或主依赖清单；启动失败给出明确错误（端口占用、导入失败等）
+    - **明确不做**：不因本迭代引入 React / 独立 Web 产品栈；不把 Console 当作多用户正式前端
+  - **影响面**：
+    - 主要：`cli` 旁新增 `console/`、依赖声明、README 启动说明
+    - 不改：`modules/*` 领域规则、`pipeline` 阶段契约、混音/TTS 抽象（除非仅为 Console 暴露已有返回值做展示）
 
 ---
 
@@ -273,6 +288,9 @@ output/
 4. **JSON 修复是否主路径？**  
    OpenRouter 结构化输出开启时以严格 schema 为主；`json_repair` 主要作为非结构化或兜底路径（见 `parse_agent_json_response` 参数）。
 
+5. **Gradio Console 和正式 Web UI 是一回事吗？**  
+   不是。v5.0 Developer Console 仅供开发者本机调试，必须复用 `pipeline`；正式创作者 Web UI 仍属后续扩展（PRD Phase 5）。
+
 ---
 
-*文档维护建议：当修改 `pipeline.py` 阶段划分、`orchestrator.py` 状态机或 snapshot 字段时，请同步更新本文与 PRD 中的契约描述。*
+*文档维护建议：当修改 `pipeline.py` 阶段划分、`orchestrator.py` 状态机、snapshot 字段或接口层入口（CLI / Console）时，请同步更新本文与 PRD 中的契约描述。*

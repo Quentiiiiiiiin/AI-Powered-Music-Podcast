@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v4.6  
+**文档版本**：v5.0  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v4.6）
+**产品阶段**：迭代验证中（进入 v5.0）
 
 ---
 
@@ -346,6 +346,24 @@
     4. 与 v3.4 的 `response_format` / `json_schema` 严格输出要求兼容，不因新增 provider 配置而破坏结构化输出链路。
     5. 默认配置下行为与迭代前一致（向后兼容），仅在使用新字段时切换路由。
 
+- **v5.0（迭代二十五：Developer Console — Gradio 本地开发者控制台）**：
+  - **问题**：日常开发与调试需频繁输入大量参数；虽有 `.env` / `config.yaml`，但通过 Windows CMD 启动、输入与查看 LLM/TTS/混音/日志输出仍低效。缺少面向**开发者**（非普通终端用户）的可视化控制台，难以快速「改参 → Run → 观察 → 再改参 → 比较」。
+  - **变更目标**：交付本地运行的 **Developer Console**（开发者调试/实验控制台，**不是**面向普通用户的正式产品前端）。第一阶段用 **Python + Gradio + 现有 Backend / AI Pipeline**，在本机浏览器访问（默认如 `http://localhost:7860`）。**不做**因「正式软件应使用 React」而引入 React。设计原则：**最大化开发者实验效率**，不追求视觉复杂度。
+  - **本轮能力范围**：
+    1. **参数可视化**：对关键运行参数进行输入、选择、修改、保存、加载（覆盖现有 CLI/config 中常用项即可，完整字段可后续扩展）。
+    2. **参数组合管理（方向与最小落地）**：为后续 Configuration / Preset / Experiment / Parameter Snapshot 预留概念与基础能力；本轮至少支持**当前参数集的保存与加载**（快照级），完整 Experiment 对比可后续迭代。
+    3. **Pipeline 结构化观察**：在 UI 中展示 Pipeline Status，以及 LLM / TTS / Music / Audio Processing / Final Output 等阶段状态；可查看文本结果、音频结果、中间产物、最终产物、日志、错误、执行时间。
+    4. **调试闭环**：支持在同一会话内反复修改参数并触发 Run，观察结果；CLI 路径保留，Console 为可选入口。
+  - **运行模式（第一阶段默认）**：Windows 本机 → Python 应用 → Gradio → 本地浏览器（如 `http://localhost:7860`）。
+  - **功能归类**：**新功能**（开发者控制台）+ **优化**（调试与实验效率）。
+  - **User Story（用户视角）**：作为开发者，我希望在浏览器里可视化改参、一键运行流水线并结构化查看各阶段输出与错误，而不是在 CMD 里反复敲命令和翻日志，这样我能更快完成实验与回归。
+  - **Acceptance Criteria（验收标准）**：
+    1. 本机可启动 Gradio Developer Console，并在本地浏览器打开（默认端口可配置，示例 `7860`）；启动失败时有明确错误提示。
+    2. Console 支持对至少一组核心运行参数的可视化编辑，以及参数配置的**保存/加载**；修改参数后可触发对现有 Pipeline 的 Run。
+    3. Run 过程或结束后，UI 能结构化展示 Pipeline 状态，以及 LLM / TTS / Music（或等价选曲映射）/ Audio Processing / Final Output 中与当前流程相关的状态与产物（含文本/音频路径或可播放预览、日志与错误、关键耗时信息）。
+    4. Console **复用现有 Backend / Pipeline**，不另起一套业务逻辑；既有 CLI 入口仍可用。
+    5. UI 以实验效率优先（清晰分区、少干扰），不强制引入 React 或重型前端栈。
+
 
 ## 1. 产品背景
 
@@ -604,7 +622,7 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
 
-### 6.4 当前版本成功指标（v4.6）
+### 6.4 当前版本成功指标（v5.0）
 
 | 指标 | 目标 |
 |------|------|
@@ -623,6 +641,7 @@
 | **intro 估计稳定性** | `estimate_track_intro_seconds` 在噪声/装饰音场景下误触发率下降，`confidence/reason` 可用于后续策略分流 |
 | **阶段三可编辑混音参数** | 用户可在最终导出前基于阶段二输出 JSON 微调 crossfade 参数，并通过阶段三获得最终 `wav/mp3` |
 | **OpenRouter 可配置 provider** | 在 `config.yaml` 中可配置 `provider`（可留空走自动路由）与 `model`，便于调试且请求层行为一致 |
+| **Developer Console 可用** | 本机 Gradio 控制台可改参、Run、结构化查看 Pipeline 各阶段状态与产物；CLI 仍可用 |
 
 ---
 
@@ -640,7 +659,7 @@
 
 | 需求 | 说明 |
 |------|------|
-| **交互方式** | 命令行或简易 GUI，输入简单明确 |
+| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0），输入与观察更直观 |
 | **错误提示** | 关键步骤失败时给出明确错误信息 |
 | **日志** | 记录主要步骤执行状态，便于排查问题 |
 
@@ -692,7 +711,8 @@
 
 | 功能 | 描述 | 优先级 |
 |------|------|--------|
-| **Web 产品界面** | 提供 Web UI，降低使用门槛 | P2 |
+| **Developer Console（Gradio）** | 本地开发者调试控制台（v5.0）；非面向普通用户的正式前端 | P0（已进入） |
+| **Web 产品界面** | 面向创作者的正式 Web UI（与 Developer Console 区分） | P2 |
 | **用户管理系统** | 若面向多用户，需账号、项目管理 | P3 |
 | **模板系统** | 预设节目模板（风格、结构），一键生成 | P1 |
 
@@ -709,8 +729,9 @@
 ```
 Phase 1 (已完成)  → MVP 核心流程打通
 Phase 2 (已完成)  → v2.x 计划一致性、串词时序、TTS 与过渡策略迭代
-Phase 3 (v3.0+)   → Key 匹配、Beatmatching、多音乐库、模板系统
-Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算法
+Phase 3 (已完成/进行中) → 多 Agent、契约统一、混音与 TTS 迭代
+Phase 4 (v5.0)   → Gradio Developer Console（开发者调试控制台，非正式 C 端前端）
+Phase 5 (未来)    → 正式 Web UI、流媒体接入、多用户、高级情绪算法 / Key 匹配等
 ```
 
 ---
@@ -726,6 +747,7 @@ Phase 4 (未来)    → Web UI、流媒体接入、多用户、高级情绪算�
 | **Loudness** | 响度，音频感知音量 |
 | **TTS** | Text-to-Speech，文本转语音 |
 | **Show Notes** | 节目说明文本，用于播客平台描述 |
+| **Developer Console** | 面向开发者的本地 Gradio 调试控制台，用于改参、Run、观察 Pipeline（非正式 C 端产品） |
 
 ### B. 参考与约束
 

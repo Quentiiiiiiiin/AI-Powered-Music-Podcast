@@ -1,92 +1,122 @@
-﻿## 版本 v4.6（迭代二十四：OpenRouter 可配置 LLM provider）
+﻿## 版本 v5.0（迭代二十五：Developer Console — Gradio 本地开发者控制台）
 
-基于 PRD v4.6：在经 **OpenRouter**（`llm.base_url` 指向 `openrouter.ai`）调用时，除现有 **`model`** 外，增加可在 **`config.yaml`** 中编辑的 **OpenRouter 供应方路由**配置；请求层读取后写入 OpenRouter **官方文档约定的** `chat/completions` 请求体字段（与 `messages`、`response_format` 等并列）。
+基于 PRD v5.0 与 ARCHITECTURE **AD-v5.0**：交付本机 **Gradio Developer Console**（开发者调试/实验入口，**非正式 C 端前端**）。默认本机浏览器访问（如 `http://localhost:7860`）。
 
-**语义约定（与 PRD 对齐）**：
-- **留空 / 未配置**：请求体**不**携带 OpenRouter 的 `provider` 路由对象（或按官方文档等价省略），由 OpenRouter **自动选择** provider；不得因未填而报错。
-- **非空**：按配置路由；若 OpenRouter 返回 **provider 非法或与 model 不兼容** 等错误，**原样透出**可读错误，**不静默回退**到未知默认。
+**硬约束**：
+- Console **只装配与展示**，业务一律调用现有 `core.pipeline`（`plan_episode` / `create_episode` / `create_episode_stage2` / `finalize_episode_stage3` 等）与 `Settings`；**禁止**在 UI 层重写选曲 / 混音 / TTS。
+- **不引入 React** 或独立 Web 产品栈；CLI 必须保留可用。
+- 本轮目标是**最大化实验效率**（清晰分区、少干扰），不做视觉复杂度；完整 Experiment 对比可后续迭代。
 
-**约束**：不改变阶段一各 Agent 业务契约；**v3.4** `response_format` / `json_schema` 严格输出语义保持不变。
+**本轮能力（验收对齐）**：
+1. 可启动 Gradio，端口可配置；启动失败有明确错误。
+2. 核心参数可视化编辑 + 参数集**保存/加载**（快照级）+ 触发 Run。
+3. Run 后结构化展示 Pipeline 状态、相关阶段产物（路径/可预览）、日志/错误、关键耗时。
+4. 复用现有 Backend；CLI 不回退。
 
 ---
 
-### Task 01 - 配置模型与命名（避免与 `llm.provider` 混淆）
-- **Task name**: v4.6 - LLMConfig 增加 OpenRouter 路由字段
-- **目标**: 在 `LLMConfig` 增加**独立字段**（建议 `openrouter_provider: str = ""`），表示 OpenRouter 的供应方路由；**不要**复用现有 `llm.provider`（该字段表示客户端实现类型，如 `openai_compatible`）。
-- **类型**: backend
+### Task 01 - Console 脚手架、依赖与启动入口
+- **Task name**: v5.0 - Gradio console scaffold + launch
+- **目标**: 新增 `src/podcast_ai/console/` 包（建议 `app.py` + `launch`），可本地启动 Gradio；将 `gradio` 加入依赖清单；启动失败（缺依赖、端口占用、导入失败）给出明确可读错误。
+- **类型**: frontend
 - **依赖关系**: 无
 - **Description**:
-  - 支持 `config.yaml` 与 `.env` 嵌套（如 `PODCAST_AI_LLM__OPENROUTER_PROVIDER`）加载。
-  - 默认值空串，保证「迭代前默认行为」：不传 OpenRouter `provider` 对象。
-- **Input**: PRD v4.6 验收 1、5
-- **Output**: 可序列化、可校验的配置字段
+  - 端口默认 `7860`，可从 CLI 参数或简单配置覆盖。
+  - 入口保持薄：组装 Gradio Blocks/Tabs，不含业务逻辑。
+  - 在 `pyproject.toml`（及 README）声明依赖与启动方式。
+- **Input**: AD-v5.0、现有包布局
+- **Output**: `podcast-ai console`（或等价）可打开空白/占位 UI
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-- **Estimated complexity**: S（0.5–1 小时）
+  - `src/podcast_ai/console/__init__.py`（新建）
+  - `src/podcast_ai/console/app.py`（新建）
+  - `src/podcast_ai/cli.py`（新增启动子命令）
+  - `pyproject.toml`
+- **Estimated complexity**: S（1–2 小时）
 
 ---
 
-### Task 02 - 请求层：按 OpenRouter 文档组装 `provider` 请求体
-- **Task name**: v4.6 - OpenAICompatibleLLMClient 写入 provider
-- **目标**: 在 `OpenAICompatibleLLMClient.generate` 构建 `payload` 时：若 `base_url` 判定为 OpenRouter 且 `openrouter_provider` 非空，则附加官方约定的 **`provider` 对象**（例如 `only` / `order` 等，以实现为准并对照当前 OpenRouter 文档）；否则**完全不加入** `provider` 键。
-- **类型**: backend
+### Task 02 - 核心参数表单（覆盖常用 CLI/config 项）
+- **Task name**: v5.0 - 参数可视化编辑区
+- **目标**: 在 Console 中提供一组**核心运行参数**的可视化输入/选择（不必穷尽所有 config 字段），足以驱动现有 Pipeline 常用路径。
+- **类型**: frontend
 - **依赖关系**: Task 01
 - **Description**:
-  - 非 OpenRouter 网关（`base_url` 不含 openrouter）时，**忽略** `openrouter_provider`，避免向非 OpenRouter 服务发送未知字段。
-  - 脱敏日志：`safe_payload` 中对 `provider` 做摘要（避免日志爆炸），与现有 `response_format` 脱敏风格一致。
-  - `kwargs`（含各 Agent 传入的 `response_format`）与 `model`/新增字段合并顺序保持不变，满足 PRD 验收 4。
-- **Input**: `src/podcast_ai/infra/llm_client.py`、OpenRouter 官方 provider routing 文档
-- **Output**: 所有经该客户端的 OpenRouter 请求统一携带正确 `provider` 行为
+  - 建议最小集（可按实现微调）：
+    - 阶段一：`topic`、`duration_minutes`、`language`、`agent_mode`、`output_dir`
+    - LLM：`model`、`openrouter_provider`（可空）、可选 `base_url`（只读或可编辑）
+    - 阶段二/三：`snapshot/plan` 路径、`music_dir`、`tts_provider`、`mix_params` JSON 路径
+    - 音频常用：`crossfade_seconds`、`voice_music_crossfade_seconds`、intro 对齐开关/上限（若已在 Settings）
+  - 表单值 → 组装为调用 `pipeline` / `Settings` 的参数；**不**在 Console 内复制校验规则，尽量复用现有模型校验/抛错。
+- **Input**: 现有 CLI 参数与 `Settings`
+- **Output**: 可编辑表单区块
 - **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
-- **Estimated complexity**: M（1.5–2.5 小时）
+  - `src/podcast_ai/console/app.py`（或拆 `params_ui.py`，避免过度拆分）
+- **Estimated complexity**: M（2–3 小时）
 
 ---
 
-### Task 03 - 错误信息与向后兼容验收
-- **Task name**: v4.6 - Provider 相关 4xx 提示与兼容
-- **目标**: 当 OpenRouter 因 `provider` 与 `model` 不兼容返回 400 等错误时，错误信息足够定位（可附带响应体片段，已有逻辑上扩展即可）；**provider 为空**路径下现有成功调用不受影响（PRD 验收 3、5）。
-- **类型**: backend
+### Task 03 - 参数快照：保存 / 加载
+- **Task name**: v5.0 - Parameter Snapshot save/load
+- **目标**: 支持将**当前参数集**保存为本地 JSON 快照，并加载回表单；为后续 Preset/Experiment 预留清晰命名，本轮不做完整 Experiment 对比 UI。
+- **类型**: frontend
 - **依赖关系**: Task 02
 - **Description**:
-  - 仅在确有必要时扩展 `AIServiceError` 提示文案（避免过度分支）。
-  - 确认多 Agent 路径均通过 `get_default_llm_client` → 同一 `generate`，无旁路重复实现。
-- **Input**: 现有 `AIServiceError` 抛出点
-- **Output**: 调试时可读、空 provider 不回归
+  - 快照目录建议：`{output_dir}/console_presets/` 或用户指定路径；文件内容仅为 Console 表单字段（不含密钥明文优先：API Key 可不写入快照或脱敏）。
+  - UI：Save / Load（路径选择或下拉最近快照）；非法 JSON 明确报错。
+- **Input**: Task 02 表单状态
+- **Output**: 可重复的参数集文件
 - **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
-  - （只读核对）`src/podcast_ai/modules/theme/*_agent.py`、`llm_planner.py`
-- **Estimated complexity**: S（0.5–1 小时）
+  - `src/podcast_ai/console/`（小模块如 `presets.py` 可选）
+- **Estimated complexity**: S（1–2 小时）
 
 ---
 
-### Task 04 - 示例配置与文档
-- **Task name**: v4.6 - README / init-config 示例
-- **目标**: 在 `README.md` 与 `cli.py` 内 `_INIT_CONFIG_YAML` 的 `llm:` 段补充 `openrouter_provider`（注释说明：留空=自动路由；非空=指定供应方 slug，具体形态以 OpenRouter 文档为准）。
-- **类型**: backend
-- **依赖关系**: Task 01
+### Task 04 - Run 动作：接线现有 Pipeline（不复制业务）
+- **Task name**: v5.0 - Console Run → pipeline
+- **目标**: UI 提供明确 Run 按钮（可按阶段拆分：Plan / Stage2 / Stage3 / 一键 Create），调用现有 `pipeline` API；捕获 `PodcastAIError` 等并回显到 UI。
+- **类型**: frontend
+- **依赖关系**: Task 02
 - **Description**:
-  - 若仓库存在 `config.example.yaml` / `.env.example`，同步一行说明即可，不展开长篇文档。
-- **Input**: PRD 验收 1
-- **Output**: 用户可复制即用的最小示例
+  - 推荐最小可用：至少覆盖 **plan-episode** + **create-episode-stage2** + **finalize-episode-stage3**（与 CLI 对齐）；可选保留「一键 create-episode」。
+  - Run 期间展示「running」状态；结束后写回结构化结果对象（供 Task 05 展示）。
+  - 长任务：Gradio 同步调用即可（本轮不做复杂队列/多 worker）；若阻塞过久，可后续再加进度。
+- **Input**: 表单参数 + `core.pipeline`
+- **Output**: 可触发的 Run + 结果数据结构
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`（或 `runner.py`：仅做参数映射与异常包装）
+  - （只读）`src/podcast_ai/core/pipeline.py`
+- **Estimated complexity**: M（2–3 小时）
+
+---
+
+### Task 05 - Pipeline 结构化观察（状态 / 产物 / 日志 / 耗时）
+- **Task name**: v5.0 - 结果与阶段状态面板
+- **目标**: Run 过程或结束后，UI 结构化展示 Pipeline Status，以及与当前流程相关的 LLM / TTS / Music / Audio / Final Output 状态与产物（文本摘要、音频路径或可播放预览、日志/错误、关键耗时）。
+- **类型**: frontend
+- **依赖关系**: Task 04
+- **Description**:
+  - 优先展示：**产物路径**（state / snapshot / mix_params / final mp3）、**错误信息**、**耗时**（可复用现有 `log_timing` 日志抓取，或在 runner 内简单计时包装——**不要**为此大改 pipeline）。
+  - 音频：Gradio `Audio` 组件播放本地最终/中间文件（若路径存在）。
+  - 文本：展示 Show Notes 片段、关键 JSON 路径链接式文本即可；避免在 UI 内嵌巨型 JSON 编辑器（阶段三微调仍可用外部编辑器打开 mix_params）。
+- **Input**: Task 04 运行结果
+- **Output**: 清晰分区的观察面板
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+- **Estimated complexity**: M（2–3 小时）
+
+---
+
+### Task 06 - 文档与冗余约束收尾
+- **Task name**: v5.0 - README 启动说明 + 边界声明
+- **目标**: 更新 README：如何安装 `gradio`、如何启动 Console、默认 URL/端口；明确「开发者调试工具，非正式产品 UI」；确认 CLI 命令列表未删减。
+- **类型**: backend
+- **依赖关系**: Task 01, Task 04
+- **Description**:
+  - 不新增多余文档文件；不在 ARCHITECTURE 外再写长文（除非已有惯例需一行同步）。
+  - 清理 Console 内未使用的占位组件/死代码。
+- **Input**: 完成态 Console
+- **Output**: 文档与实现一致
 - **Files involved**:
   - `README.md`
-  - `src/podcast_ai/cli.py`
-  - （若存在）`config.example.yaml`、`.env.example`
-- **Estimated complexity**: S（0.5 小时）
-
----
-
-### Task 05 - 单测：请求体是否包含 `provider`
-- **Task name**: v4.6 - LLM 请求 payload 断言
-- **目标**: 使用 `httpx` mock / 拦截，验证：① `openrouter_provider` 为空时 payload **无** `provider`；② 非空时 payload **有**符合实现约定的 `provider`；③ 非 OpenRouter `base_url` 时不发送 `provider`。
-- **类型**: backend
-- **依赖关系**: Task 02
-- **Description**:
-  - 不发起真实外网请求。
-  - 可选：断言 `response_format` 仍存在（与 kwargs 合并，满足验收 4）。
-- **Input**: `tests/` 现有 pytest 风格
-- **Output**: `pytest` 通过
-- **Files involved**:
-  - `tests/test_llm_client.py`（新建）或并入现有测试文件
-- **Estimated complexity**: M（1–2 小时）
+  - `src/podcast_ai/console/`
+- **Estimated complexity**: S（0.5–1 小时）

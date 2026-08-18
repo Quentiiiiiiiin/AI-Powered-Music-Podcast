@@ -407,6 +407,49 @@ def scan_library_cli(
         typer.echo(f"  ... 及另外 {len(tracks) - 10} 首")
 
 
+@app.command("console")
+def console_cli(
+    port: int = typer.Option(
+        7860,
+        "--port",
+        "-p",
+        help="HTTP 端口。",
+        show_default=True,
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="绑定地址（默认仅本机）。",
+        show_default=True,
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="不自动打开浏览器。",
+    ),
+) -> None:
+    """
+    启动本地 Developer Console（Gradio）。仅供开发调试，非正式产品 UI。
+    默认 http://127.0.0.1:7860
+    """
+    try:
+        from podcast_ai.console.app import ConsoleLaunchError, launch_console
+    except ImportError as exc:
+        typer.echo(
+            "[错误] 无法导入 Developer Console（可能未安装 gradio）。\n"
+            "请执行：pip install -e .\n"
+            f"详情：{exc}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        launch_console(host=host, port=port, inbrowser=not no_browser)
+    except ConsoleLaunchError as exc:
+        typer.echo(f"[错误] {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 def main() -> None:
     app()
 
