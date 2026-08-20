@@ -171,7 +171,7 @@ podcast-ai console --port 7861   # 端口占用时换端口
 podcast-ai console --no-browser  # 不自动打开浏览器
 ```
 
-启动失败（未安装 gradio、端口占用、导入错误）会打印明确错误。API Key 仍只放在 `.env`，参数快照（`{output_dir}/console_presets/`）不写入密钥。
+启动失败（未安装 gradio、端口占用、导入错误）会打印明确错误。API Key 仍只放在 `.env`，参数快照（`{output_dir}/console_presets/`）不写入密钥。Console 按 **阶段一 / 阶段二 / 阶段三** 顶部切换展示功能区（Preset 与观察面板跨阶段共用）。
 
 阶段三微调 mix_params 请用外部编辑器改 JSON，再在 Console 里填路径并 Run Stage 3。
 

@@ -164,70 +164,63 @@ def build_app():
         gr.Markdown(
             "## podcast-ai Developer Console\n"
             "本地开发者调试入口（**非正式产品 UI**）。"
-            "改参 → Run → 观察产物；业务仍走现有 `core.pipeline`，CLI 可继续使用。"
+            "顶部切换阶段一 / 二 / 三，下方只显示当前阶段；业务仍走 `core.pipeline`。"
         )
 
-        with gr.Row():
-            with gr.Column(scale=5):
-                with gr.Accordion("参数快照（Preset）", open=True):
-                    with gr.Row():
-                        preset_name = gr.Textbox(label="快照名称", placeholder="例如 debug_rnb_60min", scale=3)
-                        preset_pick = gr.Dropdown(
-                            label="已保存快照",
-                            choices=preset_choices,
-                            value=None,
-                            allow_custom_value=False,
-                            scale=3,
-                        )
-                    with gr.Row():
-                        save_btn = gr.Button("保存当前参数")
-                        load_btn = gr.Button("加载所选快照")
-                        refresh_btn = gr.Button("刷新列表")
-                    preset_msg = gr.Markdown("")
+        with gr.Accordion("参数快照（Preset，跨阶段共用）", open=False):
+            with gr.Row():
+                preset_name = gr.Textbox(label="快照名称", placeholder="例如 debug_rnb_60min", scale=3)
+                preset_pick = gr.Dropdown(
+                    label="已保存快照",
+                    choices=preset_choices,
+                    value=None,
+                    allow_custom_value=False,
+                    scale=3,
+                )
+            with gr.Row():
+                save_btn = gr.Button("保存当前参数")
+                load_btn = gr.Button("加载所选快照")
+                refresh_btn = gr.Button("刷新列表")
+            preset_msg = gr.Markdown("")
 
-                with gr.Accordion("阶段一 · Plan", open=True):
-                    topic = gr.Textbox(label="topic", placeholder="Late Night Chill Electronic", lines=2)
-                    with gr.Row():
-                        duration_minutes = gr.Number(
-                            label="duration_minutes",
-                            value=defaults.duration_minutes,
-                            minimum=1,
-                            precision=0,
-                        )
-                        language = gr.Radio(choices=["zh", "en"], value="zh", label="language")
-                        agent_mode = gr.Radio(
-                            choices=["multi_agent", "single_agent"],
-                            value="multi_agent",
-                            label="agent_mode",
-                        )
-                    output_dir = gr.Textbox(label="output_dir", value=defaults.output_dir)
+        with gr.Tabs():
+            with gr.Tab("阶段一 · 计划生成"):
+                topic = gr.Textbox(label="topic", placeholder="Late Night Chill Electronic", lines=2)
+                with gr.Row():
+                    duration_minutes = gr.Number(
+                        label="duration_minutes",
+                        value=defaults.duration_minutes,
+                        minimum=1,
+                        precision=0,
+                    )
+                    language = gr.Radio(choices=["zh", "en"], value="zh", label="language")
+                    agent_mode = gr.Radio(
+                        choices=["multi_agent", "single_agent"],
+                        value="multi_agent",
+                        label="agent_mode",
+                    )
+                output_dir = gr.Textbox(label="output_dir", value=defaults.output_dir)
+                llm_model = gr.Textbox(label="model", value=defaults.llm_model)
+                openrouter_provider = gr.Textbox(
+                    label="openrouter_provider",
+                    value=defaults.openrouter_provider,
+                    placeholder="留空 = OpenRouter 自动路由",
+                )
+                llm_base_url = gr.Textbox(label="base_url", value=defaults.llm_base_url)
+                plan_btn = gr.Button("Run Plan", variant="primary")
 
-                with gr.Accordion("LLM", open=True):
-                    llm_model = gr.Textbox(label="model", value=defaults.llm_model)
-                    openrouter_provider = gr.Textbox(
-                        label="openrouter_provider",
-                        value=defaults.openrouter_provider,
-                        placeholder="留空 = OpenRouter 自动路由",
-                    )
-                    llm_base_url = gr.Textbox(label="base_url", value=defaults.llm_base_url)
-
-                with gr.Accordion("阶段二 / 三 · Mix", open=True):
-                    snapshot_path = gr.Textbox(
-                        label="snapshot 路径",
-                        placeholder="output/episodes/ep_xxx/plans/ep_xxx.json",
-                    )
-                    music_dir = gr.Textbox(label="music_dir", value=defaults.music_dir)
-                    tts_provider = gr.Dropdown(
-                        label="tts_provider",
-                        choices=["default", "edge", "elevenlabs", "minimax"],
-                        value="default",
-                    )
-                    mix_params_path = gr.Textbox(
-                        label="mix_params JSON",
-                        placeholder="output/episodes/ep_xxx/mix_params/ep_xxx_mix_params.json",
-                    )
-
-                with gr.Accordion("音频", open=False):
+            with gr.Tab("阶段二 · 准备与中间产物"):
+                snapshot_path = gr.Textbox(
+                    label="snapshot 路径",
+                    placeholder="output/episodes/ep_xxx/plans/ep_xxx.json",
+                )
+                music_dir = gr.Textbox(label="music_dir", value=defaults.music_dir)
+                tts_provider = gr.Dropdown(
+                    label="tts_provider",
+                    choices=["default", "edge", "elevenlabs", "minimax"],
+                    value="default",
+                )
+                with gr.Row():
                     crossfade_seconds = gr.Number(
                         label="crossfade_seconds（歌→歌）",
                         value=defaults.crossfade_seconds,
@@ -236,50 +229,53 @@ def build_app():
                         label="voice_music_crossfade_seconds（串词→歌下限）",
                         value=defaults.voice_music_crossfade_seconds,
                     )
-                    intro_align_enabled = gr.Checkbox(
-                        label="voice_music_intro_align_enabled",
-                        value=defaults.intro_align_enabled,
-                    )
-                    intro_align_max_seconds = gr.Number(
-                        label="voice_music_intro_align_max_seconds",
-                        value=defaults.intro_align_max_seconds,
-                    )
+                intro_align_enabled = gr.Checkbox(
+                    label="voice_music_intro_align_enabled",
+                    value=defaults.intro_align_enabled,
+                )
+                intro_align_max_seconds = gr.Number(
+                    label="voice_music_intro_align_max_seconds",
+                    value=defaults.intro_align_max_seconds,
+                )
+                stage2_btn = gr.Button("Run Stage 2", variant="primary")
+                create_btn = gr.Button("One-shot Create（跳过人工改 mix_params）")
 
-                form_inputs = [
-                    topic,
-                    duration_minutes,
-                    language,
-                    agent_mode,
-                    output_dir,
-                    llm_model,
-                    openrouter_provider,
-                    llm_base_url,
-                    snapshot_path,
-                    music_dir,
-                    tts_provider,
-                    mix_params_path,
-                    crossfade_seconds,
-                    voice_music_crossfade_seconds,
-                    intro_align_enabled,
-                    intro_align_max_seconds,
-                ]
+            with gr.Tab("阶段三 · 最终混音与导出"):
+                mix_params_path = gr.Textbox(
+                    label="mix_params JSON",
+                    placeholder="output/episodes/ep_xxx/mix_params/ep_xxx_mix_params.json",
+                )
+                stage3_btn = gr.Button("Run Stage 3", variant="primary")
 
-                gr.Markdown("### Run")
-                with gr.Row():
-                    plan_btn = gr.Button("Run Plan", variant="primary")
-                    stage2_btn = gr.Button("Run Stage 2")
-                    stage3_btn = gr.Button("Run Stage 3")
-                    create_btn = gr.Button("One-shot Create")
+        # 观察区在 Tabs 外：切换阶段后仍能看到上次 Run 的路径/日志/音频。
+        # snapshot / mix_params 各只有一份控件（分属阶段二/三），Run 回填同一组件。
+        gr.Markdown("### 观察面板")
+        status_md = gr.Markdown("### Pipeline Status\n⚪ idle")
+        summary_md = gr.Markdown("")
+        artifacts_md = gr.Markdown("_（尚无产物路径）_")
+        error_box = gr.Textbox(label="错误", lines=4, interactive=False)
+        audio_out = gr.Audio(label="音频预览（final mp3 / 若存在）", type="filepath", interactive=False)
+        show_notes_box = gr.Textbox(label="Show Notes", lines=8, interactive=False)
+        logs_box = gr.Textbox(label="日志", lines=12, interactive=False)
 
-            with gr.Column(scale=5):
-                status_md = gr.Markdown("### Pipeline Status\n⚪ idle")
-                summary_md = gr.Markdown("")
-                artifacts_md = gr.Markdown("_（尚无产物路径）_")
-                error_box = gr.Textbox(label="错误", lines=4, interactive=False)
-                audio_out = gr.Audio(label="音频预览（final mp3 / 若存在）", type="filepath", interactive=False)
-                show_notes_box = gr.Textbox(label="Show Notes", lines=8, interactive=False)
-                logs_box = gr.Textbox(label="日志", lines=16, interactive=False)
-
+        form_inputs = [
+            topic,
+            duration_minutes,
+            language,
+            agent_mode,
+            output_dir,
+            llm_model,
+            openrouter_provider,
+            llm_base_url,
+            snapshot_path,
+            music_dir,
+            tts_provider,
+            mix_params_path,
+            crossfade_seconds,
+            voice_music_crossfade_seconds,
+            intro_align_enabled,
+            intro_align_max_seconds,
+        ]
         result_outputs = [
             status_md,
             summary_md,

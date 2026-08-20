@@ -139,12 +139,28 @@ def test_port_listening_probe() -> None:
     assert _is_port_listening("127.0.0.1", port) is False
 
 
+def _tab_labels(demo) -> list[str]:
+    labels: list[str] = []
+    for block in getattr(demo, "blocks", {}).values():
+        if type(block).__name__ not in {"Tab", "TabItem"}:
+            continue
+        label = getattr(block, "label", None)
+        if label:
+            labels.append(str(label))
+    return labels
+
+
 def test_build_app_smoke() -> None:
     pytest.importorskip("gradio")
     from podcast_ai.console.app import build_app
 
     demo = build_app()
     assert demo is not None
+    labels = _tab_labels(demo)
+    assert any("阶段一" in x for x in labels)
+    assert any("阶段二" in x for x in labels)
+    assert any("阶段三" in x for x in labels)
+    assert labels[0].startswith("阶段一")
 
 
 def test_cli_commands_not_removed() -> None:
