@@ -163,6 +163,25 @@ def test_build_app_smoke() -> None:
     assert labels[0].startswith("阶段一")
 
 
+def test_insight_md_shows_failure_and_single_agent() -> None:
+    from podcast_ai.console.app import _insight_md
+    from podcast_ai.console.runner import ConsoleRunResult
+
+    failed = ConsoleRunResult(
+        status="error",
+        command="plan",
+        error="LLM timeout",
+        plan_iteration=2,
+        plan_current_agent="Critic",
+    )
+    md = _insight_md(failed)
+    assert "2" in md and "Critic" in md and "LLM timeout" in md
+
+    single = ConsoleRunResult(status="success", command="plan", plan_current_agent="single_agent")
+    md_sa = _insight_md(single, agent_mode="single_agent")
+    assert "N/A" in md_sa and "single_agent" in md_sa
+
+
 def test_cli_commands_not_removed() -> None:
     """v5.0 只新增 console，既有子命令必须仍在。"""
     from podcast_ai.cli import app

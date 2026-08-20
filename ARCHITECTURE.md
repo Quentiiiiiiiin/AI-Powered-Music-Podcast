@@ -38,7 +38,7 @@
 ┌─────────────────────────────────────────────────────────┐
 │ 接口层                                                    │
 │  · cli.py（Typer）：解析参数、调用 pipeline、退出码           │
-│  · console/（Gradio，v5.0）：本机开发者控制台，只装配/展示     │
+│  · console/（Gradio，v5.0+）：本机开发者控制台，只装配/展示；v5.1 按三阶段切换；v5.2 阶段一增加运行态洞察与 Snapshot 可读编辑（仍不写业务逻辑）     │
 └───────────────────────────┬─────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────┐
@@ -271,6 +271,17 @@ output/
   - **影响面**：
     - 主要：`cli` 旁新增 `console/`、依赖声明、README 启动说明
     - 不改：`modules/*` 领域规则、`pipeline` 阶段契约、混音/TTS 抽象（除非仅为 Console 暴露已有返回值做展示）
+- **AD-v5.2：阶段一 Console — 运行态洞察 + Snapshot 可读编辑（迭代二十七）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅调整（是）**，但**不改变**系统分层、阶段契约与 `Stage2Snapshot` schema；能力收敛在 `console/`
+  - **背景**：PRD v5.2 要求在阶段一面板展示 iteration / 当前 Agent / 失败原因，并以播出时间线结构可读编辑 snapshot，保存为同目录新文件供阶段二消费
+  - **最小改动方案**：
+    - **运行态洞察**：优先从现有日志或 `audit/multi_agent` 事件抽取；若解析脆弱，可在 `PlanOrchestrator` 增加可选、无副作用的进度回调/结构化日志字段（iteration、agent、error），供 Console 订阅——**不**改变编排语义
+    - **Snapshot 可读编辑**：在 `console/` 内做「timeline 视图 ⇄ `Stage2Snapshot`」双向适配（章节串词 → 曲目 → 曲间串词交错）；写回前用既有 Pydantic/`Stage2Snapshot` 校验；默认**新文件名**保存，不覆盖源文件
+    - 禁止把业务校验/选曲/混音逻辑搬进 UI；保存失败明确报错
+  - **影响面**：
+    - 主要：`src/podcast_ai/console/`（UI + 适配器）；可选轻量触达 `modules/theme/orchestrator.py` 的可观测性钩子
+    - 不改：`Stage2Snapshot` 字段契约、阶段二输入格式、pipeline 阶段边界
 
 ---
 

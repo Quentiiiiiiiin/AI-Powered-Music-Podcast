@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Callable, Literal, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -118,6 +118,7 @@ def plan_episode(
     request: EpisodeRequest,
     settings: Settings | None = None,
     agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> Tuple[EpisodePlan, Path, Path]:
     """
     阶段一：调用 ThemePlanner 生成 EpisodePlan（内存对象），并落盘 state.json + {episode_id}.json。
@@ -126,6 +127,8 @@ def plan_episode(
 
     返回：(plan, state_json_path, episode_snapshot_json_path)。
     其中 `state_json_path` 为完整 state；`episode_snapshot_json_path` 为 v3.8 子集文件（非完整副本）。
+
+    on_progress：v5.2 可选运行态钩子；默认 None，行为与现网一致。
     """
     effective_settings = settings or load_settings()
     with log_timing(logger, "plan_episode"):
@@ -136,6 +139,7 @@ def plan_episode(
         plan, state = planner.generate_plan_and_state(
             request,
             agent_mode=agent_mode,
+            on_progress=on_progress,
         )
         validate_state_conforms_to_schema(state, agent_mode=agent_mode)
 

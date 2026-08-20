@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
@@ -19,6 +19,9 @@ from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, i
 logger = logging.getLogger(__name__)
 
 _AGENT_ORDER: List[str] = ["Planner", "Music Curator", "Script Writer", "Critic"]
+
+# v5.2：可选进度回调；默认 None 时与现网行为一致
+ProgressCallback = Callable[[dict], None]
 
 
 class PlanOrchestrator:
@@ -49,12 +52,29 @@ class PlanOrchestrator:
         self._writer = writer or ScriptWriterAgent(settings=self._settings)
         self._critic = critic or CriticAgent(settings=self._settings)
 
-    def run(self, request: EpisodeRequest, *, initial_state: PlanState | None = None) -> PlanState:
+    def run(
+        self,
+        request: EpisodeRequest,
+        *,
+        initial_state: PlanState | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> PlanState:
         """
         在 max_iterations 限制下，执行多轮「至少到 Critic」的 pipeline，返回最终 PlanState。
+
+        on_progress：可选、无副作用的可观测性钩子（v5.2）。不传则行为与现网一致。
         """
         state = initial_state or initialize_plan_state(request)
         assert_plan_state_valid(state)
+
+        def _emit(payload: dict) -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress(payload)
+            except Exception:  # noqa: BLE001
+                # 钩子失败不得影响编排
+                logger.debug("on_progress 回调异常已忽略", exc_info=True)
 
         audit_sink: PlanAuditSink | None = None
         if self._settings.app.multi_agent_audit_enabled:
@@ -72,6 +92,7 @@ class PlanOrchestrator:
         while iteration <= max_iterations:
             next_agent = str(state.get("control", {}).get("next_agent") or "Planner")
             logger.info("PlanOrchestrator iteration=%d, start_agent=%s", iteration, next_agent)
+            _emit({"event": "iteration_start", "iteration": iteration, "agent": next_agent})
 
             state_at_round_start = deepcopy(state)
             try:
@@ -81,6 +102,7 @@ class PlanOrchestrator:
                     mode,
                     audit_sink=audit_sink,
                     round_iteration=iteration,
+                    on_progress=_emit if on_progress is not None else None,
                 )
                 assert_plan_state_valid(state)
                 if audit_sink is not None:
@@ -88,6 +110,14 @@ class PlanOrchestrator:
                     audit_sink.write_state_snapshot(round_iteration=iteration, state=state)
             except AIServiceError as exc:
                 logger.error("PlanOrchestrator 在 iteration=%d 执行 %s 轮次时发生 AIServiceError：%s", iteration, next_agent, exc)
+                _emit(
+                    {
+                        "event": "error",
+                        "iteration": iteration,
+                        "agent": next_agent,
+                        "error": str(exc),
+                    }
+                )
                 if audit_sink is not None:
                     audit_sink.write_state_partial(
                         round_iteration=iteration,
@@ -146,6 +176,7 @@ class PlanOrchestrator:
         *,
         audit_sink: PlanAuditSink | None = None,
         round_iteration: int,
+        on_progress: ProgressCallback | None = None,
     ) -> PlanState:
         """
         从 start_agent 起步，按顺序执行到 Critic（含），返回更新后的 state。
@@ -155,7 +186,16 @@ class PlanOrchestrator:
 
         start_idx = _AGENT_ORDER.index(start_agent)
         for agent_name in _AGENT_ORDER[start_idx:]:
-            logger.debug("PlanOrchestrator round: running agent=%s", agent_name)
+            # INFO：便于 Console 日志缓冲在默认 INFO 级别下可见（v5.2）
+            logger.info("PlanOrchestrator round: running agent=%s", agent_name)
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "event": "agent_start",
+                        "iteration": round_iteration,
+                        "agent": agent_name,
+                    }
+                )
             if agent_name == "Planner":
                 state = self._planner.run(
                     state,

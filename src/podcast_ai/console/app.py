@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
 from podcast_ai.console.presets import list_preset_names, load_preset_by_name, save_preset
+from podcast_ai.console.run_progress import progress_from_events
 from podcast_ai.console.runner import (
     ConsoleParams,
     ConsoleRunResult,
@@ -16,6 +18,15 @@ from podcast_ai.console.runner import (
     run_plan,
     run_stage2,
     run_stage3,
+)
+from podcast_ai.console.snapshot_timeline import (
+    TABLE_HEADERS,
+    format_timeline_markdown,
+    load_snapshot_timeline,
+    save_timeline_as_new_snapshot,
+    table_rows_to_timeline,
+    timeline_from_dict,
+    timeline_to_table_rows,
 )
 from podcast_ai.infra.config import load_settings
 
@@ -122,6 +133,36 @@ def _audio_value(result: ConsoleRunResult) -> str | None:
     return str(path) if path.is_file() else None
 
 
+_INSIGHT_IDLE = "**iteration**: `—`  \n**当前 Agent**: `—`  \n**失败原因**: `—`"
+
+
+def _insight_md(result: ConsoleRunResult, *, agent_mode: str = "") -> str:
+    """阶段一运行态：iteration / Agent / 失败原因（失败时必显示）。"""
+    if result.status == "idle":
+        return _INSIGHT_IDLE
+    it = result.plan_iteration
+    agent = result.plan_current_agent
+    mode = (agent_mode or "").strip()
+    if mode == "single_agent" and it is None:
+        it_disp = "N/A"
+        agent_disp = agent or "single_agent"
+    elif result.status == "running" and it is None and not agent:
+        it_disp = "…"
+        agent_disp = "…"
+    else:
+        it_disp = "N/A" if it is None else str(it)
+        agent_disp = agent or "N/A"
+    if result.status == "error":
+        fail = (result.error or "").strip() or "未知错误"
+    else:
+        fail = "—"
+    return (
+        f"**iteration**: `{it_disp}`  \n"
+        f"**当前 Agent**: `{agent_disp}`  \n"
+        f"**失败原因**: {fail}"
+    )
+
+
 def _ui_pack(
     result: ConsoleRunResult,
     snapshot_path: str,
@@ -139,6 +180,7 @@ def _ui_pack(
         result.logs or "",
         snap,
         mix,
+        snap,
     )
 
 
@@ -151,6 +193,63 @@ def _yield_run(
     yield _ui_pack(running, params.snapshot_path, params.mix_params_path)
     result = runner(params)
     yield _ui_pack(result, params.snapshot_path, params.mix_params_path)
+
+
+def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
+    """计划运行：先标 running，再按进度钩子刷新洞察，最后给出完整结果。"""
+    sink: list[dict[str, Any]] = []
+    running = ConsoleRunResult.running("plan")
+    packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
+    insight = _insight_md(running, agent_mode=params.agent_mode)
+    yield (*packed, insight, insight)
+
+    holder: list[ConsoleRunResult] = []
+
+    def _work() -> None:
+        holder.append(run_plan(params, progress_sink=sink))
+
+    worker = threading.Thread(target=_work, daemon=True)
+    worker.start()
+    while True:
+        worker.join(timeout=0.8)
+        if not worker.is_alive():
+            break
+        hooked = progress_from_events(sink)
+        running.plan_iteration = hooked.iteration
+        running.plan_current_agent = hooked.current_agent
+        if params.agent_mode == "single_agent" and not running.plan_current_agent:
+            running.plan_current_agent = "single_agent"
+        packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
+        insight = _insight_md(running, agent_mode=params.agent_mode)
+        yield (*packed, insight, insight)
+
+    if not holder:
+        result = ConsoleRunResult(status="error", command="plan", error="计划线程异常退出")
+    else:
+        result = holder[0]
+    packed = _ui_pack(result, params.snapshot_path, params.mix_params_path)
+    insight = _insight_md(result, agent_mode=params.agent_mode)
+    yield (*packed, insight, insight)
+
+
+def _dataframe_rows(value: Any) -> list[list[Any]]:
+    if value is None:
+        return []
+    if hasattr(value, "columns"):
+        filled = value.fillna("")
+        rows: list[list[Any]] = []
+        for _, rec in filled.iterrows():
+            rows.append([rec[h] if h in filled.columns else "" for h in TABLE_HEADERS])
+        return rows
+    if isinstance(value, list):
+        out: list[list[Any]] = []
+        for row in value:
+            if isinstance(row, dict):
+                out.append([row.get(h, "") for h in TABLE_HEADERS])
+            else:
+                out.append(list(row))
+        return out
+    return []
 
 
 def build_app():
@@ -208,6 +307,32 @@ def build_app():
                 )
                 llm_base_url = gr.Textbox(label="base_url", value=defaults.llm_base_url)
                 plan_btn = gr.Button("Run Plan", variant="primary")
+                gr.Markdown("#### 运行态洞察")
+                plan_insight_md = gr.Markdown(_INSIGHT_IDLE)
+
+                with gr.Accordion("Snapshot 可读编辑", open=False):
+                    editor_snapshot_path = gr.Textbox(
+                        label="Snapshot 路径",
+                        placeholder="output/episodes/ep_xxx/plans/ep_xxx.json",
+                    )
+                    with gr.Row():
+                        load_snap_btn = gr.Button("加载时间线")
+                        save_snap_btn = gr.Button("保存为同目录新文件")
+                    editor_suffix = gr.Textbox(
+                        label="新文件后缀（可选）",
+                        placeholder="留空则用 _edited_{UTC时间戳}",
+                    )
+                    editor_msg = gr.Markdown("")
+                    timeline_md = gr.Markdown("_尚未加载 snapshot_")
+                    timeline_df = gr.Dataframe(
+                        headers=TABLE_HEADERS,
+                        value=[],
+                        interactive=True,
+                        wrap=True,
+                        row_count=1,
+                        label="可编辑：串词文本 / track / artist（不要改 kind 与 track_index）",
+                    )
+                    timeline_state = gr.State({"doc": None, "source": ""})
 
             with gr.Tab("阶段二 · 准备与中间产物"):
                 snapshot_path = gr.Textbox(
@@ -251,6 +376,7 @@ def build_app():
         # snapshot / mix_params 各只有一份控件（分属阶段二/三），Run 回填同一组件。
         gr.Markdown("### 观察面板")
         status_md = gr.Markdown("### Pipeline Status\n⚪ idle")
+        obs_insight_md = gr.Markdown(_INSIGHT_IDLE)
         summary_md = gr.Markdown("")
         artifacts_md = gr.Markdown("_（尚无产物路径）_")
         error_box = gr.Textbox(label="错误", lines=4, interactive=False)
@@ -286,11 +412,13 @@ def build_app():
             logs_box,
             snapshot_path,
             mix_params_path,
+            editor_snapshot_path,
         ]
+        plan_outputs = [*result_outputs, plan_insight_md, obs_insight_md]
 
         def on_plan(*args: Any):
             params = _params_from_form(*args)
-            yield from _yield_run("plan", params, run_plan)
+            yield from _yield_plan(params)
 
         def on_stage2(*args: Any):
             params = _params_from_form(*args)
@@ -304,10 +432,82 @@ def build_app():
             params = _params_from_form(*args)
             yield from _yield_run("create", params, run_create)
 
-        plan_btn.click(on_plan, inputs=form_inputs, outputs=result_outputs)
+        plan_btn.click(on_plan, inputs=form_inputs, outputs=plan_outputs)
         stage2_btn.click(on_stage2, inputs=form_inputs, outputs=result_outputs)
         stage3_btn.click(on_stage3, inputs=form_inputs, outputs=result_outputs)
         create_btn.click(on_create, inputs=form_inputs, outputs=result_outputs)
+
+        def on_load_snapshot(path: str):
+            try:
+                file_path = Path((path or "").strip())
+                if not str(file_path).strip() or str(file_path) in {".", ""}:
+                    raise ValueError("请填写 snapshot 路径。")
+                if not file_path.is_file():
+                    raise ValueError(f"文件不存在：{file_path}")
+                doc = load_snapshot_timeline(file_path)
+                return (
+                    format_timeline_markdown(doc),
+                    timeline_to_table_rows(doc),
+                    {"doc": doc.to_dict(), "source": str(file_path)},
+                    f"已加载 `{file_path}`",
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    f"加载失败：{exc}",
+                )
+
+        def on_save_snapshot(path: str, suffix: str, table: Any, state: dict[str, Any] | None):
+            try:
+                state = state or {}
+                source_raw = (state.get("source") or path or "").strip()
+                if not source_raw:
+                    raise ValueError("请先加载 snapshot。")
+                source = Path(source_raw)
+                raw_doc = state.get("doc")
+                if not isinstance(raw_doc, dict):
+                    raise ValueError("没有可保存的时间线，请先加载。")
+                base = timeline_from_dict(raw_doc)
+                doc = table_rows_to_timeline(base, _dataframe_rows(table))
+                dest: Path | None = None
+                extra = (suffix or "").strip()
+                if extra:
+                    dest = source.parent / f"{source.stem}_edited_{extra}.json"
+                out = save_timeline_as_new_snapshot(doc, source, dest_path=dest)
+                return (
+                    format_timeline_markdown(doc),
+                    f"已保存 `{out}`（未覆盖源文件）",
+                    str(out),
+                    str(out),
+                    {"doc": doc.to_dict(), "source": str(out)},
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    gr.update(),
+                    f"保存失败：{exc}",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+
+        load_snap_btn.click(
+            on_load_snapshot,
+            inputs=[editor_snapshot_path],
+            outputs=[timeline_md, timeline_df, timeline_state, editor_msg],
+        )
+        save_snap_btn.click(
+            on_save_snapshot,
+            inputs=[editor_snapshot_path, editor_suffix, timeline_df, timeline_state],
+            outputs=[
+                timeline_md,
+                editor_msg,
+                snapshot_path,
+                editor_snapshot_path,
+                timeline_state,
+            ],
+        )
 
         def on_save(name: str, out_dir: str, *args: Any):
             params = _params_from_form(*args)

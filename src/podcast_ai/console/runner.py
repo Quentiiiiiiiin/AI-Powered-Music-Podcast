@@ -10,6 +10,11 @@ from typing import Any, Callable, Literal
 
 from pydantic import ValidationError
 
+from podcast_ai.console.run_progress import (
+    merge_progress,
+    parse_plan_progress_from_logs,
+    progress_from_events,
+)
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.core.pipeline import (
@@ -68,6 +73,10 @@ class ConsoleRunResult:
     show_notes: str = ""
     snapshot_path: str | None = None
     mix_params_path: str | None = None
+    # v5.2：阶段一运行态洞察（供 Console UI 读取；其他命令保持默认空）
+    plan_iteration: int | None = None
+    plan_current_agent: str | None = None
+    plan_progress_events: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def running(cls, command: CommandName) -> ConsoleRunResult:
@@ -228,7 +237,37 @@ def _run_command(command: CommandName, fn: Callable[[], ConsoleRunResult]) -> Co
         root.setLevel(previous_level)
 
 
-def run_plan(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
+def run_plan(
+    params: ConsoleParams,
+    *,
+    settings: Settings | None = None,
+    progress_sink: list[dict[str, Any]] | None = None,
+) -> ConsoleRunResult:
+    # 可注入外部 list，供 UI 在运行中轮询 iteration/agent（默认仍用内部 list）。
+    progress_events: list[dict[str, Any]] = progress_sink if progress_sink is not None else []
+
+    def _on_progress(ev: dict[str, Any]) -> None:
+        progress_events.append(dict(ev))
+
+    def _attach_progress(result: ConsoleRunResult) -> ConsoleRunResult:
+        from_hooks = progress_from_events(
+            progress_events,
+            failure_reason=result.error or None,
+        )
+        from_logs = parse_plan_progress_from_logs(result.logs)
+        merged = merge_progress(from_hooks, from_logs)
+        # single_agent：无 multi 日志时标注 current_agent
+        if merged.current_agent is None and _agent_mode(params) == "single_agent":
+            merged.current_agent = "single_agent"
+        if result.error and not merged.failure_reason:
+            merged.failure_reason = result.error
+        result.plan_iteration = merged.iteration
+        result.plan_current_agent = merged.current_agent
+        result.plan_progress_events = list(merged.events)
+        if merged.failure_reason and not result.error:
+            result.error = merged.failure_reason
+        return result
+
     def _inner() -> ConsoleRunResult:
         if not (params.topic or "").strip():
             raise PodcastAIError("主题不能为空。")
@@ -244,6 +283,7 @@ def run_plan(params: ConsoleParams, *, settings: Settings | None = None) -> Cons
             request,
             settings=effective,
             agent_mode=_agent_mode(params),
+            on_progress=_on_progress,
         )
         artifacts = {
             "state.json": str(state_path),
@@ -260,7 +300,8 @@ def run_plan(params: ConsoleParams, *, settings: Settings | None = None) -> Cons
             snapshot_path=str(snapshot_path),
         )
 
-    return _run_command("plan", _inner)
+    result = _run_command("plan", _inner)
+    return _attach_progress(result)
 
 
 def run_stage2(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
