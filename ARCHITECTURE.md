@@ -38,7 +38,7 @@
 ┌─────────────────────────────────────────────────────────┐
 │ 接口层                                                    │
 │  · cli.py（Typer）：解析参数、调用 pipeline、退出码           │
-│  · console/（Gradio，v5.0+）：本机开发者控制台，只装配/展示；v5.1 按三阶段切换；v5.2 阶段一增加运行态洞察与 Snapshot 可读编辑（仍不写业务逻辑）     │
+│  · console/（Gradio，v5.0+）：本机开发者控制台，只装配/展示；v5.1 按三阶段切换；v5.2 阶段一运行态洞察与 Snapshot 可读编辑；v5.3 阶段二 MixParams 时间线试听与 `vm_seconds` 编辑（仍不写业务逻辑）     │
 └───────────────────────────┬─────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────┐
@@ -282,6 +282,18 @@ output/
   - **影响面**：
     - 主要：`src/podcast_ai/console/`（UI + 适配器）；可选轻量触达 `modules/theme/orchestrator.py` 的可观测性钩子
     - 不改：`Stage2Snapshot` 字段契约、阶段二输入格式、pipeline 阶段边界
+- **AD-v5.3：阶段二 Console — 节目时间线试听与转场 `vm_seconds` 编辑（迭代二十八）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅调整（是）**，但**不改变**系统分层、`MixParamsJSON` schema 与阶段三渲染契约；能力收敛在 `console/`
+  - **背景**：PRD v5.3 要求在阶段二面板按节目时间线展示音乐/串词/转场节点，支持本地音频试听（含进度条），并在线编辑 `transitions[*].vm_seconds`，另存新 JSON 供阶段三消费
+  - **最小改动方案**：
+    - 在 `console/` 内新增「MixParams 时间线视图 ⇄ `MixParamsJSON`」适配（音乐 → 串词 → 转场信息交错），模式对齐 v5.2 的 snapshot timeline，**不**改 `core/models.py` 中 MixParams 字段定义
+    - 试听仅读取 JSON 中已有本地路径（曲目 `file_path`、串词 `audio_path`），用 Gradio Audio/进度控件播放；不做二次混音或重算 intro
+    - 编辑聚焦 `vm_seconds`；保存前用 `MixParamsJSON` 校验；非法值明确报错；默认同目录**新文件**保存，不覆盖源文件
+    - 阶段三仍只消费校验后的 MixParamsJSON；Console 不复制 `Mixer.render_final_mix_from_mix_params` 逻辑
+  - **影响面**：
+    - 主要：`src/podcast_ai/console/`（阶段二面板 UI + MixParams timeline 适配器）
+    - 不改：`create_episode_stage2` / `finalize_episode_stage3` 契约、`Mixer` 转场语义、`MixParamsTransition` 字段集合
 
 ---
 

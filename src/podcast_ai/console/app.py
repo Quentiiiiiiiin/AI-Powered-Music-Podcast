@@ -8,6 +8,16 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator
 
+from podcast_ai.console.mix_params_timeline import (
+    apply_vm_edits,
+    find_mix_node,
+    format_mix_timeline_markdown,
+    load_mix_params_timeline,
+    mix_node_choice_pairs,
+    mix_timeline_from_dict,
+    save_mix_params_as_new_file,
+    timeline_source_as_mix_params,
+)
 from podcast_ai.console.presets import list_preset_names, load_preset_by_name, save_preset
 from podcast_ai.console.run_progress import progress_from_events
 from podcast_ai.console.runner import (
@@ -181,6 +191,7 @@ def _ui_pack(
         snap,
         mix,
         snap,
+        mix,
     )
 
 
@@ -365,6 +376,43 @@ def build_app():
                 stage2_btn = gr.Button("Run Stage 2", variant="primary")
                 create_btn = gr.Button("One-shot Create（跳过人工改 mix_params）")
 
+                with gr.Accordion("MixParams 时间线试听 / vm_seconds", open=False):
+                    mix_editor_path = gr.Textbox(
+                        label="MixParams JSON 路径",
+                        placeholder="output/episodes/ep_xxx/mix_params/ep_xxx_mix_params.json",
+                    )
+                    with gr.Row():
+                        load_mix_btn = gr.Button("加载时间线")
+                        save_mix_btn = gr.Button("保存为同目录新文件")
+                    mix_suffix = gr.Textbox(
+                        label="新文件后缀（可选）",
+                        placeholder="留空则用 _edited_{UTC时间戳}",
+                    )
+                    mix_tl_msg = gr.Markdown("")
+                    mix_tl_md = gr.Markdown("_尚未加载 mix_params_")
+                    mix_node_pick = gr.Dropdown(
+                        label="选中节点",
+                        choices=[],
+                        value=None,
+                        allow_custom_value=False,
+                    )
+                    mix_node_hint = gr.Markdown("")
+                    mix_node_audio = gr.Audio(
+                        label="节点试听（可拖动进度条）",
+                        type="filepath",
+                        interactive=False,
+                    )
+                    mix_vm_seconds = gr.Number(
+                        label="vm_seconds（仅转场节点可编辑）",
+                        value=None,
+                        minimum=0,
+                        interactive=False,
+                    )
+                    mix_vm_meta = gr.Markdown("—")
+                    mix_tl_state = gr.State(
+                        {"doc": None, "source": "", "edits": {}, "selected": None}
+                    )
+
             with gr.Tab("阶段三 · 最终混音与导出"):
                 mix_params_path = gr.Textbox(
                     label="mix_params JSON",
@@ -413,6 +461,7 @@ def build_app():
             snapshot_path,
             mix_params_path,
             editor_snapshot_path,
+            mix_editor_path,
         ]
         plan_outputs = [*result_outputs, plan_insight_md, obs_insight_md]
 
@@ -506,6 +555,222 @@ def build_app():
                 snapshot_path,
                 editor_snapshot_path,
                 timeline_state,
+            ],
+        )
+
+        def _mix_state_or_empty(state: dict[str, Any] | None) -> dict[str, Any]:
+            return dict(state or {"doc": None, "source": "", "edits": {}, "selected": None})
+
+        def _flush_vm(
+            state: dict[str, Any],
+            node_id: str | None,
+            vm: float | None,
+        ) -> dict[str, Any]:
+            raw_doc = state.get("doc")
+            if not isinstance(raw_doc, dict) or not node_id:
+                return state
+            doc = mix_timeline_from_dict(raw_doc)
+            item = find_mix_node(doc, node_id)
+            if item is None or item.kind != "transition" or not item.voice_segment_id:
+                return state
+            if vm is None:
+                return state
+            edits = dict(state.get("edits") or {})
+            edits[item.voice_segment_id] = float(vm)
+            state["edits"] = edits
+            return state
+
+        def on_load_mix(path: str):
+            try:
+                file_path = Path((path or "").strip())
+                if not str(file_path).strip() or str(file_path) in {".", ""}:
+                    raise ValueError("请填写 MixParams JSON 路径。")
+                if not file_path.is_file():
+                    raise ValueError(f"文件不存在：{file_path}")
+                doc = load_mix_params_timeline(file_path)
+                pairs = mix_node_choice_pairs(doc)
+                state = {
+                    "doc": doc.to_dict(),
+                    "source": str(file_path),
+                    "edits": {},
+                    "selected": None,
+                }
+                return (
+                    format_mix_timeline_markdown(doc),
+                    gr.Dropdown(choices=pairs, value=None),
+                    state,
+                    f"已加载 `{file_path}` · {len(doc.items)} 个节点",
+                    None,
+                    "",
+                    gr.update(value=None, interactive=False),
+                    "—",
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    f"加载失败：{exc}",
+                    None,
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+
+        def on_select_mix_node(node_id: str | None, vm: float | None, state: dict[str, Any] | None):
+            state = _mix_state_or_empty(state)
+            prev = state.get("selected")
+            if isinstance(prev, str):
+                state = _flush_vm(state, prev, vm)
+            state["selected"] = node_id
+            raw_doc = state.get("doc")
+            if not isinstance(raw_doc, dict):
+                return (
+                    None,
+                    "请先加载 mix_params。",
+                    gr.update(value=None, interactive=False),
+                    "—",
+                    state,
+                    gr.update(),
+                )
+            doc = mix_timeline_from_dict(raw_doc)
+            edits = dict(state.get("edits") or {})
+            md = format_mix_timeline_markdown(doc, edits=edits)
+            item = find_mix_node(doc, node_id)
+            if item is None:
+                return (
+                    None,
+                    "未选中节点。",
+                    gr.update(value=None, interactive=False),
+                    "—",
+                    state,
+                    md,
+                )
+            if item.kind in {"music", "voice"}:
+                audio = Path(item.audio_path) if item.audio_path else None
+                if audio is None or not audio.is_file():
+                    return (
+                        None,
+                        f"音频文件不存在：{item.audio_path}",
+                        gr.update(value=None, interactive=False),
+                        "—",
+                        state,
+                        md,
+                    )
+                kind_label = "音乐" if item.kind == "music" else "串词"
+                return (
+                    str(audio.resolve()),
+                    f"试听{kind_label}节点 `{item.node_id}`（可用进度条定位）",
+                    gr.update(value=None, interactive=False),
+                    "—",
+                    state,
+                    md,
+                )
+            vid = item.voice_segment_id or ""
+            current_vm = edits.get(vid, item.vm_seconds)
+            meta = (
+                f"**vm_candidate_seconds**: `{item.vm_candidate_seconds}`  \n"
+                f"**intro_seconds**: `{item.intro_seconds}`  \n"
+                f"**confidence**: `{item.confidence}`  \n"
+                f"**reason**: {item.reason or '—'}"
+            )
+            return (
+                None,
+                "转场节点没有独立音频，请编辑下方 `vm_seconds`。",
+                gr.update(value=current_vm, interactive=True),
+                meta,
+                state,
+                md,
+            )
+
+        def on_save_mix(path: str, suffix: str, node_id: str | None, vm: float | None, state: dict[str, Any] | None):
+            try:
+                state = _flush_vm(_mix_state_or_empty(state), node_id, vm)
+                source_raw = (state.get("source") or path or "").strip()
+                if not source_raw:
+                    raise ValueError("请先加载 MixParams JSON。")
+                raw_doc = state.get("doc")
+                if not isinstance(raw_doc, dict):
+                    raise ValueError("没有可保存的时间线，请先加载。")
+                doc = mix_timeline_from_dict(raw_doc)
+                model = apply_vm_edits(timeline_source_as_mix_params(doc), dict(state.get("edits") or {}))
+                source = Path(source_raw)
+                dest: Path | None = None
+                extra = (suffix or "").strip()
+                if extra:
+                    dest = source.parent / f"{source.stem}_edited_{extra}.json"
+                out = save_mix_params_as_new_file(model, source, dest_path=dest)
+                new_doc = load_mix_params_timeline(out)
+                pairs = mix_node_choice_pairs(new_doc)
+                new_state = {
+                    "doc": new_doc.to_dict(),
+                    "source": str(out),
+                    "edits": {},
+                    "selected": None,
+                }
+                return (
+                    format_mix_timeline_markdown(new_doc),
+                    f"已保存 `{out}`（未覆盖源文件）",
+                    str(out),
+                    str(out),
+                    new_state,
+                    gr.Dropdown(choices=pairs, value=None),
+                    None,
+                    gr.update(value=None, interactive=False),
+                    "—",
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    gr.update(),
+                    f"保存失败：{exc}",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+
+        load_mix_btn.click(
+            on_load_mix,
+            inputs=[mix_editor_path],
+            outputs=[
+                mix_tl_md,
+                mix_node_pick,
+                mix_tl_state,
+                mix_tl_msg,
+                mix_node_audio,
+                mix_node_hint,
+                mix_vm_seconds,
+                mix_vm_meta,
+            ],
+        )
+        mix_node_pick.change(
+            on_select_mix_node,
+            inputs=[mix_node_pick, mix_vm_seconds, mix_tl_state],
+            outputs=[
+                mix_node_audio,
+                mix_node_hint,
+                mix_vm_seconds,
+                mix_vm_meta,
+                mix_tl_state,
+                mix_tl_md,
+            ],
+        )
+        save_mix_btn.click(
+            on_save_mix,
+            inputs=[mix_editor_path, mix_suffix, mix_node_pick, mix_vm_seconds, mix_tl_state],
+            outputs=[
+                mix_tl_md,
+                mix_tl_msg,
+                mix_params_path,
+                mix_editor_path,
+                mix_tl_state,
+                mix_node_pick,
+                mix_node_audio,
+                mix_vm_seconds,
+                mix_vm_meta,
             ],
         )
 
