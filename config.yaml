@@ -4,7 +4,7 @@ app:
 
 audio:
   crossfade_seconds: 8.0
-  voice_music_crossfade_seconds: 3.0
+  voice_music_crossfade_seconds: 0.0
   voice_music_intro_align_enabled: true
   voice_music_intro_align_max_seconds: 15.0
   loudness_target_lufs: -14.0

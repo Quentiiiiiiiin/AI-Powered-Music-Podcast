@@ -155,7 +155,27 @@ podcast-ai scan-library D:/Music                               # 扫描音乐库
 podcast-ai init-config --force                                 # 强制覆盖配置文件
 podcast-ai plan-episode "主题" 30 -l en                        # 英文规划
 podcast-ai plan-episode "主题" 30 --agent-mode single_agent    # 单 agent 生成（输出 state 子集）
+podcast-ai console                                             # 启动 Developer Console（v5.0）
 ```
+
+---
+
+## Developer Console（v5.0）
+
+本机 **开发者调试控制台**（非正式创作者产品 UI）。用浏览器改参、分阶段 Run、查看产物/日志；**复用现有 pipeline**，不替代 CLI。
+
+```bash
+pip install -e .                 # 已包含 gradio
+podcast-ai console               # 默认 http://127.0.0.1:7860
+podcast-ai console --port 7861   # 端口占用时换端口
+podcast-ai console --no-browser  # 不自动打开浏览器
+```
+
+启动失败（未安装 gradio、端口占用、导入错误）会打印明确错误。API Key 仍只放在 `.env`，参数快照（`{output_dir}/console_presets/`）不写入密钥。Console 按 **阶段一 / 阶段二 / 阶段三** 顶部切换展示功能区（Preset 与观察面板跨阶段共用）。
+
+**v5.2 阶段一（后端已就绪）**：运行结束后可从日志/进度钩子读取 **iteration / 当前 Agent / 失败原因**（`ConsoleRunResult.plan_*`）；snapshot 可读时间线适配在 `console/snapshot_timeline.py`（章节串词→曲目→曲间串词），校验通过后保存为同目录新文件（默认不覆盖源文件）。
+
+阶段三微调 mix_params 请用外部编辑器改 JSON，再在 Console 里填路径并 Run Stage 3。
 
 ## 配置说明
 
@@ -275,7 +295,8 @@ pytest tests/ -v
 
 ```
 src/podcast_ai/
-  cli.py           # 命令行入口
+  cli.py           # 命令行入口（含 console 子命令）
+  console/         # Gradio Developer Console（只装配/展示，调用 pipeline）
   core/            # 流水线、模型、日志、异常
   infra/           # 配置、LLM/TTS 客户端、音频后端、存储
   modules/         # 主题生成、扫库、选曲、混音、主持、母带、导出

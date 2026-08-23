@@ -5,7 +5,7 @@ import logging
 import uuid
 from math import ceil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Literal
+from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodePlan, EpisodeRequest, EpisodeSegment, PlaylistItem
@@ -185,17 +185,21 @@ class ThemePlanner:
         request: EpisodeRequest,
         *,
         agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
+        on_progress: Callable[[dict], None] | None = None,
     ) -> tuple[EpisodePlan, PlanState]:
         """
         v3.1：同时生成 EpisodePlan（阶段二可用）与 PlanState（落盘为 state.json）。
 
         - multi_agent：PlanOrchestrator 直接返回 PlanState，再映射为 EpisodePlan
         - single_agent：单次 LLM 先生成 EpisodePlan，再映射为 PlanState（critic/control 置 null）
+        - on_progress：v5.2 可选进度钩子（仅 multi_agent 转发；默认不传）
         """
         if agent_mode == "multi_agent":
-            state = self._generate_plan_state_v3_orchestrator(request)
+            state = self._generate_plan_state_v3_orchestrator(request, on_progress=on_progress)
             return _episode_plan_from_state(state), state
 
+        if on_progress is not None:
+            on_progress({"event": "agent_start", "iteration": None, "agent": "single_agent"})
         state = self._generate_plan_state_single_agent_subset(request)
         return _episode_plan_from_state(state), state
 
@@ -204,18 +208,26 @@ class ThemePlanner:
         request: EpisodeRequest,
         *,
         agent_mode: Literal["single_agent", "multi_agent"] = "multi_agent",
+        on_progress: Callable[[dict], None] | None = None,
     ) -> PlanState:
         """仅生成 PlanState。通常由 pipeline 保存为 state.json。"""
         if agent_mode == "multi_agent":
-            return self._generate_plan_state_v3_orchestrator(request)
+            return self._generate_plan_state_v3_orchestrator(request, on_progress=on_progress)
+        if on_progress is not None:
+            on_progress({"event": "agent_start", "iteration": None, "agent": "single_agent"})
         return self._generate_plan_state_single_agent_subset(request)
 
-    def _generate_plan_state_v3_orchestrator(self, request: EpisodeRequest) -> PlanState:
+    def _generate_plan_state_v3_orchestrator(
+        self,
+        request: EpisodeRequest,
+        *,
+        on_progress: Callable[[dict], None] | None = None,
+    ) -> PlanState:
         """v3.0：通过 PlanOrchestrator.run() 直接返回 PlanState。"""
         from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
 
         orchestrator = PlanOrchestrator(settings=self._settings)
-        return orchestrator.run(request)
+        return orchestrator.run(request, on_progress=on_progress)
 
     def _generate_plan_v3_orchestrator(self, request: EpisodeRequest) -> EpisodePlan:
         """

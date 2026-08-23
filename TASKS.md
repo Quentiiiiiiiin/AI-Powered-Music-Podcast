@@ -1,92 +1,105 @@
-﻿## 版本 v4.6（迭代二十四：OpenRouter 可配置 LLM provider）
+﻿## 版本 v5.3（迭代二十八：阶段二 Console — 节目时间线试听与转场 `vm_seconds` 编辑）
 
-基于 PRD v4.6：在经 **OpenRouter**（`llm.base_url` 指向 `openrouter.ai`）调用时，除现有 **`model`** 外，增加可在 **`config.yaml`** 中编辑的 **OpenRouter 供应方路由**配置；请求层读取后写入 OpenRouter **官方文档约定的** `chat/completions` 请求体字段（与 `messages`、`response_format` 等并列）。
+基于 PRD v5.3 与 ARCHITECTURE **AD-v5.3**：在 Developer Console **阶段二面板**增强转场校验效率（仍为开发者调试中心，非 C 端产品）：
 
-**语义约定（与 PRD 对齐）**：
-- **留空 / 未配置**：请求体**不**携带 OpenRouter 的 `provider` 路由对象（或按官方文档等价省略），由 OpenRouter **自动选择** provider；不得因未填而报错。
-- **非空**：按配置路由；若 OpenRouter 返回 **provider 非法或与 model 不兼容** 等错误，**原样透出**可读错误，**不静默回退**到未知默认。
+1. **解析**阶段二产物 `MixParamsJSON`，按真实节目时间线展示：音乐 / 串词 / 转场节点交错（而非仅粘贴原始 JSON）。
+2. 时间线上的**音乐 / 串词**节点可点击播放对应本地音频，并支持进度条拖动定位。
+3. 点击**转场**节点可在线编辑 `transitions[*].vm_seconds`（直接影响阶段三转场效果）。
+4. 编辑完成后按原契约保存为**同目录新文件**（默认不覆盖源文件），可供阶段三消费。
 
-**约束**：不改变阶段一各 Agent 业务契约；**v3.4** `response_format` / `json_schema` 严格输出语义保持不变。
+**硬约束**：
+- 能力收敛在 `console/`；**不改** `MixParamsJSON` / `MixParamsTransition` schema、`create_episode_stage2` / `finalize_episode_stage3` 契约、`Mixer` 转场语义。
+- 试听只读 JSON 中已有路径（曲目 `track.file_path`、串词 `audio_path`）；**不做**二次混音或重算 intro。
+- 保存前用 `MixParamsJSON` 校验；非法值明确报错。
+- 模式对齐 v5.2 的 snapshot timeline，避免再造一套业务层。
 
 ---
 
-### Task 01 - 配置模型与命名（避免与 `llm.provider` 混淆）
-- **Task name**: v4.6 - LLMConfig 增加 OpenRouter 路由字段
-- **目标**: 在 `LLMConfig` 增加**独立字段**（建议 `openrouter_provider: str = ""`），表示 OpenRouter 的供应方路由；**不要**复用现有 `llm.provider`（该字段表示客户端实现类型，如 `openai_compatible`）。
+### Task 01 - MixParams ↔ 节目时间线适配器（纯函数）
+- **Task name**: v5.3 - mix_params timeline ⇄ MixParamsJSON
+- **目标**: 在 `console/` 实现双向适配：将 `MixParamsJSON`（`tracks` + `voiceovers` + `transitions`）展开为节目时间线条目列表；编辑 `vm_seconds` 后再写回合法 MixParams 结构。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 支持 `config.yaml` 与 `.env` 嵌套（如 `PODCAST_AI_LLM__OPENROUTER_PROVIDER`）加载。
-  - 默认值空串，保证「迭代前默认行为」：不传 OpenRouter `provider` 对象。
-- **Input**: PRD v4.6 验收 1、5
-- **Output**: 可序列化、可校验的配置字段
+  - 时间线构建规则：按 `SelectedTrack.start/end` 与 `VoiceoverSegment.insert_time_in_episode` 交错；在每条 **voice→music** 边界插入对应 `MixParamsTransition` 节点（按 `voice_segment_id` 关联）。
+  - 节点类型建议：`music` / `voice` / `transition`；music/voice 携带可播放路径；transition 携带 `vm_seconds`、`vm_candidate_seconds`、intro 展示字段（只读对比即可）。
+  - 写回：仅允许改 `vm_seconds`（本轮聚焦）；其余字段透传；写回前 `MixParamsJSON.model_validate`。
+  - 负值 / 缺失 transition / 路径缺失：明确错误，不静默丢数据。
+- **Input**: mix_params JSON / `MixParamsJSON`
+- **Output**: timeline DTO + `from_mix_params` / `apply_vm_edits`（或等价）
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-- **Estimated complexity**: S（0.5–1 小时）
+  - `src/podcast_ai/console/mix_params_timeline.py`（新建）
+  - （只读）`src/podcast_ai/core/models.py`
+- **Estimated complexity**: M（2–3 小时）
 
 ---
 
-### Task 02 - 请求层：按 OpenRouter 文档组装 `provider` 请求体
-- **Task name**: v4.6 - OpenAICompatibleLLMClient 写入 provider
-- **目标**: 在 `OpenAICompatibleLLMClient.generate` 构建 `payload` 时：若 `base_url` 判定为 OpenRouter 且 `openrouter_provider` 非空，则附加官方约定的 **`provider` 对象**（例如 `only` / `order` 等，以实现为准并对照当前 OpenRouter 文档）；否则**完全不加入** `provider` 键。
-- **类型**: backend
+### Task 02 - 阶段二面板：加载与时间线可读展示
+- **Task name**: v5.3 - 阶段二 MixParams 时间线 UI
+- **目标**: 在阶段二面板支持加载 mix_params 路径，并以时间线形式展示音乐 / 串词 / 转场节点（非整段原始 JSON 输入框了事）。
+- **类型**: frontend
 - **依赖关系**: Task 01
 - **Description**:
-  - 非 OpenRouter 网关（`base_url` 不含 openrouter）时，**忽略** `openrouter_provider`，避免向非 OpenRouter 服务发送未知字段。
-  - 脱敏日志：`safe_payload` 中对 `provider` 做摘要（避免日志爆炸），与现有 `response_format` 脱敏风格一致。
-  - `kwargs`（含各 Agent 传入的 `response_format`）与 `model`/新增字段合并顺序保持不变，满足 PRD 验收 4。
-- **Input**: `src/podcast_ai/infra/llm_client.py`、OpenRouter 官方 provider routing 文档
-- **Output**: 所有经该客户端的 OpenRouter 请求统一携带正确 `provider` 行为
+  - Load：校验文件存在并用 `MixParamsJSON` 解析；失败明确报错。
+  - 展示：按播出顺序列出节点摘要（标题、时长或 insert_time、路径短名、transition 的 `vm_seconds`）。
+  - 与现有 Stage2 Run 表单并存；Run Stage2 成功后可回填 `mix_params_path` 并一键加载（可选，不强制自动加载）。
+  - Gradio 下可用 Markdown 列表 + Dropdown/Radio 选中节点，避免复杂可视化时间轴（过度设计）。
+- **Input**: Task 01 适配器
+- **Output**: 阶段二可读时间线区块
 - **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
+  - `src/podcast_ai/console/app.py`
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 03 - 音乐 / 串词节点试听（含进度条）
+- **Task name**: v5.3 - 时间线节点本地音频播放
+- **目标**: 选中音乐或串词节点后，用 Gradio Audio 播放对应本地文件，并支持进度条拖动定位。
+- **类型**: frontend
+- **依赖关系**: Task 02
+- **Description**:
+  - 播放源：music → `SelectedTrack.track.file_path`；voice → `VoiceoverSegment.audio_path`。
+  - 文件不存在：明确错误，不崩溃。
+  - 不调用 Mixer、不生成临时混音预览（本轮范围外）。
+  - 转场节点无独立音频时可显示提示，引导编辑 `vm_seconds`。
+- **Input**: 选中的 timeline 节点
+- **Output**: 可拖动进度的 Audio 预览
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+- **Estimated complexity**: S（1 小时）
+
+---
+
+### Task 04 - 编辑 `vm_seconds` + 同目录新文件保存
+- **Task name**: v5.3 - vm_seconds 在线编辑与另存
+- **目标**: 选中转场节点后可编辑 `vm_seconds`；保存时输出与阶段二原契约兼容的 JSON，写到同目录新文件（默认不覆盖）；该文件可被阶段三消费。
+- **类型**: frontend
+- **依赖关系**: Task 01, Task 02
+- **Description**:
+  - 编辑控件：Number 输入；展示只读对照 `vm_candidate_seconds` / intro 字段（便于调试）。
+  - 校验：`vm_seconds >= 0`；可选提示「过大可能超过串词时长」（若易从 voiceovers 时长得到则做，否则依赖阶段三既有校验，避免重复业务）。
+  - Save：新文件名建议 `{stem}_edited_{timestamp}.json`；成功后回填路径供阶段三使用。
+  - 解析/保存失败：明确错误，不静默损坏源文件。
+- **Input**: Task 01 写回逻辑
+- **Output**: 可编辑 + 新文件路径
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/mix_params_timeline.py`
 - **Estimated complexity**: M（1.5–2.5 小时）
 
 ---
 
-### Task 03 - 错误信息与向后兼容验收
-- **Task name**: v4.6 - Provider 相关 4xx 提示与兼容
-- **目标**: 当 OpenRouter 因 `provider` 与 `model` 不兼容返回 400 等错误时，错误信息足够定位（可附带响应体片段，已有逻辑上扩展即可）；**provider 为空**路径下现有成功调用不受影响（PRD 验收 3、5）。
+### Task 05 - 契约回归测试与最小说明
+- **Task name**: v5.3 - mix_params timeline 往返测试
+- **目标**: 单测锁定：时间线展开顺序正确；改 `vm_seconds` 往返不丢其它字段；非法值不落盘；保存结果可通过 `MixParamsJSON` 校验。
 - **类型**: backend
-- **依赖关系**: Task 02
+- **依赖关系**: Task 01（Task 04 完成后可补路径回填冒烟，非必须）
 - **Description**:
-  - 仅在确有必要时扩展 `AIServiceError` 提示文案（避免过度分支）。
-  - 确认多 Agent 路径均通过 `get_default_llm_client` → 同一 `generate`，无旁路重复实现。
-- **Input**: 现有 `AIServiceError` 抛出点
-- **Output**: 调试时可读、空 provider 不回归
+  - fixture：最小 `tracks` + `voiceovers` + `transitions`（可用临时静音文件路径或 mock Path）。
+  - README 补 2–3 行：阶段二时间线试听与 `vm_seconds` 另存说明。
+- **Input**: 适配器
+- **Output**: `pytest` 通过；文档一句对齐
 - **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
-  - （只读核对）`src/podcast_ai/modules/theme/*_agent.py`、`llm_planner.py`
-- **Estimated complexity**: S（0.5–1 小时）
-
----
-
-### Task 04 - 示例配置与文档
-- **Task name**: v4.6 - README / init-config 示例
-- **目标**: 在 `README.md` 与 `cli.py` 内 `_INIT_CONFIG_YAML` 的 `llm:` 段补充 `openrouter_provider`（注释说明：留空=自动路由；非空=指定供应方 slug，具体形态以 OpenRouter 文档为准）。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 若仓库存在 `config.example.yaml` / `.env.example`，同步一行说明即可，不展开长篇文档。
-- **Input**: PRD 验收 1
-- **Output**: 用户可复制即用的最小示例
-- **Files involved**:
+  - `tests/test_mix_params_timeline.py`（新建）
   - `README.md`
-  - `src/podcast_ai/cli.py`
-  - （若存在）`config.example.yaml`、`.env.example`
-- **Estimated complexity**: S（0.5 小时）
-
----
-
-### Task 05 - 单测：请求体是否包含 `provider`
-- **Task name**: v4.6 - LLM 请求 payload 断言
-- **目标**: 使用 `httpx` mock / 拦截，验证：① `openrouter_provider` 为空时 payload **无** `provider`；② 非空时 payload **有**符合实现约定的 `provider`；③ 非 OpenRouter `base_url` 时不发送 `provider`。
-- **类型**: backend
-- **依赖关系**: Task 02
-- **Description**:
-  - 不发起真实外网请求。
-  - 可选：断言 `response_format` 仍存在（与 kwargs 合并，满足验收 4）。
-- **Input**: `tests/` 现有 pytest 风格
-- **Output**: `pytest` 通过
-- **Files involved**:
-  - `tests/test_llm_client.py`（新建）或并入现有测试文件
-- **Estimated complexity**: M（1–2 小时）
+- **Estimated complexity**: S–M（1–2 小时）
