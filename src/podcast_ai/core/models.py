@@ -134,6 +134,8 @@ class AudioRenderConfig(BaseModel):
     voice_music_intro_align_enabled: bool = True
     # v4.2：动态 vm 上限（秒）；关闭对齐时不生效。
     voice_music_intro_align_max_seconds: float = Field(3.0, ge=0)
+    # 混音加载时是否对每轨/TTS 做平均电平 normalize；false 保留源响度（听感实验用）
+    per_track_normalize_enabled: bool = True
 
 
 class EpisodeResult(BaseModel):

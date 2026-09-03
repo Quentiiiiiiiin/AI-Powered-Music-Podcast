@@ -20,7 +20,7 @@ from podcast_ai.infra.storage.cache import (
 logger = logging.getLogger(__name__)
 
 # 支持的音频扩展名（小写）
-_AUDIO_SUFFIXES = {".mp3", ".wav"}
+_AUDIO_SUFFIXES = {".mp3", ".wav", ".flac"}
 
 
 def _first_value(val: Optional[object]) -> Optional[str]:
@@ -76,7 +76,7 @@ def _collect_audio_paths(root: Path) -> dict[Path, float]:
 
 class LibraryScanner:
     """
-    扫描指定目录下的 mp3/wav，提取基础标签与时长，可选 BPM；
+    扫描指定目录下的 mp3/wav/flac，提取基础标签与时长，可选 BPM；
     支持 JSON 缓存与按文件 mtime 的增量判定。
     """
 
@@ -93,7 +93,7 @@ class LibraryScanner:
 
     def scan_library(self, root_dir: Path) -> list[TrackWithMetadata]:
         """
-        扫描 root_dir 下所有 mp3/wav，提取标签、时长与可选 BPM。
+        扫描 root_dir 下所有 mp3/wav/flac，提取标签、时长与可选 BPM。
         """
         paths_with_mtime = _collect_audio_paths(root_dir)
         results: list[TrackWithMetadata] = []

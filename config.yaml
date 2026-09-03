@@ -6,8 +6,10 @@ audio:
   crossfade_seconds: 8.0
   voice_music_crossfade_seconds: 0.0
   voice_music_intro_align_enabled: true
-  voice_music_intro_align_max_seconds: 15.0
+  voice_music_intro_align_max_seconds: 30.0
   loudness_target_lufs: -14.0
+  # 听感实验：关闭每轨 simple_normalize，保留源/FLAC 电平
+  per_track_normalize_enabled: false
 
 cache:
   enabled: true

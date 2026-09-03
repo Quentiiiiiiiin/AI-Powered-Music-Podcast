@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v5.3  
+**文档版本**：v6.0  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v5.3）
+**产品阶段**：迭代验证中（进入 v6.0）
 
 ---
 
@@ -410,6 +410,33 @@
     4. 保存时输出与阶段二原契约兼容的 JSON，并写到**同目录新文件**（默认不覆盖源文件）；该文件可被阶段三作为输入消费。
     5. 定位仍为开发者调试面板：以校验转场听感与参数修正为中心，不按大众产品做营销式 UI。
 
+- **v6.0（迭代二十九：多 Agent 分阶段闸门编排 Stage-Gated）**：
+  - **问题**：现行多 Agent 编排（legacy）中，Planner / Music Curator / Script Writer 先做一轮较完整创作，再由 Critic **全局评估**并写 `actions` / `next_agent` 驱动回修。Critic 同时承担 QA、项目管理与调度，信息过载时易出现 actions 混乱、难判断上一轮问题是否已解决，且全局 `max_iterations` 粒度粗。
+  - **变更目标**：新增默认编排模式 **`staged`（Stage-Gated）**：将三创作 Agent 视为顺序闸门任务——**仅当本阶段交付物通过 Critic 后才进入下一阶段**；编排与路由由 **Orchestrator（代码 FSM）** 负责，Critic **不再决定 `next_agent`**。配套 **重写 staged 专用 prompt**（与旧 prompt 分离）；**`legacy` 编排与旧 prompt 冻结保留**，经 **config 双轨切换**；验证稳定后可在后续版本删除 legacy。
+  - **staged 流程（明确）**：
+    ```
+    Planner ⇄ Critic（阶段内闭环）
+      → Music Curator ⇄ Critic
+      → Script Writer ⇄ Critic
+      → 输出终稿 snapshot
+    ```
+  - **每阶段修订预算（明确）**：
+    1. 首次生成 → Critic；
+    2. 若不通过 → **第 1 次修复** → Critic；
+    3. 若不通过 → **第 2 次修复** → Critic（最终判定）；
+    4. 通过 → 进入下一阶段；仍不通过 → **阶段失败**（**禁止回退**到上游阶段）。
+  - **失败与产物**：阶段失败时仍写出**主产物 snapshot**（契约可被阶段二消费），并保留各 Agent/Critic 审计落盘便于人工调试；`control.status`（或等价字段）须标明失败阶段/状态。
+  - **Pass 判定（v6.0）**：以 **Critic 阶段内评分/pass** 为主；schema/解析等工程硬失败仍挡在 Critic 前。可量化业务规则校验（时长和、曲数等）可后续版本增强，非本轮必做。
+  - **配置**：`config.yaml`（或等价配置）暴露编排模式，例如 `orchestration_mode: staged | legacy`；**默认 `staged`**。CLI/Console 应可识别当前 mode。
+  - **功能归类**：**新功能**（Stage-Gated 编排 + 双轨配置）+ **优化**（降低 Critic 全局过载、提升可调试性）。
+  - **User Story（用户视角）**：作为开发者，我希望计划生成按「结构 → 选曲 → 串词」逐段过关，每段失败原因更清晰；默认走新编排，必要时在 config 切回旧编排对比；即使某阶段失败也能拿到可检查的 snapshot 继续人工处理。
+  - **Acceptance Criteria（验收标准）**：
+    1. config 可切换 `staged` / `legacy`，**默认 `staged`**；切换后无需改业务代码即可生效，且当前 mode 在运行日志或 Console 可观测。
+    2. `staged` 下严格按 Planner→Curator→Writer 顺序闸门执行；每阶段遵循「最多 2 次修复、最多 3 次 Critic 判定」；**不允许**回退上游阶段；Critic **不负责**选择下一创作 Agent（由 Orchestrator FSM 推进）。
+    3. `staged` 使用独立/重写的 prompt（与 legacy 分离）；`legacy` 行为与旧 prompt 仍可用且不因本迭代被破坏。
+    4. 任一阶段最终 Critic 不通过：流程标记失败，仍输出**主 snapshot**（允许阶段二消费）+ 审计产物齐全。
+    5. 三阶段均通过后输出成功路径 snapshot/state，字段契约与阶段二输入兼容；审计可按阶段/修订轮次追溯（编号约定由实现定义并文档化）。
+
 
 ## 1. 产品背景
 
@@ -592,7 +619,7 @@
 |------|------|
 | **输入** | 用户主题、期望时长 |
 | **输出（v3.1）** | `state.json`（与 `state_schema.json` **同结构**的 episode plan state 文件；单 agent 不涉及字段填充为 `null`）。 |
-| **实现（v3.1）** | 阶段一支持用户选择 `single_agent` / `multi_agent` 模式；多 agent 模式包含 Planner / Music Curator / Script Writer / Critic + 有限迭代回修；无论模式如何，最终输出均为 `state.json` 并满足 schema 契约。 |
+| **实现（v3.1 / v6.0）** | 阶段一支持 `single_agent` / `multi_agent`；多 agent 下再经 config 选择 **`staged`（默认，分阶段闸门）** 或 **`legacy`（旧全局 Critic 回修）**。无论模式如何，最终输出均为 `state.json` / snapshot 并满足既有契约。 |
 | **使用方式** | 用户可仅运行本模块，先获得节目策划与目标歌单，再根据该规划手动获取或整理歌曲后，继续后续自动化流程 |
 | **优先级** | P0 |
 
@@ -659,16 +686,17 @@
 | **Planner** | `meta`、`global_constraints`、历史 `critic.issues` | `meta.theme_description`、`global_constraints.*`、`plan.segments_design`、`plan.emotion_curve`、`segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design` | `segments[*].playlist`、`segments[*].script`、`critic.*`、`control.*` |
 | **Music Curator** | `meta`、`global_constraints`、`plan`、`segments[*].segment_design/mood/bpm_range`、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
 | **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
-| **Critic** | 全量 `state` | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`、`control.next_agent` | `meta`、`global_constraints`、`plan`、`segments` 内容本身 |
-| **Orchestrator（流程控制）** | 全量 `state` | `control.iteration/status/next_agent/last_updated_by`、重试与回退标记 | 业务内容字段（`plan`、`segments[*].playlist/script`） |
+| **Critic** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`；**`legacy` 可写 `control.next_agent`** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**`staged` 下不得通过 Critic 决定下一创作 Agent** |
+| **Orchestrator（流程控制）** | 全量 `state` | `control` 状态机字段（含 phase/revision/status 等，以实现为准）、重试与失败标记；**`staged` 下负责阶段推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
 
 **契约补充规则**
 - 所有 Agent 仅允许修改自己负责字段；非负责字段必须原样透传。
 - 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
-- 当 `control.iteration >= control.max_iterations` 时，Orchestrator 结束回修循环并输出最终状态。
+- **`legacy`**：当达到全局 `max_iterations` 仍未通过时结束回修并输出最终状态。
+- **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
 
-### 6.4 当前版本成功指标（v5.3）
+### 6.4 当前版本成功指标（v6.0）
 
 | 指标 | 目标 |
 |------|------|
@@ -691,6 +719,7 @@
 | **Console 三阶段导航** | 同一页面可切换阶段一/二/三，下方仅显示当前阶段功能区，界面不再全量堆叠 |
 | **阶段一调试可观测性** | 阶段一面板可展示 iteration / 当前 Agent / 失败原因等关键运行态，并支持 Snapshot 可读编辑与同路径新文件保存 |
 | **阶段二转场校验效率** | 阶段二面板可按节目时间线试听音乐/串词，并在线编辑 `vm_seconds` 后另存为新 JSON 供阶段三使用 |
+| **Stage-Gated 编排可用** | 默认 `staged`：三阶段闸门 + 每阶段最多 2 次修复；config 可切 `legacy`；失败仍输出可被阶段二消费的 snapshot |
 
 ---
 
@@ -708,7 +737,7 @@
 
 | 需求 | 说明 |
 |------|------|
-| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+），按三阶段切换（v5.1）；阶段一支持运行态洞察与 Snapshot 可读编辑（v5.2）；阶段二支持时间线试听与 `vm_seconds` 编辑（v5.3） |
+| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。多 agent 编排默认 `staged`，config 可切 `legacy`（v6.0） |
 | **错误提示** | 关键步骤失败时给出明确错误信息 |
 | **日志** | 记录主要步骤执行状态，便于排查问题 |
 

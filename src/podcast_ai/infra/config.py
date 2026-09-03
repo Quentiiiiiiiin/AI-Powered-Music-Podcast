@@ -114,6 +114,8 @@ class AudioConfig(BaseModel):
     # v4.2：开启后对「串词->歌」按下一首 intro 估计动态决定 vm；失败回退默认 vm。
     voice_music_intro_align_enabled: bool = True
     voice_music_intro_align_max_seconds: float = 3.0
+    # 混音前是否对每首曲目/每段 TTS 做 simple_normalize（约 -16 dBFS）；false=保留源电平
+    per_track_normalize_enabled: bool = True
 
 
 class CacheConfig(BaseModel):

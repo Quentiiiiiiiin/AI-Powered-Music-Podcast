@@ -18,6 +18,9 @@ audio:
   # 母带响度目标（LUFS）
   loudness_target_lufs: -14.0
 
+  # 混音前是否对每首曲目/TTS 做平均电平 normalize（约 -16 dBFS）；false=保留源响度
+  per_track_normalize_enabled: true
+
 cache:
   enabled: true
   # 扫库缓存落盘位置（相对 output_dir 或绝对路径均可；后续任务会细化）

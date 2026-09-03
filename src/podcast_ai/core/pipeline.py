@@ -202,6 +202,7 @@ def create_episode(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
         )
 
         with log_timing(logger, "scan_library"):
@@ -296,6 +297,7 @@ def create_episode_stage2(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
         )
 
         with log_timing(logger, "scan_library"):
@@ -398,6 +400,7 @@ def finalize_episode_stage3(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
         )
 
         mixer = Mixer()

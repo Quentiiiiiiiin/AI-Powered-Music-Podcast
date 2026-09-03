@@ -129,6 +129,15 @@ def test_v20_audio_render_config_voice_music_crossfade_default() -> None:
     assert c.crossfade_seconds == 8.0
 
 
+def test_per_track_normalize_enabled_default_true() -> None:
+    """默认开启每轨 normalize，与历史行为一致；可在配置中关闭。"""
+    assert AudioRenderConfig().per_track_normalize_enabled is True
+    from podcast_ai.infra.config import AudioConfig
+
+    assert AudioConfig().per_track_normalize_enabled is True
+    assert AudioConfig(per_track_normalize_enabled=False).per_track_normalize_enabled is False
+
+
 def test_v14_conftest_settings_elevenlabs_minimal_fixture(settings_elevenlabs_minimal: Settings) -> None:
     """共享 fixture：合法 ElevenLabs 占位配置，供需注入 Settings 的用例复用。"""
     assert settings_elevenlabs_minimal.tts.provider == "elevenlabs"

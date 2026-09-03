@@ -130,22 +130,35 @@ def _validate_voiceovers_against_tracks(
     return ordered
 
 
-def _load_track_segment(st: SelectedTrack) -> AudioSegment:
-    return simple_normalize(load_audio(st.track.file_path), target_dbfs=-16.0)
+def _load_track_segment(st: SelectedTrack, *, per_track_normalize: bool = True) -> AudioSegment:
+    audio = load_audio(st.track.file_path)
+    if not per_track_normalize:
+        return audio
+    return simple_normalize(audio, target_dbfs=-16.0)
 
 
-def _load_voice_segment(vo: VoiceoverSegment) -> AudioSegment:
+def _load_voice_segment(vo: VoiceoverSegment, *, per_track_normalize: bool = True) -> AudioSegment:
     try:
-        return simple_normalize(load_audio(vo.audio_path), target_dbfs=-16.0)
+        audio = load_audio(vo.audio_path)
+        if not per_track_normalize:
+            return audio
+        return simple_normalize(audio, target_dbfs=-16.0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("加载主持 %s 失败，使用空占位: %s", vo.segment_id, exc)
         return AudioSegment.silent(duration=0)
 
 
-def _music_chunk_from_tracks(tracks_chunk: list[SelectedTrack], crossfade_seconds: float) -> AudioSegment:
+def _music_chunk_from_tracks(
+    tracks_chunk: list[SelectedTrack],
+    crossfade_seconds: float,
+    *,
+    per_track_normalize: bool = True,
+) -> AudioSegment:
     if not tracks_chunk:
         return AudioSegment.silent(duration=0)
-    audios = [_load_track_segment(st) for st in tracks_chunk]
+    audios = [
+        _load_track_segment(st, per_track_normalize=per_track_normalize) for st in tracks_chunk
+    ]
     if len(audios) == 1:
         return audios[0]
     return crossfade_concat(audios, crossfade_seconds)
@@ -156,6 +169,8 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
     voiceovers: list[VoiceoverSegment],
     crossfade_seconds: float,
     eps: float,
+    *,
+    per_track_normalize: bool = True,
 ) -> list[_TimelineBlock]:
     """
     将曲目（按 episode 时间线排序）与串词（按 insert_time 排序）合并为严格时间递增的块列表。
@@ -175,7 +190,9 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
         while track_idx < n and float(tracks_sorted[track_idx].end_time_in_episode) <= insert_t + eps:
             flush_queue.append(tracks_sorted[track_idx])
             track_idx += 1
-        music_seg = _music_chunk_from_tracks(flush_queue, crossfade_seconds)
+        music_seg = _music_chunk_from_tracks(
+            flush_queue, crossfade_seconds, per_track_normalize=per_track_normalize
+        )
         if len(music_seg) > 0:
             blocks.append(
                 _TimelineBlock(
@@ -188,14 +205,16 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
         blocks.append(
             _TimelineBlock(
                 kind="voice",
-                audio=_load_voice_segment(vo),
+                audio=_load_voice_segment(vo, per_track_normalize=per_track_normalize),
                 next_music_first_track_path=next_music_first,
                 voice_segment_id=vo.segment_id,
             )
         )
 
     rest = tracks_sorted[track_idx:]
-    tail = _music_chunk_from_tracks(rest, crossfade_seconds)
+    tail = _music_chunk_from_tracks(
+        rest, crossfade_seconds, per_track_normalize=per_track_normalize
+    )
     if len(tail) > 0:
         blocks.append(
             _TimelineBlock(
@@ -502,13 +521,16 @@ class Mixer:
         无串词：全部曲目一次 `crossfade_concat`（与历史行为兼容）。
         """
         cf = config.crossfade_seconds
+        norm = config.per_track_normalize_enabled
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not selected_tracks:
             raise ValueError("selected_tracks 不能为空。")
 
         if not voiceovers:
-            track_audios = [_load_track_segment(st) for st in selected_tracks]
+            track_audios = [
+                _load_track_segment(st, per_track_normalize=norm) for st in selected_tracks
+            ]
             mix = crossfade_concat(track_audios, cf)
         else:
             blocks = _build_ordered_blocks_from_tracks_and_voiceovers(
@@ -516,6 +538,7 @@ class Mixer:
                 voiceovers,
                 crossfade_seconds=cf,
                 eps=_TIMELINE_EPS_SECONDS,
+                per_track_normalize=norm,
             )
             mix = _concat_ordered_blocks(
                 blocks,
@@ -563,6 +586,7 @@ class Mixer:
             voiceovers,
             crossfade_seconds=cf,
             eps=_TIMELINE_EPS_SECONDS,
+            per_track_normalize=config.per_track_normalize_enabled,
         )
         if not blocks:
             return []
@@ -659,9 +683,12 @@ class Mixer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if not mix_params_json.tracks:
             raise ValueError("mix_params_json.tracks 不能为空。")
+        norm = config.per_track_normalize_enabled
         if not mix_params_json.voiceovers:
             # 没有串词：直接走旧语义
-            track_audios = [_load_track_segment(st) for st in mix_params_json.tracks]
+            track_audios = [
+                _load_track_segment(st, per_track_normalize=norm) for st in mix_params_json.tracks
+            ]
             mix = crossfade_concat(track_audios, config.crossfade_seconds)
             export_audio(mix, output_path, format=output_path.suffix.lstrip(".") or "wav")
             duration_sec = len(mix) / 1000.0
@@ -677,6 +704,7 @@ class Mixer:
             mix_params_json.voiceovers,
             crossfade_seconds=config.crossfade_seconds,
             eps=_TIMELINE_EPS_SECONDS,
+            per_track_normalize=norm,
         )
 
         transitions_by_voice_segment_id: dict[str, MixParamsTransition] = {

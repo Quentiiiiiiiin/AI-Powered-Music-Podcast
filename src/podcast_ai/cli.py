@@ -133,6 +133,7 @@ audio:
   voice_music_intro_align_enabled: true
   voice_music_intro_align_max_seconds: 3.0
   loudness_target_lufs: -14.0
+  per_track_normalize_enabled: true
 
 cache:
   enabled: true
