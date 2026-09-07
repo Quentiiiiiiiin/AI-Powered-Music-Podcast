@@ -134,6 +134,10 @@ audio:
   voice_music_intro_align_max_seconds: 3.0
   loudness_target_lufs: -14.0
   per_track_normalize_enabled: true
+  voice_gain_db: 0.0
+  voice_music_overlay_music_max_db: 0.0
+  voice_music_post_overlay_ramp_seconds: 0.0
+  # voice_normalize_to_dbfs: null
 
 cache:
   enabled: true

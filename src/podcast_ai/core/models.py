@@ -136,6 +136,14 @@ class AudioRenderConfig(BaseModel):
     voice_music_intro_align_max_seconds: float = Field(3.0, ge=0)
     # 混音加载时是否对每轨/TTS 做平均电平 normalize；false 保留源响度（听感实验用）
     per_track_normalize_enabled: bool = True
+    # 仅串词：normalize 到该平均 dBFS；None 表示不做串词单独 normalize
+    voice_normalize_to_dbfs: float | None = None
+    # 仅串词：额外增益（dB），在 normalize（若有）之后施加；0=不变
+    voice_gain_db: float = 0.0
+    # 串词→歌叠化窗内音乐增益上限（dB，相对满电平）。0=不限制；负值如 -6 防止盖过人声
+    voice_music_overlay_music_max_db: float = 0.0
+    # 叠化结束后音乐从上限爬回满电平的秒数；0=关闭；仅 overlay_max_db<0 时生效
+    voice_music_post_overlay_ramp_seconds: float = Field(0.0, ge=0)
 
 
 class EpisodeResult(BaseModel):

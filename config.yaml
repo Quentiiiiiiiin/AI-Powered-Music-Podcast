@@ -10,6 +10,14 @@ audio:
   loudness_target_lufs: -14.0
   # 听感实验：关闭每轨 simple_normalize，保留源/FLAC 电平
   per_track_normalize_enabled: false
+  # 仅抬串词：先试固定增益（dB）；仍偏小可改 8/9，偏大可改 3/4
+  voice_gain_db: 7.0
+  # 可选：只把串词拉到目标平均电平（与 music 无关）。不需要时保持 null
+  # voice_normalize_to_dbfs: -16.0
+  # 串词→歌叠化窗内音乐增益上限（dB）；0=旧行为满电平淡入；-6～-9 更不易盖人声
+  voice_music_overlay_music_max_db: -9.0
+  # 叠化结束后音乐从上限爬回满电平（秒）；0=关闭
+  voice_music_post_overlay_ramp_seconds: 0.7
 
 cache:
   enabled: true

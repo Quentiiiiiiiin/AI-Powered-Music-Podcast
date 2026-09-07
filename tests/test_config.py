@@ -138,6 +138,22 @@ def test_per_track_normalize_enabled_default_true() -> None:
     assert AudioConfig(per_track_normalize_enabled=False).per_track_normalize_enabled is False
 
 
+def test_voice_level_controls_default_noop() -> None:
+    """串词专用电平等级默认不改听感；可单独增益或 normalize。"""
+    c = AudioRenderConfig()
+    assert c.voice_gain_db == 0.0
+    assert c.voice_normalize_to_dbfs is None
+    assert c.voice_music_overlay_music_max_db == 0.0
+    from podcast_ai.infra.config import AudioConfig
+
+    a = AudioConfig(voice_gain_db=6.0, voice_normalize_to_dbfs=-16.0, voice_music_overlay_music_max_db=-6.0)
+    assert a.voice_gain_db == 6.0
+    assert a.voice_normalize_to_dbfs == -16.0
+    assert a.voice_music_overlay_music_max_db == -6.0
+    assert AudioRenderConfig().voice_music_post_overlay_ramp_seconds == 0.0
+    assert AudioConfig(voice_music_post_overlay_ramp_seconds=0.5).voice_music_post_overlay_ramp_seconds == 0.5
+
+
 def test_v14_conftest_settings_elevenlabs_minimal_fixture(settings_elevenlabs_minimal: Settings) -> None:
     """共享 fixture：合法 ElevenLabs 占位配置，供需注入 Settings 的用例复用。"""
     assert settings_elevenlabs_minimal.tts.provider == "elevenlabs"

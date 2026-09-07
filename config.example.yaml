@@ -20,6 +20,14 @@ audio:
 
   # 混音前是否对每首曲目/TTS 做平均电平 normalize（约 -16 dBFS）；false=保留源响度
   per_track_normalize_enabled: true
+  # 仅串词：normalize 到该平均 dBFS；省略或 null=关闭
+  # voice_normalize_to_dbfs: -16.0
+  # 仅串词：额外固定增益（dB），正数变大
+  voice_gain_db: 0.0
+  # 串词→歌叠化窗内音乐增益上限（dB，相对满电平）。0=不限制；建议试 -6.0
+  voice_music_overlay_music_max_db: 0.0
+  # 叠化结束后从上限爬回满电平的时长（秒）；0=关闭；仅 max_db<0 时生效
+  voice_music_post_overlay_ramp_seconds: 0.0
 
 cache:
   enabled: true

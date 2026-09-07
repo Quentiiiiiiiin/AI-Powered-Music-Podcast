@@ -433,7 +433,6 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         GENERAL RULES:
         - Write in the language given by state.meta.language.
         - No ASCII " inside any JSON string. Use 「」 instead.
-        - segments[*].script.between_tracks should be null where appropriate.
 
         MODES:
         [GENERATION MODE]
@@ -476,7 +475,7 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
         task = dedent(
             """
             TASK:
-            - Write the full script for every segment (segment_intro and between_tracks as appropriate).
+            - You should see the playlist as a whole, and write the script at where it fits naturally. You don't need to write the script between every two tracks.
             """
         ).strip()
     else:
@@ -495,10 +494,9 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
     general_rules = dedent(
         """
         GENERAL RULES:
-        - Keep segment intros concise (about 40–50 words).
-        - between_tracks[*].text may be null where appropriate.
         - Mention host name Nova and show name Luma Hits before the last track's narration where it fits.
         - Write in the language given by state.meta.language.
+        - You can add extra information related to album, artist, or story for either previous or next track, making it more informative and immersive.
         """
     ).strip()
 

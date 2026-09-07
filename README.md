@@ -190,6 +190,10 @@ podcast-ai console --no-browser  # 不自动打开浏览器
 | `audio.voice_music_intro_align_max_seconds` | 串词->歌动态叠化上限（秒，v4.2） | `3.0` |
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
 | `audio.per_track_normalize_enabled` | 混音前是否对每轨/TTS 做平均电平 normalize；`false` 保留源响度 | `true` |
+| `audio.voice_gain_db` | **仅串词**额外增益（dB）；音乐不变 | `0.0` |
+| `audio.voice_normalize_to_dbfs` | **仅串词**拉到目标平均 dBFS；`null`/省略=关闭。若 `per_track_normalize_enabled=true` 则串词仍走统一 -16 | `null` |
+| `audio.voice_music_overlay_music_max_db` | **串词→歌叠化窗内**音乐相对满电平的增益上限（dB）；`0`=不限制；负值如 `-6` 减轻盖人声 | `0.0` |
+| `audio.voice_music_post_overlay_ramp_seconds` | 叠化结束后音乐从上限爬回满电平的时长（秒）；`0`=关闭；仅 `overlay_max_db<0` 时生效 | `0.0` |
 | `llm.base_url`               | LLM API 地址          | 需配置          |
 | `llm.api_key`                | LLM API Key         | 建议用环境变量      |
 | `llm.model`                  | 模型 id               | 见 `init-config` 默认 |
