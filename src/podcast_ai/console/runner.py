@@ -77,6 +77,10 @@ class ConsoleRunResult:
     plan_iteration: int | None = None
     plan_current_agent: str | None = None
     plan_progress_events: list[dict[str, Any]] = field(default_factory=list)
+    # v6.0：编排可观测（config 只读；staged 运行时再填 stage/revision）
+    orchestration_mode: str | None = None
+    plan_stage: str | None = None
+    plan_revision: int | None = None
 
     @classmethod
     def running(cls, command: CommandName) -> ConsoleRunResult:
@@ -264,6 +268,12 @@ def run_plan(
         result.plan_iteration = merged.iteration
         result.plan_current_agent = merged.current_agent
         result.plan_progress_events = list(merged.events)
+        result.plan_stage = merged.stage
+        result.plan_revision = merged.revision
+        if result.orchestration_mode is None:
+            result.orchestration_mode = str(
+                settings_from_params(params, base=settings).app.orchestration_mode
+            )
         if merged.failure_reason and not result.error:
             result.error = merged.failure_reason
         return result
@@ -285,6 +295,7 @@ def run_plan(
             agent_mode=_agent_mode(params),
             on_progress=_on_progress,
         )
+        orch = str(effective.app.orchestration_mode)
         artifacts = {
             "state.json": str(state_path),
             "snapshot": str(snapshot_path),
@@ -294,10 +305,12 @@ def run_plan(
             command="plan",
             summary=(
                 f"阶段一完成 · Episode `{snapshot_path.stem}` · "
-                f"plan_id `{plan.plan_id}`"
+                f"plan_id `{plan.plan_id}` · agent_mode `{_agent_mode(params)}` · "
+                f"orchestration_mode `{orch}`"
             ),
             artifacts=artifacts,
             snapshot_path=str(snapshot_path),
+            orchestration_mode=orch,
         )
 
     result = _run_command("plan", _inner)

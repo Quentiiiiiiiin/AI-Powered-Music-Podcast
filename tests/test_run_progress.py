@@ -46,6 +46,45 @@ def test_progress_from_events_latest_wins() -> None:
     assert prog.failure_reason == "boom"
 
 
+def test_progress_from_staged_events_exposes_stage_revision() -> None:
+    events = [
+        {"event": "stage_start", "stage": "planner", "agent": "Planner", "status": "running"},
+        {
+            "event": "agent_start",
+            "stage": "planner",
+            "revision": 0,
+            "agent": "Planner",
+            "status": "running",
+        },
+        {
+            "event": "agent_start",
+            "stage": "music_curator",
+            "revision": 1,
+            "agent": "Critic",
+            "status": "running",
+        },
+    ]
+    prog = progress_from_events(events)
+    assert prog.stage == "music_curator"
+    assert prog.revision == 1
+    assert prog.current_agent == "Critic"
+
+
+def test_parse_staged_logs_for_stage_revision() -> None:
+    logs = """
+ThemePlanner multi_agent orchestration_mode=staged
+StagedOrchestrator stage=planner start
+StagedOrchestrator stage=planner rev=0 critic.pass=false
+StagedOrchestrator stage=music_curator start
+StagedOrchestrator stage=music_curator rev=2 critic.pass=false
+StagedOrchestrator stage=music_curator FAILED after max revisions
+""".strip()
+    prog = parse_plan_progress_from_logs(logs)
+    assert prog.stage == "music_curator"
+    assert prog.revision == 2
+    assert prog.failure_reason == "stage_failed:music_curator"
+
+
 def test_merge_progress_fills_gaps() -> None:
     primary = progress_from_events([{"event": "agent_start", "iteration": 3, "agent": "Critic"}])
     fallback = parse_plan_progress_from_logs(

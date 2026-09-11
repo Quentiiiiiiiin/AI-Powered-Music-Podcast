@@ -14,6 +14,7 @@ from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_PLANNER, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_planner_agent_messages
+from podcast_ai.modules.theme.prompts_staged import build_planner_staged_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
 logger = logging.getLogger(__name__)
@@ -123,8 +124,15 @@ class PlannerAgent:
         *,
         audit_sink: PlanAuditSink | None = None,
         round_iteration: int | None = None,
+        orchestration_mode: str = "legacy",
+        audit_stage: str | None = None,
+        audit_revision: int | None = None,
     ) -> PlanState:
-        messages = build_planner_agent_messages(state, mode)
+        orch = (orchestration_mode or "legacy").strip().lower()
+        if orch == "staged":
+            messages = build_planner_staged_messages(state, mode)
+        else:
+            messages = build_planner_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
         structured = should_use_structured_output(self._settings.llm)
@@ -160,6 +168,8 @@ class PlannerAgent:
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
                 raw_llm_text=raw,
                 parsed_patch=data,
+                stage=audit_stage,
+                revision=audit_revision,
             )
 
         patch = sanitize_planner_patch(data)

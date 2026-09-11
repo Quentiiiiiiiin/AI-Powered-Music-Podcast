@@ -19,6 +19,9 @@ from typing import Any, Protocol
 
 from podcast_ai.infra.storage.paths import (
     format_audit_agent_filename,
+    format_audit_staged_agent_filename,
+    format_audit_staged_state_filename,
+    format_audit_staged_state_partial_filename,
     format_audit_state_filename,
     format_audit_state_partial_filename,
 )
@@ -45,9 +48,18 @@ class PlanAuditSink(Protocol):
         request_id: str,
         raw_llm_text: str,
         parsed_patch: dict[str, Any],
+        stage: str | None = None,
+        revision: int | None = None,
     ) -> None: ...
 
-    def write_state_snapshot(self, *, round_iteration: int, state: PlanState) -> None: ...
+    def write_state_snapshot(
+        self,
+        *,
+        round_iteration: int,
+        state: PlanState,
+        stage: str | None = None,
+        revision: int | None = None,
+    ) -> None: ...
 
     def write_state_partial(
         self,
@@ -55,6 +67,8 @@ class PlanAuditSink(Protocol):
         round_iteration: int,
         state_before_round: PlanState,
         error_message: str,
+        stage: str | None = None,
+        revision: int | None = None,
     ) -> None: ...
 
 
@@ -77,8 +91,16 @@ class FilePlanAuditSink:
         request_id: str,
         raw_llm_text: str,
         parsed_patch: dict[str, Any],
+        stage: str | None = None,
+        revision: int | None = None,
     ) -> None:
-        path = self.run_dir / format_audit_agent_filename(iteration, agent_slug)
+        # v6.0：若传 stage，使用 stage_*_rev*_*.json；否则保持 legacy iteration 命名
+        if stage is not None:
+            path = self.run_dir / format_audit_staged_agent_filename(
+                stage, int(revision or 0), agent_slug
+            )
+        else:
+            path = self.run_dir / format_audit_agent_filename(iteration, agent_slug)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         payload = {
             "iteration": iteration,
@@ -89,6 +111,9 @@ class FilePlanAuditSink:
             "parsed_patch": parsed_patch,
             "ts_utc": ts,
         }
+        if stage is not None:
+            payload["stage"] = stage
+            payload["revision"] = int(revision or 0)
         try:
             self._write_json(path, payload)
         except OSError as exc:
@@ -106,8 +131,18 @@ class FilePlanAuditSink:
                 exc,
             )
 
-    def write_state_snapshot(self, *, round_iteration: int, state: PlanState) -> None:
-        path = self.run_dir / format_audit_state_filename(round_iteration)
+    def write_state_snapshot(
+        self,
+        *,
+        round_iteration: int,
+        state: PlanState,
+        stage: str | None = None,
+        revision: int | None = None,
+    ) -> None:
+        if stage is not None:
+            path = self.run_dir / format_audit_staged_state_filename(stage, int(revision or 0))
+        else:
+            path = self.run_dir / format_audit_state_filename(round_iteration)
         rid = str((state.get("meta") or {}).get("request_id") or "unknown")
         try:
             self._write_json(path, state)
@@ -132,9 +167,16 @@ class FilePlanAuditSink:
         round_iteration: int,
         state_before_round: PlanState,
         error_message: str,
+        stage: str | None = None,
+        revision: int | None = None,
     ) -> None:
-        """本轮某步失败时的可观测快照（见 paths.format_audit_state_partial_filename）。"""
-        path = self.run_dir / format_audit_state_partial_filename(round_iteration)
+        """本轮某步失败时的可观测快照（见 paths.format_audit_*_partial_filename）。"""
+        if stage is not None:
+            path = self.run_dir / format_audit_staged_state_partial_filename(
+                stage, int(revision or 0)
+            )
+        else:
+            path = self.run_dir / format_audit_state_partial_filename(round_iteration)
         rid = str((state_before_round.get("meta") or {}).get("request_id") or "unknown")
         payload = {
             "partial": True,
@@ -142,6 +184,9 @@ class FilePlanAuditSink:
             "error_message": error_message,
             "state_before_round": state_before_round,
         }
+        if stage is not None:
+            payload["stage"] = stage
+            payload["revision"] = int(revision or 0)
         try:
             self._write_json(path, payload)
         except OSError as exc:

@@ -9,11 +9,13 @@ from podcast_ai.infra.config import Settings, load_settings, should_use_structur
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_response_schemas import (
     CRITIC_RESPONSE_SCHEMA,
+    CRITIC_STAGED_RESPONSE_SCHEMA,
     build_openrouter_response_format,
 )
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_CRITIC, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_critic_agent_messages
+from podcast_ai.modules.theme.prompts_staged import build_critic_staged_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
 logger = logging.getLogger(__name__)
@@ -39,15 +41,34 @@ class CriticAgent:
         *,
         audit_sink: PlanAuditSink | None = None,
         round_iteration: int | None = None,
+        orchestration_mode: str = "legacy",
+        stage: str | None = None,
+        audit_stage: str | None = None,
+        audit_revision: int | None = None,
     ) -> PlanState:
-        messages = build_critic_agent_messages(state, mode)
+        """
+        orchestration_mode:
+          - legacy：写 control.next_agent（旧路径）
+          - staged：仅 critic.*，禁止 next_agent；须传 stage
+        """
+        orch = (orchestration_mode or "legacy").strip().lower()
+        if orch == "staged":
+            if not stage:
+                raise AIServiceError("staged Critic 必须指定 stage（planner|music_curator|script_writer）。")
+            messages = build_critic_staged_messages(state, mode, stage=stage)
+            schema = CRITIC_STAGED_RESPONSE_SCHEMA
+            schema_name = "podcast_critic_staged_response"
+        else:
+            messages = build_critic_agent_messages(state, mode)
+            schema = CRITIC_RESPONSE_SCHEMA
+            schema_name = "podcast_critic_response"
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.2}
         structured = should_use_structured_output(self._settings.llm)
         if structured:
             gen_kwargs["response_format"] = build_openrouter_response_format(
-                "podcast_critic_response",
-                CRITIC_RESPONSE_SCHEMA,
+                schema_name,
+                schema,
             )
 
         try:
@@ -72,13 +93,18 @@ class CriticAgent:
             audit_sink.write_agent_artifact(
                 iteration=round_iteration,
                 agent_slug=AUDIT_SLUG_CRITIC,
-                mode=None,
+                mode=mode,
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
                 raw_llm_text=raw,
                 parsed_patch=data,
+                stage=audit_stage,
+                revision=audit_revision,
             )
 
-        patch = _sanitize_critic_patch(data)
+        if orch == "staged":
+            patch = _sanitize_critic_patch_staged(data)
+        else:
+            patch = _sanitize_critic_patch(data)
         next_state = merge_plan_state(state, patch)
         return next_state
 
@@ -90,16 +116,8 @@ _ACTION_ALLOWED_KEYS = {"target_agent", "instruction"}
 _CONTROL_ALLOWED_KEYS = {"next_agent"}
 
 
-def _sanitize_critic_patch(data: Dict[str, Any]) -> Dict[str, Any]:
-    allowed_top = {"critic", "control"}
-    forbidden_top = set(data.keys()) - allowed_top
-    if forbidden_top:
-        raise AIServiceError(f"Critic 越权写入顶层字段：{', '.join(sorted(forbidden_top))}。")
-
-    critic = data.get("critic")
-    if not isinstance(critic, dict):
-        raise AIServiceError("Critic 输出中 critic 必须是对象。")
-
+def _sanitize_critic_body(critic: Dict[str, Any]) -> Dict[str, Any]:
+    """共享 critic.* 校验（legacy / staged）。"""
     forbidden_critic_keys = set(critic.keys()) - _CRITIC_ALLOWED_KEYS
     if forbidden_critic_keys:
         raise AIServiceError(f"Critic 越权写入 critic 字段：{', '.join(sorted(forbidden_critic_keys))}。")
@@ -165,6 +183,26 @@ def _sanitize_critic_patch(data: Dict[str, Any]) -> Dict[str, Any]:
     if critic["pass"] is False and len(sanitized_actions) < 1:
         raise AIServiceError("Critic.pass=false 时，critic.actions 至少包含 1 条修复指令。")
 
+    return {
+        "pass": critic["pass"],
+        "scores": {k: scores[k] for k in _SCORES_ALLOWED_KEYS},
+        "issues": sanitized_issues,
+        "actions": sanitized_actions,
+    }
+
+
+def _sanitize_critic_patch(data: Dict[str, Any]) -> Dict[str, Any]:
+    allowed_top = {"critic", "control"}
+    forbidden_top = set(data.keys()) - allowed_top
+    if forbidden_top:
+        raise AIServiceError(f"Critic 越权写入顶层字段：{', '.join(sorted(forbidden_top))}。")
+
+    critic = data.get("critic")
+    if not isinstance(critic, dict):
+        raise AIServiceError("Critic 输出中 critic 必须是对象。")
+
+    body = _sanitize_critic_body(critic)
+
     control = data.get("control")
     if control is None:
         raise AIServiceError("Critic 输出中 control 必须包含 next_agent。")
@@ -179,11 +217,22 @@ def _sanitize_critic_patch(data: Dict[str, Any]) -> Dict[str, Any]:
         raise AIServiceError("Critic 输出中 control.next_agent 必须是字符串。")
 
     return {
-        "critic": {
-            "pass": critic["pass"],
-            "scores": {k: scores[k] for k in _SCORES_ALLOWED_KEYS},
-            "issues": sanitized_issues,
-            "actions": sanitized_actions,
-        },
+        "critic": body,
         "control": {"next_agent": control["next_agent"]},
     }
+
+
+def _sanitize_critic_patch_staged(data: Dict[str, Any]) -> Dict[str, Any]:
+    """v6.0 staged：仅允许 critic.*；若模型误写 control 则拒绝。"""
+    allowed_top = {"critic"}
+    forbidden_top = set(data.keys()) - allowed_top
+    if forbidden_top:
+        raise AIServiceError(
+            f"staged Critic 禁止写入字段：{', '.join(sorted(forbidden_top))}（含 control.next_agent）。"
+        )
+
+    critic = data.get("critic")
+    if not isinstance(critic, dict):
+        raise AIServiceError("Critic 输出中 critic 必须是对象。")
+
+    return {"critic": _sanitize_critic_body(critic)}

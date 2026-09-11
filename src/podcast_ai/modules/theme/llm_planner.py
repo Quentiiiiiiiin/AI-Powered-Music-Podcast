@@ -190,7 +190,7 @@ class ThemePlanner:
         """
         v3.1：同时生成 EpisodePlan（阶段二可用）与 PlanState（落盘为 state.json）。
 
-        - multi_agent：PlanOrchestrator 直接返回 PlanState，再映射为 EpisodePlan
+        - multi_agent：按 app.orchestration_mode 走 staged 或 legacy Orchestrator → PlanState → EpisodePlan
         - single_agent：单次 LLM 先生成 EpisodePlan，再映射为 PlanState（critic/control 置 null）
         - on_progress：v5.2 可选进度钩子（仅 multi_agent 转发；默认不传）
         """
@@ -223,20 +223,30 @@ class ThemePlanner:
         *,
         on_progress: Callable[[dict], None] | None = None,
     ) -> PlanState:
-        """v3.0：通过 PlanOrchestrator.run() 直接返回 PlanState。"""
-        from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
+        """
+        multi_agent：按 app.orchestration_mode 分发。
 
-        orchestrator = PlanOrchestrator(settings=self._settings)
-        return orchestrator.run(request, on_progress=on_progress)
+        - staged（默认）：Stage-Gated FSM（orchestrator_staged）
+        - legacy：旧全局 Critic 回修（orchestrator，冻结）
+
+        阶段失败时 Orchestrator 仍返回带标记的 PlanState，供 pipeline 落盘 snapshot。
+        """
+        mode = getattr(self._settings.app, "orchestration_mode", "staged") or "staged"
+        mode = str(mode).strip().lower()
+        logger.info("ThemePlanner multi_agent orchestration_mode=%s", mode)
+
+        if mode == "legacy":
+            from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
+
+            return PlanOrchestrator(settings=self._settings).run(request, on_progress=on_progress)
+
+        from podcast_ai.modules.theme.orchestrator_staged import StagedPlanOrchestrator
+
+        return StagedPlanOrchestrator(settings=self._settings).run(request, on_progress=on_progress)
 
     def _generate_plan_v3_orchestrator(self, request: EpisodeRequest) -> EpisodePlan:
-        """
-        v3.0：通过 PlanOrchestrator.run() 生成 EpisodePlan。
-        """
-        from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
-
-        orchestrator = PlanOrchestrator(settings=self._settings)
-        state = orchestrator.run(request)
+        """兼容旧入口：走与 generate_plan_state(multi_agent) 相同的 mode 分发。"""
+        state = self._generate_plan_state_v3_orchestrator(request)
         return _episode_plan_from_state(state)
 
     def _generate_plan_state_single_agent_subset(self, request: EpisodeRequest) -> PlanState:

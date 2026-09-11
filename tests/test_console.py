@@ -177,9 +177,21 @@ def test_insight_md_shows_failure_and_single_agent() -> None:
     md = _insight_md(failed)
     assert "2" in md and "Critic" in md and "LLM timeout" in md
 
+    staged = ConsoleRunResult(
+        status="running",
+        command="plan",
+        orchestration_mode="staged",
+        plan_stage="planner",
+        plan_revision=1,
+        plan_current_agent="Critic",
+    )
+    md_st = _insight_md(staged, agent_mode="multi_agent")
+    assert "staged" in md_st and "planner" in md_st and "`1`" in md_st
+
     single = ConsoleRunResult(status="success", command="plan", plan_current_agent="single_agent")
-    md_sa = _insight_md(single, agent_mode="single_agent")
+    md_sa = _insight_md(single, agent_mode="single_agent", orchestration_mode="legacy")
     assert "N/A" in md_sa and "single_agent" in md_sa
+    assert "legacy" in md_sa and "不应用" in md_sa
 
 
 def test_cli_commands_not_removed() -> None:

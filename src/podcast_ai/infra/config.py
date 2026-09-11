@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -136,6 +136,22 @@ class AppConfig(BaseModel):
     output_dir: str = "./output"
     # v3.6：multi-agent 路径下按轮次落盘 audit（关闭则不写 audit/，避免 I/O 影响主流程）
     multi_agent_audit_enabled: bool = Field(default=True, description="是否启用多 Agent 审计落盘")
+    # v6.0：multi_agent 编排双轨；默认 staged（闸门）；legacy 冻结保留
+    orchestration_mode: Literal["staged", "legacy"] = Field(
+        default="staged",
+        description="multi_agent 编排：staged=分阶段闸门（默认）；legacy=旧全局 Critic 回修",
+    )
+
+    @field_validator("orchestration_mode", mode="before")
+    @classmethod
+    def _normalize_orchestration_mode(cls, value: object) -> str:
+        raw = str(value or "").strip().lower()
+        if raw not in {"staged", "legacy"}:
+            raise ValueError(
+                "app.orchestration_mode 仅支持 staged / legacy "
+                f"（收到：{value!r}）"
+            )
+        return raw
 
 
 class _YamlSettingsSource(PydanticBaseSettingsSource):

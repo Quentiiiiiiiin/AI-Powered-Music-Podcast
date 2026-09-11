@@ -164,6 +164,35 @@ CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# v6.0 staged：Critic 仅做阶段内评估，禁止 control.next_agent
+CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "critic": {
+            "type": "object",
+            "properties": {
+                "pass": {"type": "boolean"},
+                "scores": {
+                    "type": "object",
+                    "properties": {
+                        "coherence": {"type": "integer", "minimum": 0, "maximum": 35},
+                        "emotion_flow": {"type": "integer", "minimum": 0, "maximum": 35},
+                        "immersion": {"type": "integer", "minimum": 0, "maximum": 30},
+                    },
+                    "required": ["coherence", "emotion_flow", "immersion"],
+                    "additionalProperties": False,
+                },
+                "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
+                "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
+            },
+            "required": ["pass", "scores", "issues", "actions"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["critic"],
+    "additionalProperties": False,
+}
+
 _PLAYLIST_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {

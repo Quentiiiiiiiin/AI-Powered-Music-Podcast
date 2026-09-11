@@ -98,6 +98,7 @@ def plan_episode_cli(
     """
     settings = load_settings()
     effective_output_dir = Path(output_dir) if output_dir is not None else Path(settings.app.output_dir)
+    orch_mode = settings.app.orchestration_mode
 
     request = EpisodeRequest(
         topic=topic,
@@ -119,6 +120,11 @@ def plan_episode_cli(
     typer.echo("规划完成：")
     typer.echo(f"- Episode ID: {snapshot_path.stem}")
     typer.echo(f"- Plan ID（内存标识，未单独落盘）：{plan.plan_id}")
+    typer.echo(f"- agent_mode: {agent_mode}")
+    if agent_mode == "multi_agent":
+        typer.echo(f"- orchestration_mode: {orch_mode}")
+    else:
+        typer.echo(f"- orchestration_mode: {orch_mode}（config 值，single_agent 不应用）")
     typer.echo(f"- state.json（统一状态）：{state_path}")
     typer.echo(f"- {snapshot_path.name}（阶段一对接子集文件，v3.8）：{snapshot_path}")
 
@@ -126,6 +132,8 @@ def plan_episode_cli(
 _INIT_CONFIG_YAML = """app:
   music_dir: "./music"
   output_dir: "./output"
+  # v6.0：multi_agent 编排 staged（默认闸门）| legacy（旧全局 Critic 回修）
+  orchestration_mode: "staged"
 
 audio:
   crossfade_seconds: 8.0

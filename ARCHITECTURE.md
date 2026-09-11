@@ -79,7 +79,7 @@
      - **阶段二输入子集**：`…/plans/{episode_id}.json`（由 `build_episode_snapshot_from_state` 从 state 剪枝而来，字段见 `infra/storage/paths.py`）
 
 - **`agent_mode`**：
-  - `multi_agent`（默认）：`PlanOrchestrator` 驱动四角色 + Critic 迭代。
+  - `multi_agent`（默认）：按 config `orchestration_mode` 走 **`staged`（默认闸门）** 或 **`legacy`（全局 Critic 回修）**。
   - `single_agent`：单次 LLM 调用产出 **无 `critic`/`control` 的 state 子集**，同样经校验后写入上述两文件。
 
 阶段一 **不再以旧版独立 EpisodePlan 文件作为主产物路径**；阶段二默认读取 `<episode_id>.json`（`Stage2Snapshot`）。
@@ -118,50 +118,62 @@
 ### 5.1 设计要点
 
 - **共享事实源**：所有协作围绕 `PlanState`（`modules/theme/state.py` 中的 `Dict` 约定 + 校验函数）进行，而非各自独立的文本。
-- **有限迭代**：外层循环由 `PlanOrchestrator` 控制；`control.max_iterations` 限制 Critic 评估轮数上限（初始化见 `initialize_plan_state`，默认 `DEFAULT_MAX_ITERATIONS`，当前代码为 **5**）。
-- **结构化输出**：各 Agent 在支持的 LLM 配置下通过 `response_format` + JSON Schema（`agent_response_schemas.py` / `build_openrouter_response_format`）约束输出；解析统一走 `agent_json_parser.parse_agent_json_response`（非结构化路径下可回退 JSON 修复模块）。
-- **写权限隔离**：每个 Agent 输出经 `_sanitize_*_patch`（Planner 为公开的 `sanitize_planner_patch`）裁剪后，`merge_plan_state` 合并进全局 state，防止越权改写字段。
+- **编排双轨（v6.0）**：config 暴露 `orchestration_mode: staged | legacy`，**默认 `staged`**。
+  - **`staged`（Stage-Gated，默认）**：三创作 Agent 顺序闸门；**仅当本阶段交付物通过 Critic 后才进入下一阶段**；路由由 **Orchestrator 代码 FSM** 推进，Critic **不写 / 不决定 `next_agent`**；每阶段「最多 2 次修复、最多 3 次 Critic 判定」；**禁止回退**上游阶段。
+  - **`legacy`（冻结保留）**：保留现有「创作后全局 Critic + `actions` / `next_agent` 回修」语义与旧 prompt；经 config 切换，验证稳定前不删除。
+- **有限迭代**：
+  - `staged`：按阶段内修订预算计数（非全局粗粒度 `max_iterations` 主控）。
+  - `legacy`：外层仍由 `control.max_iterations` 限制 Critic 评估轮数（见 `initialize_plan_state`）。
+- **结构化输出**：各 Agent 在支持的 LLM 配置下通过 `response_format` + JSON Schema 约束输出；解析统一走 `agent_json_parser`（可回退 JSON 修复）。
+- **写权限隔离**：每个 Agent 输出经 sanitize 后 `merge_plan_state` 合并；`staged` 下 Critic 的可写字段收窄为阶段内评估（`critic.*` / pass 等），**不含**调度下一创作 Agent。
 
 ### 5.2 角色与编排顺序
 
-固定顺序（见 `orchestrator.py` 中 `_AGENT_ORDER`）：
+创作角色不变：
 
-1. **Planner** — `planner_agent.py`：更新 `meta.theme_description`、`global_constraints`、`plan`、`segments` 的设计字段（不含 playlist/script）。
-2. **Music Curator** — `music_curator_agent.py`：仅写各 segment 的 `playlist`（曲目与顺序）。
-3. **Script Writer** — `script_writer_agent.py`：仅写 `segments[*].script`（段首与曲间串词）。
-4. **Critic** — `critic_agent.py`：只写 `critic.*` 与 `control.next_agent` 等控制字段，不直接改业务段落内容。
+1. **Planner** — `planner_agent.py`：结构 / 约束 / segments 设计（不含 playlist/script）。
+2. **Music Curator** — `music_curator_agent.py`：仅写 `playlist`。
+3. **Script Writer** — `script_writer_agent.py`：仅写 `script`。
+4. **Critic** — `critic_agent.py`：阶段内评分与 pass；`staged` 下不负责路由。
 
-**一轮（iteration）语义**：从 `control.next_agent` 指定的角色起，**依次执行到 Critic（含）**。  
-若 `critic.pass == True`，置 `control.status = "completed"` 并提前结束；否则递增 `control.iteration`，进入下一轮，下一轮起点由 Critic 写入的 `next_agent` 决定。  
-若在某轮中捕获 `AIServiceError`，将 `control.status = "error"` 并中断；若用尽迭代仍未通过，则 `status = "max_iterations_reached"`。
+**`staged` 闸门流程（明确）**：
 
-### 5.3 与 PRD 契约表的关系
+```text
+Planner ⇄ Critic（阶段内闭环，最多 2 次修复）
+  → Music Curator ⇄ Critic
+  → Script Writer ⇄ Critic
+  → 输出终稿 snapshot
+```
 
-PRD §6.3 的「可读 / 可写 / 禁止写」字段表是设计与代码的共同契约；实现上通过 **prompt 约束 + sanitize + merge** 三层减小漂移。新增字段时应同步：
+- 阶段失败：标记失败阶段/状态，**仍写出主 snapshot**（可被阶段二消费）+ 审计落盘；**不回退**上游阶段。
+- **`legacy` 一轮语义（保留）**：从 `control.next_agent` 起依次执行到 Critic；`pass` 则完成，否则由 Critic 的 `next_agent` 决定下一轮起点（实现见现有 `orchestrator.py`）。
 
-- `state_schema.json`（仓库根目录，外部契约参考）
-- `state.py` 内校验逻辑
-- `prompts.py` 与各 Agent 的 response schema
+### 5.3 Prompt 与配置
 
-### 5.4 可审计落盘（v3.6）
+- **`staged` 使用独立/重写 prompt**（与 legacy 分离）；legacy 旧 prompt **冻结**，切换 mode 时加载对应 prompt 集。
+- config（或等价 Settings）字段示例：`orchestration_mode: staged | legacy`；CLI/Console 日志或状态中应可观测当前 mode。
 
-当 `settings.app.multi_agent_audit_enabled` 为真时，`PlanOrchestrator` 构造 `FilePlanAuditSink`，目录为：
+### 5.4 与 PRD 契约表的关系
+
+PRD §6.3 的「可读 / 可写 / 禁止写」字段表仍是共同契约；`staged` 下 Critic 禁止写调度字段须在 sanitize / schema / prompt 三层对齐。新增字段时同步：
+
+- `state_schema.json`
+- `state.py` 校验
+- staged / legacy 各自的 prompts 与 response schema
+
+### 5.5 可审计落盘（v3.6+）
+
+当 `settings.app.multi_agent_audit_enabled` 为真时，审计目录：
 
 `{output_dir}/audit/multi_agent/{request_id}/`
 
-写入内容包括（详见 `plan_audit.py`）：
+`staged` 下审计宜可按**阶段 + 修订轮次**追溯（文件命名约定由实现定义并文档化）；写盘失败记录日志但不阻断主流程。
 
-- 每次 Agent 调用：`iteration{i}_{agent_slug}.json`（含 raw 文本、解析后的 patch 等）。
-- 每轮 state 合并完成后：`iteration{i}_state.json`。
-- 异常时可选：`iteration{i}_state_partial.json`。
-
-写盘失败 **记录日志但不阻断主流程**，避免与模型错误混淆。
-
-### 5.5 单 Agent 模式差异
+### 5.6 单 Agent 模式差异
 
 - **产出结构**：顶层仅 `schema_version`、`meta`、`global_constraints`、`plan`、`segments`（无 `critic`/`control`）。
-- **调用**：`ThemePlanner._generate_plan_state_single_agent_subset` 使用 `build_theme_planner_messages` + 可选结构化输出 schema `SINGLE_AGENT_STATE_SUBSET_SCHEMA`。
-- **校验**：`validate_state_subset_for_single_agent`；pipeline 出口仍调用 `validate_state_conforms_to_schema(..., agent_mode="single_agent")`。
+- **调用**：`ThemePlanner` 单次 LLM 路径；与 `orchestration_mode` 正交（仅 `agent_mode=multi_agent` 时才应用 staged/legacy）。
+- **校验**：`validate_state_subset_for_single_agent` / `validate_state_conforms_to_schema(..., agent_mode="single_agent")`。
 
 ---
 
@@ -256,6 +268,18 @@ output/
 以下结论仍适用；细节见 PRD 迭代说明与 git 历史。
 
 - **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
+- **AD-v6.0：多 Agent 分阶段闸门编排 Stage-Gated（迭代二十九）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**——改的是阶段一 **编排状态机与 Critic 职责边界**，不改变整体分层、阶段二/三契约与 snapshot 对外 schema
+  - **背景**：legacy 下 Critic 兼 QA + 调度（写 `next_agent`），易过载；PRD v6.0 要求默认 `staged` 闸门，Orchestrator FSM 路由，Critic 仅做阶段内 pass；`legacy` 双轨冻结保留
+  - **最小改动方案**：
+    - config 增加 `orchestration_mode: staged | legacy`（默认 `staged`）；ThemePlanner / Orchestrator 按 mode 分支
+    - 新增 staged FSM（可同文件分支或 `orchestrator_staged.py`）：`Planner⇄Critic → Curator⇄Critic → Writer⇄Critic`；每阶段最多 2 次修复；失败不回退；仍输出主 snapshot + 审计
+    - Critic：`staged` 路径去掉对 `control.next_agent` 的依赖与写入；独立 staged prompt / response schema；legacy 路径与旧 prompt **冻结不动**
+    - 不改：Agent 领域写权限主表（playlist/script 归属）、阶段二输入 `Stage2Snapshot`、Console 仅需可观测当前 mode
+  - **影响面**：
+    - 主要：`modules/theme/orchestrator*.py`、`critic_agent.py` sanitize/schema、`prompts`（staged 新集）、`infra/config.py`、相关测试
+    - 不改：`pipeline` 三阶段产品流程、混音/TTS、`MixParamsJSON`
 - **AD-v4.1**：TTS 供应商抽象收敛到 `infra/tts_client.py`，CLI 仅切换 provider。
 - **AD-v4.2 / v4.5**：intro 估计与「阶段二参数 JSON + 阶段三渲染」拆分，混音语义 backward compatible（歌→歌规则不因 intro 改动）。
 - **AD-v5.0：Developer Console — Gradio 本地开发者控制台（迭代二十五）**
@@ -303,7 +327,8 @@ output/
    阶段一打印的 `{episode_id}.json`（在 `episodes/.../plans/`），不是旧的 `plans/<plan_id>.json` 主路径。
 
 2. **多 Agent 从哪读状态机？**  
-   `modules/theme/orchestrator.py` 的 `while iteration <= max_iterations` 与 `_run_round_from`。
+   - `staged`（默认）：`modules/theme` 下 Stage-Gated FSM（Orchestrator 推进闸门；见 AD-v6.0）。  
+   - `legacy`：现有 `orchestrator.py` 的 `while iteration <= max_iterations` 与 `_run_round_from`（Critic 写 `next_agent`）。
 
 3. **为何仍保留 `EpisodePlan`？**  
    兼容导出、Show Notes 与部分测试；主输入契约已迁移到 `Stage2Snapshot`。
@@ -314,6 +339,9 @@ output/
 5. **Gradio Console 和正式 Web UI 是一回事吗？**  
    不是。v5.0 Developer Console 仅供开发者本机调试，必须复用 `pipeline`；正式创作者 Web UI 仍属后续扩展（PRD Phase 5）。
 
+6. **`staged` 失败还会有 snapshot 吗？**  
+   会。阶段闸门最终不通过时仍写主 snapshot（供阶段二/人工继续），并以 `control.status`（或等价字段）标明失败阶段；审计保留。
+
 ---
 
-*文档维护建议：当修改 `pipeline.py` 阶段划分、`orchestrator.py` 状态机、snapshot 字段或接口层入口（CLI / Console）时，请同步更新本文与 PRD 中的契约描述。*
+*文档维护建议：当修改 `pipeline.py` 阶段划分、`orchestrator` 状态机（含 `orchestration_mode`）、snapshot 字段或接口层入口（CLI / Console）时，请同步更新本文与 PRD 中的契约描述。*

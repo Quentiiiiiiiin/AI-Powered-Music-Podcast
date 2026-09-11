@@ -17,6 +17,7 @@ AI 驱动的音乐 Podcast 自动生成工具（MVP）。根据主题与时长�
 ### 1. 创建虚拟环境（推荐）
 
 ```bash
+cd C:\Users\yanqu\Desktop\Cursor Project ONE
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
@@ -93,7 +94,7 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
   - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态）
   - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 state 快照，文件名与 `episode_id` 一致）
 
-**v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。其中 `iteration{i}` 与编排器本轮外层层级一致；`iteration{i}_{planner|music_curator|script_writer|critic}.json` 含该步原始 LLM 文本与解析后的 patch，`iteration{i}_state.json` 为该行结束后的完整 `PlanState`。写盘失败只记日志，不影响规划成功/失败判定。可在配置中关闭 `app.multi_agent_audit_enabled`。
+**v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。`legacy` 下文件名为 `iteration{i}_{agent}.json` / `iteration{i}_state.json`；**v6.0 `staged`** 下为 `stage_{planner|music_curator|script_writer}_rev{r}_{agent}.json` 与对应 `_state.json`（`rev0`=首次生成，`rev1/2`=修复轮）。写盘失败只记日志。配置：`app.orchestration_mode`（默认 `staged`）与 `app.multi_agent_audit_enabled`。
 
 根据歌单到各平台搜索、下载歌曲，放入指定目录（如 `./music/本期节目`）。
 
@@ -184,6 +185,7 @@ podcast-ai console --no-browser  # 不自动打开浏览器
 | ---------------------------- | ------------------- | ------------ |
 | `app.music_dir`              | 音乐目录                | `./music`    |
 | `app.output_dir`             | 输出目录                | `./output`   |
+| `app.orchestration_mode`     | **v6.0** multi_agent 编排：`staged`（默认，分阶段闸门）/ `legacy`（旧全局 Critic 回修） | `staged` |
 | `audio.crossfade_seconds`    | 曲目过渡时长（秒）           | `8.0`        |
 | `audio.voice_music_crossfade_seconds` | 串词->歌基础叠化时长下限（秒） | `3.0` |
 | `audio.voice_music_intro_align_enabled` | 是否启用串词->下一首 intro 对齐（v4.2） | `true` |

@@ -28,6 +28,7 @@ from podcast_ai.console.runner import (
     run_plan,
     run_stage2,
     run_stage3,
+    settings_from_params,
 )
 from podcast_ai.console.snapshot_timeline import (
     TABLE_HEADERS,
@@ -143,31 +144,58 @@ def _audio_value(result: ConsoleRunResult) -> str | None:
     return str(path) if path.is_file() else None
 
 
-_INSIGHT_IDLE = "**iteration**: `—`  \n**当前 Agent**: `—`  \n**失败原因**: `—`"
+_INSIGHT_IDLE = (
+    "**orchestration_mode**: `—`  \n"
+    "**iteration**: `—`  \n"
+    "**stage**: `—`  \n"
+    "**revision**: `—`  \n"
+    "**当前 Agent**: `—`  \n"
+    "**失败原因**: `—`"
+)
 
 
-def _insight_md(result: ConsoleRunResult, *, agent_mode: str = "") -> str:
-    """阶段一运行态：iteration / Agent / 失败原因（失败时必显示）。"""
+def _insight_md(
+    result: ConsoleRunResult,
+    *,
+    agent_mode: str = "",
+    orchestration_mode: str = "",
+) -> str:
+    """阶段一运行态：mode / iteration / stage / revision / Agent / 失败原因。"""
     if result.status == "idle":
         return _INSIGHT_IDLE
     it = result.plan_iteration
     agent = result.plan_current_agent
     mode = (agent_mode or "").strip()
-    if mode == "single_agent" and it is None:
-        it_disp = "N/A"
+    orch = (result.orchestration_mode or orchestration_mode or "").strip() or "—"
+    stage = result.plan_stage
+    revision = result.plan_revision
+    if mode == "single_agent":
+        orch_disp = f"{orch}（不应用）" if orch != "—" else "N/A"
+        it_disp = "N/A" if it is None else str(it)
         agent_disp = agent or "single_agent"
-    elif result.status == "running" and it is None and not agent:
+        stage_disp = "N/A"
+        rev_disp = "N/A"
+    elif result.status == "running" and it is None and not agent and not stage:
+        orch_disp = orch
         it_disp = "…"
         agent_disp = "…"
+        stage_disp = "…"
+        rev_disp = "…"
     else:
+        orch_disp = orch
         it_disp = "N/A" if it is None else str(it)
         agent_disp = agent or "N/A"
+        stage_disp = stage or "N/A"
+        rev_disp = "N/A" if revision is None else str(revision)
     if result.status == "error":
         fail = (result.error or "").strip() or "未知错误"
     else:
         fail = "—"
     return (
+        f"**orchestration_mode**: `{orch_disp}`  \n"
         f"**iteration**: `{it_disp}`  \n"
+        f"**stage**: `{stage_disp}`  \n"
+        f"**revision**: `{rev_disp}`  \n"
         f"**当前 Agent**: `{agent_disp}`  \n"
         f"**失败原因**: {fail}"
     )
@@ -210,8 +238,10 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
     """计划运行：先标 running，再按进度钩子刷新洞察，最后给出完整结果。"""
     sink: list[dict[str, Any]] = []
     running = ConsoleRunResult.running("plan")
+    orch = str(settings_from_params(params).app.orchestration_mode)
+    running.orchestration_mode = orch
     packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
-    insight = _insight_md(running, agent_mode=params.agent_mode)
+    insight = _insight_md(running, agent_mode=params.agent_mode, orchestration_mode=orch)
     yield (*packed, insight, insight)
 
     holder: list[ConsoleRunResult] = []
@@ -228,18 +258,23 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
         hooked = progress_from_events(sink)
         running.plan_iteration = hooked.iteration
         running.plan_current_agent = hooked.current_agent
+        running.plan_stage = hooked.stage
+        running.plan_revision = hooked.revision
         if params.agent_mode == "single_agent" and not running.plan_current_agent:
             running.plan_current_agent = "single_agent"
         packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
-        insight = _insight_md(running, agent_mode=params.agent_mode)
+        insight = _insight_md(running, agent_mode=params.agent_mode, orchestration_mode=orch)
         yield (*packed, insight, insight)
 
     if not holder:
         result = ConsoleRunResult(status="error", command="plan", error="计划线程异常退出")
+        result.orchestration_mode = orch
     else:
         result = holder[0]
+        if not result.orchestration_mode:
+            result.orchestration_mode = orch
     packed = _ui_pack(result, params.snapshot_path, params.mix_params_path)
-    insight = _insight_md(result, agent_mode=params.agent_mode)
+    insight = _insight_md(result, agent_mode=params.agent_mode, orchestration_mode=orch)
     yield (*packed, insight, insight)
 
 
@@ -309,6 +344,11 @@ def build_app():
                         value="multi_agent",
                         label="agent_mode",
                     )
+                orch_now = load_settings().app.orchestration_mode
+                gr.Markdown(
+                    f"**orchestration_mode**: `{orch_now}`"
+                    "（来自 `config.yaml`，只读；仅 `multi_agent` 生效）"
+                )
                 output_dir = gr.Textbox(label="output_dir", value=defaults.output_dir)
                 llm_model = gr.Textbox(label="model", value=defaults.llm_model)
                 openrouter_provider = gr.Textbox(

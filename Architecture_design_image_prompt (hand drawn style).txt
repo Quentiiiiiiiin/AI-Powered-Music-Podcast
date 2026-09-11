@@ -1,0 +1,338 @@
+A vertical (9:16) hand-drawn sketchnote infographic poster that presents a complete AI project.
+
+Theme:
+An AI-powered music podcast generator system that automatically creates a full podcast episode from a simple user input.
+
+Overall Style:
+hand-drawn sketchnote infographic style, doodle-style illustrations, sketchy imperfect lines, notebook paper texture background (light beige), black pen outlines, soft pastel accent colors (blue, green, yellow), playful but still technical and structured.
+
+The poster should feel like a clean but lively engineering notebook page, combining system architecture with visual storytelling.
+
+--------------------------------
+LAYOUT STRUCTURE (VERY IMPORTANT)
+--------------------------------
+
+The poster is divided vertically into 6 clearly separated sections, from top to bottom, each inside hand-drawn boxes or separated by spacing and arrows:
+
+1. TITLE SECTION (Top 10%)
+2. PROJECT OVERVIEW (15%)
+3. SYSTEM ARCHITECTURE DIAGRAM (30%) ← largest central section
+4. CORE TECH MODULES (20%)
+5. HIGHLIGHTS & CHALLENGES (15%)
+6. GITHUB & CONTACT (Bottom 10%)
+
+Use hand-drawn arrows to connect sections and guide the flow from top to bottom.
+
+--------------------------------
+SECTION 1 — TITLE
+--------------------------------
+
+Large handwritten title:
+
+"AI Music Radio Generator"
+
+Subtitle:
+
+"Turn a simple idea into a full podcast episode"
+
+Small description:
+
+"AI-powered end-to-end podcast creation system"
+
+Decorations:
+• doodle radio 📻
+• music notes 🎵 floating around
+• small AI brain icon 🤖
+
+--------------------------------
+SECTION 2 — PROJECT OVERVIEW
+--------------------------------
+
+Title:
+
+"💡 Overview"
+
+Content structured into 4 mini blocks:
+
+Problem:
+"Podcast production is complex and manual  
+(music selection, scripting, voiceover, mixing)"
+
+Solution:
+"AI automates the entire pipeline  
+from idea to final audio"
+
+Input:
+"Theme + Duration"
+
+Output:
+"Full podcast episode (music + voice + transitions)"
+
+Value (bullet points):
+• Fully automated workflow  
+• Support manual editing  
+• Scalable content generation  
+
+Use small icons for each part (gear, lightbulb, arrow, etc.)
+
+--------------------------------
+SECTION 3 — SYSTEM ARCHITECTURE (CENTERPIECE)
+--------------------------------
+
+Title:
+
+"⚙️ Shared-State Multi-Agent Architecture"
+
+This section should feel highly technical, system-oriented, and visually represent a production-grade AI orchestration workflow.
+
+The architecture must emphasize:
+• shared mutable planning state
+• sequential agent pipeline
+• iterative evaluation loop
+• partial regeneration
+• evaluation-driven refinement
+
+The diagram should resemble:
+• agent orchestration systems
+• recursive planning pipelines
+• compiler-like refinement passes
+
+--------------------------------
+CORE ARCHITECTURE CONCEPT
+--------------------------------
+
+At the center of the architecture, prominently display:
+
+[Shared Plan State (JSON) 🗂️]
+
+This acts as the central structured state store shared across all agents.
+
+Important:
+• every agent reads from the shared state
+• every agent only modifies its own scoped fields
+• visualize scoped ownership clearly
+• the state evolves incrementally through iterations
+
+Add visual annotations such as:
+• "structured state"
+• "read / write scoped fields"
+• "incremental updates"
+• "shared memory"
+
+The Shared Plan State should visually appear as:
+• a central document / state object
+• connected to all agents
+• the heart of the orchestration system
+
+--------------------------------
+SEQUENTIAL AGENT PIPELINE
+--------------------------------
+
+The primary workflow is still sequential and pipeline-oriented.
+
+Display agents in a clear ordered flow:
+
+[Planner Agent 🧠]
+↓
+[Music Curator Agent 🎵]
+↓
+[Script Writer Agent 📝]
+↓
+[Critic Agent ⚠️]
+
+Each agent should:
+• read from shared state
+• modify only owned fields
+• write updates back into shared state
+
+Add subtle arrows between:
+Agent ↔ Shared State
+
+to show continuous state synchronization.
+
+The Critic Agent evaluates the current plan.
+
+If issues are found:
+• the Critic sends feedback to a specific upstream agent
+
+Strongly emphasize:
+• partial regeneration (fix issues ONLY, keep everything else UNCHANGED)
+
+Use:
+• looping arrows
+• "feedback"
+• "revise"
+
+If Critic approval:
+
+Shared Plan State (JSON)
+
+↓ (no issues arrow)
+
+[Approved Episode Plan ✅]
+
+Include:
+• playlist
+• narration plan
+• segment timeline
+• structured JSON snapshot
+
+--------------------------------
+DOWNSTREAM PRODUCTION PIPELINE
+--------------------------------
+
+↓ (arrow)
+
+[Production Layer ⚙️]
+• Track Mapping
+• TTS Voice Generation
+• Segment Assembly
+
+↓ (arrow)
+
+[Audio Processing 🎛️]
+• Intro Detection
+• Timeline Alignment
+• Crossfade Mixing
+
+↓ (arrow)
+
+[Final Podcast Output 🎧]
+• Podcast Audio
+• Show Notes
+• Mix Parameters
+
+--------------------------------
+VISUAL STYLE REQUIREMENTS
+--------------------------------
+
+The architecture should visually resemble:
+• advanced AI orchestration diagrams
+• recursive execution graphs
+• workflow state machines
+• iterative planning systems
+
+Use:
+• layered workflow diagrams
+• feedback loops
+
+Visualize:
+• state evolution
+• incremental planning refinement
+
+The centerpiece should feel:
+technical, intelligent, dynamic, recursive, and production-grade.
+
+Avoid:
+• full-regeneration loops
+• flat static workflows
+--------------------------------
+SECTION 4 — CORE TECH MODULES
+--------------------------------
+
+Title:
+
+"🧠 Core Modules"
+
+Display 4 boxed modules in a grid-like or stacked layout:
+
+1. Multi-Agent Planning
+• multiple AI roles collaborate  
+• structured JSON outputs  
+• iterative refinement  
+
+2. Audio Intelligence
+• intro detection  
+• dynamic crossfade  
+• timeline alignment  
+
+3. Voice Generation
+• multi-provider TTS  
+• natural voice synthesis  
+• timing control  
+
+4. Pipeline System
+• modular pipeline  
+• data validation  
+• extensible design  
+
+Each module has:
+• a small icon
+• short bullet points
+• hand-drawn box around it
+
+--------------------------------
+SECTION 5 — HIGHLIGHTS & CHALLENGES
+--------------------------------
+
+Split into two columns or two grouped areas.
+
+Title:
+
+"✨ Highlights & ⚠️ Challenges"
+
+Highlights:
+• multi-agent workflow orchestration
+• agent runtime & state Mgt.  
+• eval-driven generation pipeline  
+• observability & traceability  
+
+Challenges:
+• generation reliability & failure recovery  
+• structured generation consistency
+• audio transition smoothness  
+• TTS & music alignment  
+
+Use icons:
+• sparkles for highlights
+• warning sign for challenges
+
+--------------------------------
+SECTION 6 — GITHUB & CONTACT
+--------------------------------
+
+Title:
+
+"🔗 Links"
+
+Content:
+
+GitHub:
+"github.com/Quentiiiiiiiin/AI-Powered-Music-Podcast"
+
+Tech Stack:
+"Python · LLM · TTS · Audio Processing · Cursor "
+
+Contact:
+"yanquan_cai@qq.com"
+
+--------------------------------
+VISUAL STYLE DETAILS
+--------------------------------
+
+• Hand-drawn arrows (curved, imperfect)
+• Dashed or wavy borders around sections
+• Slightly uneven lines (sketch feel)
+• Cute doodle icons (AI brain, music notes, microphone, DJ console)
+• Minimal but readable handwritten text
+• Balanced spacing, not crowded
+• Keep text legible but not overly perfect
+
+--------------------------------
+MOOD & QUALITY
+--------------------------------
+
+• creative, smart, friendly
+• looks like a visual engineering notebook
+• mix of technical clarity and playful storytelling
+• high resolution, clean composition
+
+--------------------------------
+AVOID
+--------------------------------
+
+• no photorealism
+• no 3D rendering
+• no corporate UI design
+• no rigid grid layout
+• no excessive dense paragraphs

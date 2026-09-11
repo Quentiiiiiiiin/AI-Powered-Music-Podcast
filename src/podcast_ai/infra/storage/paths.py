@@ -277,3 +277,26 @@ def format_audit_state_partial_filename(iteration: int) -> str:
     """失败时可查：``iteration{i}_state_partial.json``（内容含 error 与本轮开始前的 state 等元数据）。"""
     return f"iteration{int(iteration)}_state_partial.json"
 
+
+def format_audit_staged_agent_filename(stage: str, revision: int, agent_slug: str) -> str:
+    """
+    v6.0 staged 审计命名：``stage_{stage}_rev{r}_{agent_slug}.json``。
+
+    - stage：planner | music_curator | script_writer
+    - revision：0=首次生成，1/2=第 1/2 次修复
+    """
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_{agent_slug}.json"
+
+
+def format_audit_staged_state_filename(stage: str, revision: int) -> str:
+    """v6.0 staged：``stage_{stage}_rev{r}_state.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_state.json"
+
+
+def format_audit_staged_state_partial_filename(stage: str, revision: int) -> str:
+    """v6.0 staged：``stage_{stage}_rev{r}_state_partial.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_state_partial.json"
+

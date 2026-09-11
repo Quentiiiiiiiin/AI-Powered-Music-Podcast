@@ -1,105 +1,146 @@
-﻿## 版本 v5.3（迭代二十八：阶段二 Console — 节目时间线试听与转场 `vm_seconds` 编辑）
+﻿## 版本 v6.0（迭代二十九：多 Agent 分阶段闸门编排 Stage-Gated）
 
-基于 PRD v5.3 与 ARCHITECTURE **AD-v5.3**：在 Developer Console **阶段二面板**增强转场校验效率（仍为开发者调试中心，非 C 端产品）：
+基于 PRD v6.0 与 ARCHITECTURE **AD-v6.0**：多 Agent 阶段一新增默认编排 **`staged`（Stage-Gated）**，与现有 **`legacy`** 双轨并存（config 切换；legacy 冻结保留）。
 
-1. **解析**阶段二产物 `MixParamsJSON`，按真实节目时间线展示：音乐 / 串词 / 转场节点交错（而非仅粘贴原始 JSON）。
-2. 时间线上的**音乐 / 串词**节点可点击播放对应本地音频，并支持进度条拖动定位。
-3. 点击**转场**节点可在线编辑 `transitions[*].vm_seconds`（直接影响阶段三转场效果）。
-4. 编辑完成后按原契约保存为**同目录新文件**（默认不覆盖源文件），可供阶段三消费。
+**staged 要点**：
+```text
+Planner ⇄ Critic（阶段内闭环）
+  → Music Curator ⇄ Critic
+  → Script Writer ⇄ Critic
+  → 输出终稿 snapshot
+```
+- 每阶段：首次生成 → Critic；不通过最多 **2 次修复**（合计最多 **3 次 Critic**）；通过进下一阶段；仍不通过 → **阶段失败、禁止回退**。
+- 路由由 **Orchestrator FSM（代码）** 推进；Critic **不决定 `next_agent`**。
+- 阶段失败仍写出**主 snapshot**（可被阶段二消费）+ 审计；`control.status`（或等价）标明失败阶段。
+- **独立/重写 staged prompt**；legacy prompt **冻结不动**。
+- **默认 `orchestration_mode: staged`**；与 `agent_mode=single_agent` 正交（仅 multi_agent 应用）。
 
-**硬约束**：
-- 能力收敛在 `console/`；**不改** `MixParamsJSON` / `MixParamsTransition` schema、`create_episode_stage2` / `finalize_episode_stage3` 契约、`Mixer` 转场语义。
-- 试听只读 JSON 中已有路径（曲目 `track.file_path`、串词 `audio_path`）；**不做**二次混音或重算 intro。
-- 保存前用 `MixParamsJSON` 校验；非法值明确报错。
-- 模式对齐 v5.2 的 snapshot timeline，避免再造一套业务层。
+**硬约束**：不改阶段二/三契约、`Stage2Snapshot` 对外 schema、创作 Agent 写权限主表（playlist/script 归属）；本轮不做可量化业务规则硬校验增强。
 
 ---
 
-### Task 01 - MixParams ↔ 节目时间线适配器（纯函数）
-- **Task name**: v5.3 - mix_params timeline ⇄ MixParamsJSON
-- **目标**: 在 `console/` 实现双向适配：将 `MixParamsJSON`（`tracks` + `voiceovers` + `transitions`）展开为节目时间线条目列表；编辑 `vm_seconds` 后再写回合法 MixParams 结构。
+### Task 01 - 配置双轨：`orchestration_mode`
+- **Task name**: v6.0 - Settings/config 暴露 staged|legacy
+- **目标**: 在 `Settings`/`config.yaml` 增加 `orchestration_mode: staged | legacy`，**默认 `staged`**；非法值明确报错；环境变量可覆盖。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 时间线构建规则：按 `SelectedTrack.start/end` 与 `VoiceoverSegment.insert_time_in_episode` 交错；在每条 **voice→music** 边界插入对应 `MixParamsTransition` 节点（按 `voice_segment_id` 关联）。
-  - 节点类型建议：`music` / `voice` / `transition`；music/voice 携带可播放路径；transition 携带 `vm_seconds`、`vm_candidate_seconds`、intro 展示字段（只读对比即可）。
-  - 写回：仅允许改 `vm_seconds`（本轮聚焦）；其余字段透传；写回前 `MixParamsJSON.model_validate`。
-  - 负值 / 缺失 transition / 路径缺失：明确错误，不静默丢数据。
-- **Input**: mix_params JSON / `MixParamsJSON`
-- **Output**: timeline DTO + `from_mix_params` / `apply_vm_edits`（或等价）
+  - 字段挂载位置建议：`app.orchestration_mode` 或 `llm`/`theme` 同级清晰命名（实现选一处并文档化）。
+  - `init-config` 模板与 README 同步列出默认值与语义。
+  - CLI/Console 运行日志或状态中可打印当前 mode（最小可观测）。
+- **Input**: PRD/AD-v6.0、现有 `infra/config.py`
+- **Output**: 可切换、默认同 staged 的配置契约
 - **Files involved**:
-  - `src/podcast_ai/console/mix_params_timeline.py`（新建）
-  - （只读）`src/podcast_ai/core/models.py`
-- **Estimated complexity**: M（2–3 小时）
-
----
-
-### Task 02 - 阶段二面板：加载与时间线可读展示
-- **Task name**: v5.3 - 阶段二 MixParams 时间线 UI
-- **目标**: 在阶段二面板支持加载 mix_params 路径，并以时间线形式展示音乐 / 串词 / 转场节点（非整段原始 JSON 输入框了事）。
-- **类型**: frontend
-- **依赖关系**: Task 01
-- **Description**:
-  - Load：校验文件存在并用 `MixParamsJSON` 解析；失败明确报错。
-  - 展示：按播出顺序列出节点摘要（标题、时长或 insert_time、路径短名、transition 的 `vm_seconds`）。
-  - 与现有 Stage2 Run 表单并存；Run Stage2 成功后可回填 `mix_params_path` 并一键加载（可选，不强制自动加载）。
-  - Gradio 下可用 Markdown 列表 + Dropdown/Radio 选中节点，避免复杂可视化时间轴（过度设计）。
-- **Input**: Task 01 适配器
-- **Output**: 阶段二可读时间线区块
-- **Files involved**:
-  - `src/podcast_ai/console/app.py`
-- **Estimated complexity**: M（2 小时）
-
----
-
-### Task 03 - 音乐 / 串词节点试听（含进度条）
-- **Task name**: v5.3 - 时间线节点本地音频播放
-- **目标**: 选中音乐或串词节点后，用 Gradio Audio 播放对应本地文件，并支持进度条拖动定位。
-- **类型**: frontend
-- **依赖关系**: Task 02
-- **Description**:
-  - 播放源：music → `SelectedTrack.track.file_path`；voice → `VoiceoverSegment.audio_path`。
-  - 文件不存在：明确错误，不崩溃。
-  - 不调用 Mixer、不生成临时混音预览（本轮范围外）。
-  - 转场节点无独立音频时可显示提示，引导编辑 `vm_seconds`。
-- **Input**: 选中的 timeline 节点
-- **Output**: 可拖动进度的 Audio 预览
-- **Files involved**:
-  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/infra/config.py`
+  - `src/podcast_ai/cli.py`（init-config 模板）
+  - `README.md`
 - **Estimated complexity**: S（1 小时）
 
 ---
 
-### Task 04 - 编辑 `vm_seconds` + 同目录新文件保存
-- **Task name**: v5.3 - vm_seconds 在线编辑与另存
-- **目标**: 选中转场节点后可编辑 `vm_seconds`；保存时输出与阶段二原契约兼容的 JSON，写到同目录新文件（默认不覆盖）；该文件可被阶段三消费。
-- **类型**: frontend
-- **依赖关系**: Task 01, Task 02
+### Task 02 - Staged FSM 编排器（闸门状态机）
+- **Task name**: v6.0 - Stage-Gated Orchestrator FSM
+- **目标**: 实现 staged 编排：`Planner⇄Critic → Curator⇄Critic → Writer⇄Critic`；每阶段最多 2 次修复；失败不回退；成功推进；Critic 不参与选下一创作 Agent。
+- **类型**: backend
+- **依赖关系**: Task 01
 - **Description**:
-  - 编辑控件：Number 输入；展示只读对照 `vm_candidate_seconds` / intro 字段（便于调试）。
-  - 校验：`vm_seconds >= 0`；可选提示「过大可能超过串词时长」（若易从 voiceovers 时长得到则做，否则依赖阶段三既有校验，避免重复业务）。
-  - Save：新文件名建议 `{stem}_edited_{timestamp}.json`；成功后回填路径供阶段三使用。
-  - 解析/保存失败：明确错误，不静默损坏源文件。
-- **Input**: Task 01 写回逻辑
-- **Output**: 可编辑 + 新文件路径
+  - 建议新建 `orchestrator_staged.py`（或同文件清晰分支），**保留**现有 `orchestrator.py` 作为 legacy 路径冻结。
+  - 阶段内循环：create/revise → Critic → pass 则下一阶段，否则 revise（计数）；超预算 → 标记失败并停止。
+  - 复用现有四 Agent 类与 `merge_plan_state` / sanitize；不在 UI/业务层复制 Agent 逻辑。
+  - 支持可选 `on_progress`（对齐 v5.2）：上报 `stage` / `revision` / `agent` / `status`。
+  - 失败路径：`control.status`（及失败阶段字段）可追溯；**仍返回可用 PlanState** 供上层写 snapshot。
+- **Input**: 现有 Agents + PlanState
+- **Output**: `run_staged(...)` 或等价入口，行为符合 PRD 闸门规则
 - **Files involved**:
-  - `src/podcast_ai/console/app.py`
-  - `src/podcast_ai/console/mix_params_timeline.py`
-- **Estimated complexity**: M（1.5–2.5 小时）
+  - `src/podcast_ai/modules/theme/orchestrator_staged.py`（新建，建议）
+  - `src/podcast_ai/modules/theme/orchestrator.py`（legacy 保持）
+  - `src/podcast_ai/modules/theme/state.py`（若需补充 control 状态字段约定）
+- **Estimated complexity**: L（3–5 小时）
 
 ---
 
-### Task 05 - 契约回归测试与最小说明
-- **Task name**: v5.3 - mix_params timeline 往返测试
-- **目标**: 单测锁定：时间线展开顺序正确；改 `vm_seconds` 往返不丢其它字段；非法值不落盘；保存结果可通过 `MixParamsJSON` 校验。
+### Task 03 - Staged 专用 Prompt / Critic 契约（与 legacy 分离）
+- **Task name**: v6.0 - staged prompts + Critic 不写 next_agent
+- **目标**: 为 staged 提供独立 prompt（Planner/Curator/Writer/Critic）；Critic 仅做阶段内 pass/评分/issues/actions；**禁止**要求或写入 `control.next_agent`。legacy prompt **冻结不动**。
 - **类型**: backend
-- **依赖关系**: Task 01（Task 04 完成后可补路径回填冒烟，非必须）
+- **依赖关系**: 无（可与 Task 01/02 并行，集成依赖 Task 02）
 - **Description**:
-  - fixture：最小 `tracks` + `voiceovers` + `transitions`（可用临时静音文件路径或 mock Path）。
-  - README 补 2–3 行：阶段二时间线试听与 `vm_seconds` 另存说明。
-- **Input**: 适配器
-- **Output**: `pytest` 通过；文档一句对齐
+  - 在 `prompts.py` 新增 `build_*_staged_*`（或独立 `prompts_staged.py`），避免改坏 legacy 函数。
+  - 更新 staged 路径的 Critic response schema / sanitize：去掉对 `next_agent` 的写入；legacy Critic 路径不变。
+  - Prompt 明确「当前阶段交付物」「修订轮次」「禁止改上游已锁定字段」等闸门语义（简洁即可）。
+- **Input**: 现有 `prompts.py`、`critic_agent.py`、`agent_response_schemas.py`
+- **Output**: staged/legacy 两套 prompt 可按 mode 加载
 - **Files involved**:
-  - `tests/test_mix_params_timeline.py`（新建）
-  - `README.md`
-- **Estimated complexity**: S–M（1–2 小时）
+  - `src/podcast_ai/modules/theme/prompts.py`（或 `prompts_staged.py`）
+  - `src/podcast_ai/modules/theme/critic_agent.py`
+  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
+- **Estimated complexity**: M–L（3–4 小时）
+
+---
+
+### Task 04 - ThemePlanner / pipeline 双轨接线 + 失败仍落盘 snapshot
+- **Task name**: v6.0 - multi_agent 按 mode 分发 + 失败产物
+- **目标**: `agent_mode=multi_agent` 时按 `orchestration_mode` 调用 staged 或 legacy；两种路径最终都经既有校验写 `state.json` + `{episode_id}.json`；staged 阶段失败时**仍输出主 snapshot**，状态标明失败。
+- **类型**: backend
+- **依赖关系**: Task 01, Task 02, Task 03
+- **Description**:
+  - 改动点：`llm_planner.py`（及必要时 `pipeline.plan_episode`）；日志打印当前 mode。
+  - 确保失败不抛到「无产物」：Orchestrator 返回带失败标记的 state → 上层仍 `save_state_json` / snapshot。
+  - `single_agent` 路径不受影响。
+- **Input**: Task 02/03 完成物
+- **Output**: 默认同 staged 的端到端 plan 路径；legacy 可切回
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/llm_planner.py`
+  - `src/podcast_ai/core/pipeline.py`（仅必要时）
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 05 - 审计落盘按阶段/修订轮次可追溯
+- **Task name**: v6.0 - staged audit 命名约定
+- **目标**: staged 下审计文件可按**阶段 + 修订轮次**追溯（命名实现定义并写进代码注释/README）；写盘失败不阻断主流程（延续 v3.6 语义）。
+- **类型**: backend
+- **依赖关系**: Task 02
+- **Description**:
+  - 复用 `FilePlanAuditSink` 或小幅扩展文件名 helper；legacy 审计命名保持兼容。
+  - 建议示例：`stage_planner_rev0_critic.json` 等（实现选定一种并文档化即可）。
+- **Input**: 现有 `plan_audit.py`
+- **Output**: staged 审计可对齐阶段/轮次
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/plan_audit.py`
+  - `src/podcast_ai/modules/theme/orchestrator_staged.py`
+- **Estimated complexity**: S（1–2 小时）
+
+---
+
+### Task 06 - CLI/Console 可观测当前 mode（最小）
+- **Task name**: v6.0 - mode 可观测
+- **目标**: CLI plan 摘要与 Console 阶段一面板能看到当前 `orchestration_mode`（只读展示即可）；可选允许 Console 覆盖 mode（非必须，避免过度设计）。
+- **类型**: frontend
+- **依赖关系**: Task 01, Task 04
+- **Description**:
+  - Console：参数区或 Run 结果区显示 mode；进度洞察可展示 `stage`/`revision`（若 Task 02 已 emit）。
+  - 不强制大改 UI 信息架构。
+- **Input**: Settings + progress 事件
+- **Output**: 开发者可见当前编排模式
+- **Files involved**:
+  - `src/podcast_ai/cli.py`
+  - `src/podcast_ai/console/app.py` / `runner.py`
+- **Estimated complexity**: S（1 小时）
+
+---
+
+### Task 07 - 单测：闸门预算、禁止回退、legacy 不回归
+- **Task name**: v6.0 - staged FSM + dual-mode 回归测试
+- **目标**: 用 mock Agent 锁定：① 阶段顺序；② 每阶段最多 2 次修复；③ 失败不调用上游 Agent；④ Critic 不写 next_agent；⑤ `legacy` 路径仍可跑通既有语义；⑥ 失败仍得到可构建 snapshot 的 state。
+- **类型**: backend
+- **依赖关系**: Task 02, Task 03, Task 04
+- **Description**:
+  - 优先单元测 FSM（注入 fake agents），少做真实 LLM。
+  - 可选：config 默认值为 `staged` 的断言。
+- **Input**: staged orchestrator + mocks
+- **Output**: `pytest` 通过
+- **Files involved**:
+  - `tests/test_orchestrator_staged.py`（新建）
+  - `tests/test_orchestrator.py`（legacy 冒烟/既有用例不破坏）
+- **Estimated complexity**: M（2–3 小时）
