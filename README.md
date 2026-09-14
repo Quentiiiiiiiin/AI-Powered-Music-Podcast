@@ -91,8 +91,14 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 
 - 调用 LLM 生成节目结构与目标歌单规划
 - 输出：
-  - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态）
-  - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 state 快照，文件名与 `episode_id` 一致）
+  - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态；**v6.1** 为 `schema_version: v4.0`，含 Planner/Curator 扩展字段）
+  - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 **snapshot**：对外字段集冻结，供阶段二消费）
+
+**v6.1 双契约（富 state / 瘦 snapshot）：**
+- **state**：对齐 `Schema_Planner_v4` / `Schema_Music-Curator_v4`（如 `narrative_function`、`sonic_direction`、playlist 的 `selection_reason` 等）。
+- **snapshot**：仍仅含 `schema` / `meta{request_id,theme,language,target_duration_seconds}` / `segments[*]{segment_id,name,target_duration_seconds,playlists,script}`；`playlists[*]` 保留 `track`/`artist`（历史若带 `bpm` 可透传），**不泄漏** state 扩展字段；**Curator 不再产出 `bpm`**。
+- **single_agent** 与 multi_agent 共用同一 v4 state 子集契约（无 `critic`/`control`）。
+- Console 阶段一 timeline 只依赖 snapshot 子集，不因 state 扩字段崩溃。
 
 **v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。`legacy` 下文件名为 `iteration{i}_{agent}.json` / `iteration{i}_state.json`；**v6.0 `staged`** 下为 `stage_{planner|music_curator|script_writer}_rev{r}_{agent}.json` 与对应 `_state.json`（`rev0`=首次生成，`rev1/2`=修复轮）。写盘失败只记日志。配置：`app.orchestration_mode`（默认 `staged`）与 `app.multi_agent_audit_enabled`。
 

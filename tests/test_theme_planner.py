@@ -185,23 +185,26 @@ def test_v22_theme_planner_error_message_for_invalid_target_playlist_type() -> N
 def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() -> None:
     """v3.7：single_agent 生成的 PlanState 为子集结构，不包含 critic/control。"""
     payload = {
-        "schema_version": "v3.0",
+        "schema_version": "v4.0",
         "meta": {
             "request_id": "req_001",
             "theme": "Late Night Chill",
             "theme_description": "late-night test flow",
             "language": "zh-CN",
             "target_duration_seconds": 600,
-            "overall_bpm_range": [90, 120],
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
         },
         "global_constraints": {
-            "tone": "克制",
-            "language_style": "第一人称",
+            "energy_strategy": "克制",
+            "sonic_world": ["chill"],
             "avoid": [],
         },
         "plan": {
+            "segment_count": 1,
+            "episode_direction": "开场->收束",
             "segments_design": "开场->中段->收束",
-            "emotion_curve": ["平静", "抬升", "收束"],
         },
         "segments": [
             {
@@ -209,11 +212,28 @@ def test_v31_theme_planner_single_agent_generates_schema_conform_state_json() ->
                 "order": 1,
                 "name": "开场",
                 "target_duration_seconds": 300,
-                "bpm_range": [90, 105],
-                "mood": "chill",
-                "segment_design": "开场铺垫",
-                "playlist": [{"track": "Track A", "artist": "Artist X", "bpm": 98}],
-                "script": {"segment_intro": "欢迎来到 Luma Hits。", "between_tracks": [{"after_track_index": 0, "text": None}]},
+                "narrative_function": "开场铺垫",
+                "scene": "night",
+                "sonic_direction": ["soft"],
+                "lyrical_direction": [],
+                "anchor_tracks": [],
+                "reference_material": [],
+                "sequence_direction": [],
+                "transition_to_next": "",
+                "playlist": [
+                    {
+                        "track": "Track A",
+                        "artist": "Artist X",
+                        "selection_reason": "fit",
+                        "sequence_role": "open",
+                        "planner_alignment": ["soft"],
+                        "transition_logic": "n/a",
+                    }
+                ],
+                "script": {
+                    "segment_intro": "欢迎来到 Luma Hits。",
+                    "between_tracks": [{"after_track_index": 0, "text": None}],
+                },
             }
         ],
     }

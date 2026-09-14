@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.0  
+**文档版本**：v6.1  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.0）
+**产品阶段**：迭代验证中（进入 v6.1）
 
 ---
 
@@ -437,6 +437,22 @@
     4. 任一阶段最终 Critic 不通过：流程标记失败，仍输出**主 snapshot**（允许阶段二消费）+ 审计产物齐全。
     5. 三阶段均通过后输出成功路径 snapshot/state，字段契约与阶段二输入兼容；审计可按阶段/修订轮次追溯（编号约定由实现定义并文档化）。
 
+- **v6.1（迭代三十：Planner / Music Curator State Schema v4 升级）**：
+  - **问题**：现行 `state_schema.json` 中 Planner / Music Curator 相关字段对「主题拆解、声景约束、段落叙事/声响方向、选曲理由与序列角色」表达不足，限制 Agent 结构化输出质量与 Critic 可评审粒度。
+  - **变更目标**：在既有 `state_schema.json` 基础上，**仅升级 Planner 与 Music Curator 相关字段契约**（参考仓库内 `Schema_Planner_v4.txt`、`Schema_Music-Curator_v4.txt`）；Script Writer / Critic / control 等其余部分保持不变。同步更新与之相关的 **structured output、Agent 输出检测与 patch、最终 `state` 文件**；**不改变**面向阶段二的 **snapshot 输出格式**（仍维持原 snapshot 字段子集）。
+  - **范围（明确）**：
+    1. **Planner（对齐 Schema_Planner_v4）**：强化 `meta` / `global_constraints` / `plan` / `segments[*]` 中与主题、能量/声景策略、段落叙事与声响方向、锚定曲与参考、段落内序列方向等相关字段（以实现落地字段为准）。
+    2. **Music Curator（对齐 Schema_Music-Curator_v4）**：在 `segments[*].playlist[*]` 上增加/强化选曲解释类字段（如 `selection_reason`、`sequence_role`、`planner_alignment`、`transition_logic` 等）。
+    3. **不变**：snapshot（`<episode_id>.json`）对外字段与阶段二消费契约不变；Script Writer / Critic 业务字段契约本轮不改。
+  - **功能归类**：**优化**（Agent 输出契约与质量）+ **新功能**（state 中 Planner/Curator 字段扩展，对 Agent I/O 可见）。
+  - **User Story（用户视角）**：作为开发者，我希望 Planner 与 Music Curator 按更丰富的结构化契约产出，从而提升选曲与规划质量；同时阶段二仍能无感消费原 snapshot，不必改混音链路。
+  - **Acceptance Criteria（验收标准）**：
+    1. Planner / Music Curator 的 structured output、解析校验与 state merge/patch 对齐 v4 字段契约（以 `Schema_Planner_v4.txt` / `Schema_Music-Curator_v4.txt` 为准）；非法或缺关键字段时明确失败。
+    2. 最终写出的 **`state` 文件**包含升级后的 Planner/Curator 字段；Script Writer / Critic / control 既有结构不被破坏。
+    3. **snapshot 输出格式不变**：仍可被阶段二按既有契约读取；不得因 state 扩字段而要求阶段二改解析。
+    4. `staged` / `legacy` 多 agent 路径中涉及 Planner、Music Curator 的 I/O 均完成适配（或明确仅 `staged` 启用并在文档说明）；单 agent 若共用 Planner 契约则一并适配，否则文档标明范围。
+    5. 既有审计落盘与 Console 阶段一主流程不因 schema 升级而崩溃；失败时仍有可读错误。
+
 
 ## 1. 产品背景
 
@@ -679,12 +695,12 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 Agent 输入/输出契约表（v3.0）
+### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 增补）
 
 | Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
 |------|------|------|------|
-| **Planner** | `meta`、`global_constraints`、历史 `critic.issues` | `meta.theme_description`、`global_constraints.*`、`plan.segments_design`、`plan.emotion_curve`、`segments[*].segment_id/order/name/target_duration_seconds/bpm_range/mood/segment_design` | `segments[*].playlist`、`segments[*].script`、`critic.*`、`control.*` |
-| **Music Curator** | `meta`、`global_constraints`、`plan`、`segments[*].segment_design/mood/bpm_range`、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
+| **Planner（v6.1）** | `meta`、`global_constraints`、历史 `critic.issues` | 按 **Schema_Planner_v4** 负责的 `meta` / `global_constraints` / `plan` / `segments[*]` 规划字段（含主题拆解、能量/声景、段落叙事与声响方向、锚定/参考、序列方向等；以实现字段清单为准） | `segments[*].script`、`critic.*`、`control.*`；playlist 细项解释字段归属 Curator（若 Planner 样例含 playlist 占位，以实现边界为准） |
+| **Music Curator（v6.1）** | `meta`、`global_constraints`、`plan`、`segments[*]` 规划字段、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序）及 **Schema_Music-Curator_v4** 解释字段（如 `selection_reason` / `sequence_role` / `planner_alignment` / `transition_logic`） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
 | **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
 | **Critic** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`；**`legacy` 可写 `control.next_agent`** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**`staged` 下不得通过 Critic 决定下一创作 Agent** |
 | **Orchestrator（流程控制）** | 全量 `state` | `control` 状态机字段（含 phase/revision/status 等，以实现为准）、重试与失败标记；**`staged` 下负责阶段推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
@@ -695,8 +711,9 @@
 - Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
 - **`legacy`**：当达到全局 `max_iterations` 仍未通过时结束回修并输出最终状态。
 - **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
+- **`state` vs snapshot（v6.1）**：Agent I/O 与最终 **`state` 文件**跟随 Planner/Curator v4 字段升级；**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.0）
+### 6.4 当前版本成功指标（v6.1）
 
 | 指标 | 目标 |
 |------|------|
@@ -720,6 +737,7 @@
 | **阶段一调试可观测性** | 阶段一面板可展示 iteration / 当前 Agent / 失败原因等关键运行态，并支持 Snapshot 可读编辑与同路径新文件保存 |
 | **阶段二转场校验效率** | 阶段二面板可按节目时间线试听音乐/串词，并在线编辑 `vm_seconds` 后另存为新 JSON 供阶段三使用 |
 | **Stage-Gated 编排可用** | 默认 `staged`：三阶段闸门 + 每阶段最多 2 次修复；config 可切 `legacy`；失败仍输出可被阶段二消费的 snapshot |
+| **Planner/Curator Schema v4** | Agent I/O 与 `state` 对齐 Schema_Planner_v4 / Schema_Music-Curator_v4；snapshot 对外格式不变 |
 
 ---
 

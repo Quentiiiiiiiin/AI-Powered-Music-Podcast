@@ -1,21 +1,24 @@
 {
-  "schema_version": "v3.0",
+  "schema_version": "v4.0",
   "meta": {
     "request_id": "ep_20260401_001",
     "theme": "一句话主题",
     "theme_description": "详细描述",
     "language": "zh-CN",
     "target_duration_seconds": 1800,
-    "overall_bpm_range": [90, 120]
+    "theme_type": "",
+    "theme_subject": "",
+    "theme_relationship": ""
   },
   "global_constraints": {
-    "tone": "深夜治愈",
-    "language_style": "第一人称，克制",
-    "avoid": ["说教", "浮夸"]
+    "energy_strategy": "能量策略说明",
+    "sonic_world": ["声景标签 A", "声景标签 B"],
+    "avoid": ["避免项 A", "避免项 B"]
   },
   "plan": {
-    "segments_design": "节目结构说明",
-    "emotion_curve": ["平静", "低落", "治愈"]
+    "segment_count": 1,
+    "episode_direction": "整期叙事与能量走向",
+    "segments_design": "段落结构总览"
   },
   "segments": [
     {
@@ -23,14 +26,40 @@
       "order": 1,
       "name": "开场",
       "target_duration_seconds": 600,
-      "bpm_range": [90, 105],
-      "mood": "舒缓",
-      "segment_design": "选曲思路",
+      "narrative_function": "本段叙事功能",
+      "scene": "场景意象",
+      "sonic_direction": ["声响方向 A"],
+      "lyrical_direction": ["歌词方向 A"],
+      "anchor_tracks": [
+        {
+          "track": "锚定曲目",
+          "artist": "艺术家",
+          "required": true
+        }
+      ],
+      "reference_material": [
+        {
+          "track": "参考曲目",
+          "artist": "参考艺术家",
+          "purpose": "参考用途说明"
+        }
+      ],
+      "sequence_direction": [
+        {
+          "phase": "phase_name",
+          "function": "本相功能",
+          "musical_direction": "音乐方向"
+        }
+      ],
+      "transition_to_next": "过渡到下一段的说明",
       "playlist": [
         {
           "track": "曲目 A",
           "artist": "艺术家 X",
-          "bpm": 98
+          "selection_reason": "选曲理由",
+          "sequence_role": "序列角色",
+          "planner_alignment": ["与 Planner 方向对齐点"],
+          "transition_logic": "与前后曲衔接逻辑"
         }
       ],
       "script": {
@@ -80,6 +109,7 @@
     "max_iterations": 3,
     "status": "draft",
     "last_updated_by": "Planner",
-    "next_agent": "Music Curator"
+    "next_agent": "Music Curator",
+    "failed_stage": null
   }
 }

@@ -1,4 +1,4 @@
-"""v3.0：Planner Agent 契约测试。"""
+"""v3.0 / v6.1：Planner Agent 契约测试。"""
 from __future__ import annotations
 
 import json
@@ -30,34 +30,47 @@ def _request() -> EpisodeRequest:
     )
 
 
+def _v4_segment(seg_id: str, order: int, name: str, duration: int) -> dict[str, Any]:
+    return {
+        "segment_id": seg_id,
+        "order": order,
+        "name": name,
+        "target_duration_seconds": duration,
+        "narrative_function": f"{name} role",
+        "scene": f"{name} scene",
+        "sonic_direction": ["electronic"],
+        "lyrical_direction": ["night"],
+        "anchor_tracks": [],
+        "reference_material": [],
+        "sequence_direction": [
+            {"phase": "main", "function": "drive", "musical_direction": "forward"}
+        ],
+        "transition_to_next": "continue",
+    }
+
+
 def test_v30_planner_agent_writes_allowed_fields_only() -> None:
     state = initialize_plan_state(_request())
     payload = {
-        "meta": {"theme_description": "深夜陪伴与情绪递进"},
-        "global_constraints": {"tone": "克制", "avoid": ["说教"]},
+        "meta": {
+            "theme_description": "深夜陪伴与情绪递进",
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
+        },
+        "global_constraints": {
+            "energy_strategy": "克制递进",
+            "sonic_world": ["chill"],
+            "avoid": ["说教"],
+        },
         "plan": {
+            "segment_count": 2,
+            "episode_direction": "平静到收束",
             "segments_design": "三段式结构",
-            "emotion_curve": ["平静", "抬升", "收束"],
         },
         "segments": [
-            {
-                "segment_id": "seg_01",
-                "order": 1,
-                "name": "开场",
-                "target_duration_seconds": 1200,
-                "bpm_range": [90, 104],
-                "mood": "舒缓",
-                "segment_design": "铺垫主题",
-            },
-            {
-                "segment_id": "seg_02",
-                "order": 2,
-                "name": "中段",
-                "target_duration_seconds": 1500,
-                "bpm_range": [100, 116],
-                "mood": "推进",
-                "segment_design": "提升能量",
-            },
+            _v4_segment("seg_01", 1, "开场", 1200),
+            _v4_segment("seg_02", 2, "中段", 1500),
         ],
     }
     agent = PlannerAgent(llm_client=_StubLLMClient(payload))
@@ -65,13 +78,12 @@ def test_v30_planner_agent_writes_allowed_fields_only() -> None:
     next_state = agent.run(state)
 
     assert next_state["meta"]["theme_description"] == "深夜陪伴与情绪递进"
-    assert next_state["global_constraints"]["tone"] == "克制"
+    assert next_state["global_constraints"]["energy_strategy"] == "克制递进"
     assert next_state["plan"]["segments_design"] == "三段式结构"
-    assert next_state["plan"]["emotion_curve"] == ["平静", "抬升", "收束"]
+    assert next_state["plan"]["segment_count"] == 2
     assert len(next_state["segments"]) == 2
     assert next_state["segments"][0]["segment_id"] == "seg_01"
-    assert next_state["segments"][0]["order"] == 1
-    # Planner 不得写 segments[*].playlist，但初始化模板包含该字段
+    assert next_state["segments"][0]["narrative_function"] == "开场 role"
     assert "playlist" in next_state["segments"][0]
     assert next_state["control"]["last_updated_by"] == "Planner"
 
@@ -81,11 +93,7 @@ def test_v30_planner_agent_rejects_forbidden_writes() -> None:
     payload = {
         "segments": [
             {
-                "name": "开场",
-                "target_duration_seconds": 1200,
-                "bpm_range": [90, 104],
-                "mood": "舒缓",
-                "segment_design": "铺垫主题",
+                **_v4_segment("seg_01", 1, "开场", 1200),
                 "playlist": [{"track": "A"}],
             },
         ],

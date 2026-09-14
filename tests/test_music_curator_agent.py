@@ -1,4 +1,4 @@
-"""v3.0：Music Curator Agent 契约测试。"""
+"""v3.0 / v6.1：Music Curator Agent 契约测试。"""
 from __future__ import annotations
 
 import json
@@ -30,6 +30,17 @@ def _request() -> EpisodeRequest:
     )
 
 
+def _pl(track: str, artist: str) -> dict[str, Any]:
+    return {
+        "track": track,
+        "artist": artist,
+        "selection_reason": "fits",
+        "sequence_role": "main",
+        "planner_alignment": ["sonic"],
+        "transition_logic": "smooth",
+    }
+
+
 def test_v30_music_curator_writes_playlist_only_and_preserves_segment_fields() -> None:
     state = initialize_plan_state(_request())
     state["segments"] = [
@@ -38,52 +49,52 @@ def test_v30_music_curator_writes_playlist_only_and_preserves_segment_fields() -
             "order": 1,
             "name": "开场",
             "target_duration_seconds": 600,
-            "bpm_range": [90, 105],
-            "mood": "舒缓",
-            "segment_design": "选曲思路",
+            "narrative_function": "选曲思路",
+            "scene": "night",
+            "sonic_direction": [],
+            "lyrical_direction": [],
+            "anchor_tracks": [],
+            "reference_material": [],
+            "sequence_direction": [],
+            "transition_to_next": "",
         },
         {
             "segment_id": "seg_02",
             "order": 2,
             "name": "中段",
             "target_duration_seconds": 1200,
-            "bpm_range": [100, 116],
-            "mood": "推进",
-            "segment_design": "提升能量",
+            "narrative_function": "提升能量",
+            "scene": "drive",
+            "sonic_direction": [],
+            "lyrical_direction": [],
+            "anchor_tracks": [],
+            "reference_material": [],
+            "sequence_direction": [],
+            "transition_to_next": "",
         },
     ]
 
     payload = {
         "segments": [
-            {
-                "playlist": [
-                    {"track": "Track A", "artist": "Artist X", "bpm": 98},
-                    {"track": "Track B", "artist": "Artist Y", "bpm": 103},
-                ]
-            },
-            {
-                "playlist": [{"track": "Track C", "artist": "Artist Z", "bpm": 110}],
-            },
+            {"playlist": [_pl("Track A", "Artist X"), _pl("Track B", "Artist Y")]},
+            {"playlist": [_pl("Track C", "Artist Z")]},
         ]
     }
 
     agent = MusicCuratorAgent(llm_client=_StubLLMClient(payload))
     next_state = agent.run(state)
 
-    # 保留 Planner 写入的段落骨架字段
     assert next_state["segments"][0]["name"] == "开场"
-    assert next_state["segments"][0]["segment_design"] == "选曲思路"
-    assert next_state["segments"][0]["mood"] == "舒缓"
-
-    # 写入 playlist
+    assert next_state["segments"][0]["narrative_function"] == "选曲思路"
     assert len(next_state["segments"][0]["playlist"]) == 2
     assert next_state["segments"][0]["playlist"][0]["track"] == "Track A"
+    assert next_state["segments"][0]["playlist"][0]["selection_reason"] == "fits"
+    assert "bpm" not in next_state["segments"][0]["playlist"][0]
     assert next_state["segments"][1]["playlist"][0]["artist"] == "Artist Z"
-
     assert next_state["control"]["last_updated_by"] == "Music Curator"
 
 
-def test_v35_music_curator_accepts_null_bpm() -> None:
+def test_v61_music_curator_rejects_bpm_field() -> None:
     state = initialize_plan_state(_request())
     state["segments"] = [
         {
@@ -91,37 +102,21 @@ def test_v35_music_curator_accepts_null_bpm() -> None:
             "order": 1,
             "name": "开场",
             "target_duration_seconds": 600,
-            "bpm_range": [90, 105],
-            "mood": "舒缓",
-            "segment_design": "选曲思路",
+            "narrative_function": "选曲思路",
+            "scene": "",
+            "sonic_direction": [],
+            "lyrical_direction": [],
+            "anchor_tracks": [],
+            "reference_material": [],
+            "sequence_direction": [],
+            "transition_to_next": "",
         },
     ]
-    payload = {
-        "segments": [
-            {"playlist": [{"track": "Track A", "artist": "Artist X", "bpm": None}]},
-        ],
-    }
+    bad = _pl("Track A", "Artist X")
+    bad["bpm"] = 98
+    payload = {"segments": [{"playlist": [bad]}]}
     agent = MusicCuratorAgent(llm_client=_StubLLMClient(payload))
-    next_state = agent.run(state)
-    assert next_state["segments"][0]["playlist"][0]["bpm"] is None
-
-
-def test_v35_music_curator_rejects_non_int_bpm() -> None:
-    state = initialize_plan_state(_request())
-    state["segments"] = [
-        {
-            "segment_id": "seg_01",
-            "order": 1,
-            "name": "开场",
-            "target_duration_seconds": 600,
-            "bpm_range": [90, 105],
-            "mood": "舒缓",
-            "segment_design": "选曲思路",
-        },
-    ]
-    payload = {"segments": [{"playlist": [{"track": "A", "artist": "B", "bpm": 98.5}]}]}
-    agent = MusicCuratorAgent(llm_client=_StubLLMClient(payload))
-    with pytest.raises(AIServiceError, match="bpm"):
+    with pytest.raises(AIServiceError, match="越权"):
         agent.run(state)
 
 
@@ -133,9 +128,14 @@ def test_v30_music_curator_rejects_forbidden_script_write() -> None:
             "order": 1,
             "name": "开场",
             "target_duration_seconds": 600,
-            "bpm_range": [90, 105],
-            "mood": "舒缓",
-            "segment_design": "选曲思路",
+            "narrative_function": "选曲思路",
+            "scene": "",
+            "sonic_direction": [],
+            "lyrical_direction": [],
+            "anchor_tracks": [],
+            "reference_material": [],
+            "sequence_direction": [],
+            "transition_to_next": "",
         }
     ]
 
@@ -144,4 +144,3 @@ def test_v30_music_curator_rejects_forbidden_script_write() -> None:
 
     with pytest.raises(AIServiceError, match=r"越权写入 segments\[0\]"):
         agent.run(state)
-

@@ -140,7 +140,19 @@ def test_music_curator_response_format_name_and_segment_array_bounds(
         bodies.append(json.loads(request.content))
         reply = {
             "segments": [
-                {"segment_id": "seg_01", "playlist": [{"track": "A", "artist": "X", "bpm": 90}]},
+                {
+                    "segment_id": "seg_01",
+                    "playlist": [
+                        {
+                            "track": "A",
+                            "artist": "X",
+                            "selection_reason": "fit",
+                            "sequence_role": "open",
+                            "planner_alignment": ["soft"],
+                            "transition_logic": "n/a",
+                        }
+                    ],
+                },
             ]
         }
         return httpx.Response(
@@ -255,28 +267,55 @@ def test_single_agent_planner_posts_state_subset_response_format(
     bodies: list[dict[str, Any]] = []
 
     reply = {
-        "schema_version": "v3.0",
+        "schema_version": "v4.0",
         "meta": {
             "request_id": "req-single",
             "theme": "T",
             "theme_description": "desc",
             "language": "zh-CN",
             "target_duration_seconds": 3600,
-            "overall_bpm_range": [90, 120],
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
         },
-        "global_constraints": {"tone": "克制", "language_style": "第一人称", "avoid": []},
-        "plan": {"segments_design": "三段", "emotion_curve": ["平静", "抬升", "收束"]},
+        "global_constraints": {
+            "energy_strategy": "克制",
+            "sonic_world": ["chill"],
+            "avoid": [],
+        },
+        "plan": {
+            "segment_count": 1,
+            "episode_direction": "三段",
+            "segments_design": "三段",
+        },
         "segments": [
             {
                 "segment_id": "seg_01",
                 "order": 1,
                 "name": "开场",
                 "target_duration_seconds": 1200,
-                "bpm_range": [90, 104],
-                "mood": "舒缓",
-                "segment_design": "开场铺垫",
-                "playlist": [{"track": "A", "artist": "X", "bpm": 96}],
-                "script": {"segment_intro": "欢迎来到节目。", "between_tracks": [{"after_track_index": 0, "text": None}]},
+                "narrative_function": "开场铺垫",
+                "scene": "studio",
+                "sonic_direction": ["soft"],
+                "lyrical_direction": [],
+                "anchor_tracks": [],
+                "reference_material": [],
+                "sequence_direction": [],
+                "transition_to_next": "",
+                "playlist": [
+                    {
+                        "track": "A",
+                        "artist": "X",
+                        "selection_reason": "fit",
+                        "sequence_role": "open",
+                        "planner_alignment": ["soft"],
+                        "transition_logic": "n/a",
+                    }
+                ],
+                "script": {
+                    "segment_intro": "欢迎来到节目。",
+                    "between_tracks": [{"after_track_index": 0, "text": None}],
+                },
             },
         ],
     }

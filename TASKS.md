@@ -1,146 +1,126 @@
-﻿## 版本 v6.0（迭代二十九：多 Agent 分阶段闸门编排 Stage-Gated）
+﻿## 版本 v6.1（迭代三十：Planner / Music Curator State Schema v4 升级）
 
-基于 PRD v6.0 与 ARCHITECTURE **AD-v6.0**：多 Agent 阶段一新增默认编排 **`staged`（Stage-Gated）**，与现有 **`legacy`** 双轨并存（config 切换；legacy 冻结保留）。
+基于 PRD **v6.1**：在既有 `state_schema.json` 上**仅升级 Planner / Music Curator 相关字段契约**（参考 `Schema_Planner_v4.txt`、`Schema_Music-Curator_v4.txt`）。同步 structured output、Agent sanitize/patch、最终 **`state` 文件**。
 
-**staged 要点**：
-```text
-Planner ⇄ Critic（阶段内闭环）
-  → Music Curator ⇄ Critic
-  → Script Writer ⇄ Critic
-  → 输出终稿 snapshot
-```
-- 每阶段：首次生成 → Critic；不通过最多 **2 次修复**（合计最多 **3 次 Critic**）；通过进下一阶段；仍不通过 → **阶段失败、禁止回退**。
-- 路由由 **Orchestrator FSM（代码）** 推进；Critic **不决定 `next_agent`**。
-- 阶段失败仍写出**主 snapshot**（可被阶段二消费）+ 审计；`control.status`（或等价）标明失败阶段。
-- **独立/重写 staged prompt**；legacy prompt **冻结不动**。
-- **默认 `orchestration_mode: staged`**；与 `agent_mode=single_agent` 正交（仅 multi_agent 应用）。
-
-**硬约束**：不改阶段二/三契约、`Stage2Snapshot` 对外 schema、创作 Agent 写权限主表（playlist/script 归属）；本轮不做可量化业务规则硬校验增强。
+**硬约束**：
+- **snapshot（`<episode_id>.json`）对外格式不变**；阶段二消费契约不改。
+- Script Writer / Critic / `control` 业务字段本轮不改。
+- Planner **不写** `playlist` / `script`；Music Curator **只写** `segments[*].playlist`（含 v4 解释字段）。
+- `Schema_Planner_v4.txt` 样例中的 `playlist` 占位属示意，**落地以 Curator 契约为准**。
+- 避免双轨字段堆叠：以 v4 字段为主替换旧 Planner 表达（如 `emotion_curve` / `segment_design` / `tone` 等），不为兼容保留两套并行必填。
 
 ---
 
-### Task 01 - 配置双轨：`orchestration_mode`
-- **Task name**: v6.0 - Settings/config 暴露 staged|legacy
-- **目标**: 在 `Settings`/`config.yaml` 增加 `orchestration_mode: staged | legacy`，**默认 `staged`**；非法值明确报错；环境变量可覆盖。
+### Task 01 - `state_schema.json` + PlanState 运行时契约对齐 v4
+- **Task name**: v6.1 - state schema / empty state / validate
+- **目标**: 将仓库 `state_schema.json` 与 `state.py`（空模板、必填键、轻量校验）升级为 Planner/Curator v4 字段；`schema_version` 升至可区分版本（如 `v4.0`）；**不改** `script` / `critic` / `control` 结构。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 字段挂载位置建议：`app.orchestration_mode` 或 `llm`/`theme` 同级清晰命名（实现选一处并文档化）。
-  - `init-config` 模板与 README 同步列出默认值与语义。
-  - CLI/Console 运行日志或状态中可打印当前 mode（最小可观测）。
-- **Input**: PRD/AD-v6.0、现有 `infra/config.py`
-- **Output**: 可切换、默认同 staged 的配置契约
+  - **Planner 侧（对齐 Schema_Planner_v4，以实现清单为准）**：
+    - `meta`：保留 `request_id`（系统写入）+ `theme` / `theme_description` / `language` / `target_duration_seconds`；新增 `theme_type` / `theme_subject` / `theme_relationship`（可空字符串）；弱化/移除对 `overall_bpm_range` 的 Planner 必填依赖。
+    - `global_constraints`：`energy_strategy`、`sonic_world[]`、`avoid[]`（替换原 `tone` / `language_style` 为主契约）。
+    - `plan`：`segment_count`、`episode_direction`、`segments_design`（替换原 `emotion_curve` 必填）。
+    - `segments[*]`：保留 `segment_id` / `order` / `name` / `target_duration_seconds`；新增 `narrative_function`、`scene`、`sonic_direction[]`、`lyrical_direction[]`、`anchor_tracks[]`、`reference_material[]`、`sequence_direction[]`、`transition_to_next`；移除对 `bpm_range` / `mood` / `segment_design` 的 Planner 必填。
+  - **Curator 侧**：`playlist[*]` 在 `track` / `artist`（`bpm` 可继续允许 null，可选保留）之上增加 `selection_reason`、`sequence_role`、`planner_alignment[]`、`transition_logic`。
+  - `merge_plan_state` / 空 segment 模板同步默认键，保证 staged 失败路径仍可补齐空 playlist/script。
+- **Input**: `Schema_Planner_v4.txt`、`Schema_Music-Curator_v4.txt`、现有 `state.py`
+- **Output**: state 契约与示例文件对齐 v4；非法类型有明确错误
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-  - `src/podcast_ai/cli.py`（init-config 模板）
-  - `README.md`
+  - `state_schema.json`
+  - `src/podcast_ai/modules/theme/state.py`
+- **Estimated complexity**: M（2–3 小时）
+
+---
+
+### Task 02 - Planner：structured output + sanitize + prompts
+- **Task name**: v6.1 - Planner I/O 对齐 Schema_Planner_v4
+- **目标**: Planner 的 response schema、sanitize/patch、staged/legacy prompts（及若共用契约的 single_agent）只产出/合并 v4 规划字段；禁止写入 `playlist` / `script` / `critic` / `control`。
+- **类型**: backend
+- **依赖关系**: Task 01
+- **Description**:
+  - 更新 `PLANNER_RESPONSE_SCHEMA`（及 single_agent 子集中与 Planner 重叠部分）。
+  - 扩展 `_PLANNER_SEGMENT_ALLOWED_KEYS` / meta / plan / global_constraints 白名单与必填校验；缺关键字段明确失败。
+  - 更新 `prompts.py` 与 `prompts_staged.py` 中 Planner 字段说明与 JSON 示例；Critic staged 的 Planner 评审提示改为对照 v4 交付物（不改 Critic 输出 schema）。
+  - **范围**：`staged` + `legacy` 均适配；single_agent 若仍输出同一 state 子集则一并改，否则在 README 标明「仅 multi_agent」。
+- **Input**: Task 01 字段清单
+- **Output**: Planner 端到端可写入升级后的 state 规划部分
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
+  - `src/podcast_ai/modules/theme/planner_agent.py`
+  - `src/podcast_ai/modules/theme/prompts.py`
+  - `src/podcast_ai/modules/theme/prompts_staged.py`
+  - （必要时）`src/podcast_ai/modules/theme/llm_planner.py` single_agent 路径
+- **Estimated complexity**: L（3–4 小时）
+
+---
+
+### Task 03 - Music Curator：playlist v4 解释字段 I/O
+- **Task name**: v6.1 - Curator playlist 对齐 Schema_Music-Curator_v4
+- **目标**: Curator structured output、sanitize、prompts 要求每条 playlist 含选曲解释字段；非法/缺关键字段明确失败；仍禁止改 plan 骨架与 script。
+- **类型**: backend
+- **依赖关系**: Task 01
+- **Description**:
+  - `_PLAYLIST_ALLOWED_KEYS` / `build_music_curator_response_schema` 扩展：`selection_reason`、`sequence_role`、`planner_alignment`、`transition_logic`（`bpm` 策略：保留可选或从 required 降级，避免无 BPM 时硬失败——以实现简洁为准并写清）。
+  - Prompt 明确依据 Planner 的 `sonic_direction` / `sequence_direction` / `anchor_tracks` 等填写 `planner_alignment`。
+  - staged + legacy Curator 路径同步。
+- **Input**: `Schema_Music-Curator_v4.txt`、Task 01
+- **Output**: state 中 `segments[*].playlist[*]` 带齐 v4 解释字段
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/music_curator_agent.py`
+  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
+  - `src/podcast_ai/modules/theme/prompts.py`
+  - `src/podcast_ai/modules/theme/prompts_staged.py`
+- **Estimated complexity**: M（2–3 小时）
+
+---
+
+### Task 04 - Snapshot 剪枝：对外格式冻结（防字段泄漏）
+- **Task name**: v6.1 - snapshot 仍输出旧子集
+- **目标**: `build_episode_snapshot_from_state`（及校验）保证阶段二输入**字段集不变**；state 中新增的 Planner/Curator 字段**不得**进入 `<episode_id>.json` 的对外契约（尤其 playlist 解释字段、段落叙事字段）。
+- **类型**: backend
+- **依赖关系**: Task 01（可与 02/03 并行开发，联调依赖它们）
+- **Description**:
+  - 现状会把整个 `playlist` 对象拷进 `playlists`；v4 后必须**显式映射**为旧条目子集（至少 `track` / `artist`；若旧快照含 `bpm` 则按现网约定保留或剥离，与阶段二实际读取对齐，不扩新键）。
+  - `meta` / `segments` 顶层仍只输出既有 snapshot 键；不把 `narrative_function` 等写入 snapshot。
+  - 不改 `selector` / `create_episode` 解析逻辑。
+- **Input**: 现有 snapshot 契约、`paths.py`
+- **Output**: 扩字段后的 state → 旧格式 snapshot；阶段二无感
+- **Files involved**:
+  - `src/podcast_ai/infra/storage/paths.py`
+  - （必要时）`src/podcast_ai/modules/theme/state.py` 中 snapshot 校验
 - **Estimated complexity**: S（1 小时）
 
 ---
 
-### Task 02 - Staged FSM 编排器（闸门状态机）
-- **Task name**: v6.0 - Stage-Gated Orchestrator FSM
-- **目标**: 实现 staged 编排：`Planner⇄Critic → Curator⇄Critic → Writer⇄Critic`；每阶段最多 2 次修复；失败不回退；成功推进；Critic 不参与选下一创作 Agent。
+### Task 05 - 单测：v4 merge/sanitize + snapshot 不泄漏
+- **Task name**: v6.1 - schema/sanitize/snapshot 回归
+- **目标**: 用 fixture 锁定 Planner/Curator sanitize 接受 v4、拒绝越权；最终 state 含新字段；snapshot 仅含旧子集；Script/Critic 相关断言不因本轮被破坏。
 - **类型**: backend
-- **依赖关系**: Task 01
+- **依赖关系**: Task 02, Task 03, Task 04
 - **Description**:
-  - 建议新建 `orchestrator_staged.py`（或同文件清晰分支），**保留**现有 `orchestrator.py` 作为 legacy 路径冻结。
-  - 阶段内循环：create/revise → Critic → pass 则下一阶段，否则 revise（计数）；超预算 → 标记失败并停止。
-  - 复用现有四 Agent 类与 `merge_plan_state` / sanitize；不在 UI/业务层复制 Agent 逻辑。
-  - 支持可选 `on_progress`（对齐 v5.2）：上报 `stage` / `revision` / `agent` / `status`。
-  - 失败路径：`control.status`（及失败阶段字段）可追溯；**仍返回可用 PlanState** 供上层写 snapshot。
-- **Input**: 现有 Agents + PlanState
-- **Output**: `run_staged(...)` 或等价入口，行为符合 PRD 闸门规则
+  - 优先单元测，不依赖真实 LLM。
+  - 覆盖：缺 `selection_reason` 等关键字段失败；Planner 写入 `playlist` 失败；snapshot 无 `selection_reason` / 无 `sonic_direction`。
+- **Input**: Task 02–04 完成物
+- **Output**: `pytest` 通过
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/orchestrator_staged.py`（新建，建议）
-  - `src/podcast_ai/modules/theme/orchestrator.py`（legacy 保持）
-  - `src/podcast_ai/modules/theme/state.py`（若需补充 control 状态字段约定）
-- **Estimated complexity**: L（3–5 小时）
-
----
-
-### Task 03 - Staged 专用 Prompt / Critic 契约（与 legacy 分离）
-- **Task name**: v6.0 - staged prompts + Critic 不写 next_agent
-- **目标**: 为 staged 提供独立 prompt（Planner/Curator/Writer/Critic）；Critic 仅做阶段内 pass/评分/issues/actions；**禁止**要求或写入 `control.next_agent`。legacy prompt **冻结不动**。
-- **类型**: backend
-- **依赖关系**: 无（可与 Task 01/02 并行，集成依赖 Task 02）
-- **Description**:
-  - 在 `prompts.py` 新增 `build_*_staged_*`（或独立 `prompts_staged.py`），避免改坏 legacy 函数。
-  - 更新 staged 路径的 Critic response schema / sanitize：去掉对 `next_agent` 的写入；legacy Critic 路径不变。
-  - Prompt 明确「当前阶段交付物」「修订轮次」「禁止改上游已锁定字段」等闸门语义（简洁即可）。
-- **Input**: 现有 `prompts.py`、`critic_agent.py`、`agent_response_schemas.py`
-- **Output**: staged/legacy 两套 prompt 可按 mode 加载
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/prompts.py`（或 `prompts_staged.py`）
-  - `src/podcast_ai/modules/theme/critic_agent.py`
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
-- **Estimated complexity**: M–L（3–4 小时）
-
----
-
-### Task 04 - ThemePlanner / pipeline 双轨接线 + 失败仍落盘 snapshot
-- **Task name**: v6.0 - multi_agent 按 mode 分发 + 失败产物
-- **目标**: `agent_mode=multi_agent` 时按 `orchestration_mode` 调用 staged 或 legacy；两种路径最终都经既有校验写 `state.json` + `{episode_id}.json`；staged 阶段失败时**仍输出主 snapshot**，状态标明失败。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 02, Task 03
-- **Description**:
-  - 改动点：`llm_planner.py`（及必要时 `pipeline.plan_episode`）；日志打印当前 mode。
-  - 确保失败不抛到「无产物」：Orchestrator 返回带失败标记的 state → 上层仍 `save_state_json` / snapshot。
-  - `single_agent` 路径不受影响。
-- **Input**: Task 02/03 完成物
-- **Output**: 默认同 staged 的端到端 plan 路径；legacy 可切回
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/llm_planner.py`
-  - `src/podcast_ai/core/pipeline.py`（仅必要时）
+  - `tests/test_state_schema_v4.py`（新建，或拆入既有 test 文件）
+  - 既有 planner/curator/snapshot 测试按需更新
 - **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 05 - 审计落盘按阶段/修订轮次可追溯
-- **Task name**: v6.0 - staged audit 命名约定
-- **目标**: staged 下审计文件可按**阶段 + 修订轮次**追溯（命名实现定义并写进代码注释/README）；写盘失败不阻断主流程（延续 v3.6 语义）。
+### Task 06 - 文档与 Console 冒烟说明（最小）
+- **Task name**: v6.1 - README/范围说明
+- **目标**: README（或简短注释）标明 state v4 与 snapshot 不变；确认 Console 阶段一仍可读/跑通（timeline 只依赖 snapshot 子集，不因 state 扩字段崩溃）。
 - **类型**: backend
-- **依赖关系**: Task 02
+- **依赖关系**: Task 04
 - **Description**:
-  - 复用 `FilePlanAuditSink` 或小幅扩展文件名 helper；legacy 审计命名保持兼容。
-  - 建议示例：`stage_planner_rev0_critic.json` 等（实现选定一种并文档化即可）。
-- **Input**: 现有 `plan_audit.py`
-- **Output**: staged 审计可对齐阶段/轮次
+  - 不强制改 Console UI；若 timeline 编辑器对未知 segment 键敏感，仅做「忽略额外键」的最小防护。
+  - 写清 single_agent 是否已适配（承接 Task 02 决议）。
+- **Input**: 实现结果
+- **Output**: 开发者可按文档理解双契约（富 state / 瘦 snapshot）
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/plan_audit.py`
-  - `src/podcast_ai/modules/theme/orchestrator_staged.py`
-- **Estimated complexity**: S（1–2 小时）
-
----
-
-### Task 06 - CLI/Console 可观测当前 mode（最小）
-- **Task name**: v6.0 - mode 可观测
-- **目标**: CLI plan 摘要与 Console 阶段一面板能看到当前 `orchestration_mode`（只读展示即可）；可选允许 Console 覆盖 mode（非必须，避免过度设计）。
-- **类型**: frontend
-- **依赖关系**: Task 01, Task 04
-- **Description**:
-  - Console：参数区或 Run 结果区显示 mode；进度洞察可展示 `stage`/`revision`（若 Task 02 已 emit）。
-  - 不强制大改 UI 信息架构。
-- **Input**: Settings + progress 事件
-- **Output**: 开发者可见当前编排模式
-- **Files involved**:
-  - `src/podcast_ai/cli.py`
-  - `src/podcast_ai/console/app.py` / `runner.py`
-- **Estimated complexity**: S（1 小时）
-
----
-
-### Task 07 - 单测：闸门预算、禁止回退、legacy 不回归
-- **Task name**: v6.0 - staged FSM + dual-mode 回归测试
-- **目标**: 用 mock Agent 锁定：① 阶段顺序；② 每阶段最多 2 次修复；③ 失败不调用上游 Agent；④ Critic 不写 next_agent；⑤ `legacy` 路径仍可跑通既有语义；⑥ 失败仍得到可构建 snapshot 的 state。
-- **类型**: backend
-- **依赖关系**: Task 02, Task 03, Task 04
-- **Description**:
-  - 优先单元测 FSM（注入 fake agents），少做真实 LLM。
-  - 可选：config 默认值为 `staged` 的断言。
-- **Input**: staged orchestrator + mocks
-- **Output**: `pytest` 通过
-- **Files involved**:
-  - `tests/test_orchestrator_staged.py`（新建）
-  - `tests/test_orchestrator.py`（legacy 冒烟/既有用例不破坏）
-- **Estimated complexity**: M（2–3 小时）
+  - `README.md`
+  - （仅必要时）`src/podcast_ai/console/app.py`
+- **Estimated complexity**: S（≤1 小时）

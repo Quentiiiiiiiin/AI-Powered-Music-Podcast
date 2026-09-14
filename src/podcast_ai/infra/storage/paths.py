@@ -176,12 +176,15 @@ def get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path
 
 def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
     """
-    v3.8 fix：将完整 PlanState 映射为对接子集文件结构。
+    v3.8 / v6.1：将完整 PlanState 映射为阶段二对接子集。
 
-    产物结构：
+    产物结构（对外冻结）：
     - schema
     - meta.{request_id, theme, language, target_duration_seconds}
     - segments[*].{segment_id, name, target_duration_seconds, playlists, script}
+
+    v6.1：state 中 Planner/Curator 扩展字段（narrative_* / selection_reason 等）不得泄漏进 snapshot；
+    playlists 条目仅保留 track / artist（若历史 state 仍带 bpm 则透传，新 Curator 不再产出 bpm）。
     """
     schema_version = state.get("schema_version")
     if not isinstance(schema_version, str) or not schema_version.strip():
@@ -205,12 +208,13 @@ def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
         for key in ("segment_id", "name", "target_duration_seconds", "playlist", "script"):
             if key not in seg:
                 raise ValueError(f"snapshot.segments[{idx}] 映射失败：state.segments[{idx}].{key} 缺失")
+        playlists = _playlist_items_for_snapshot(seg.get("playlist"), segment_index=idx)
         segments.append(
             {
                 "segment_id": seg["segment_id"],
                 "name": seg["name"],
                 "target_duration_seconds": seg["target_duration_seconds"],
-                "playlists": seg["playlist"],
+                "playlists": playlists,
                 "script": seg["script"],
             }
         )
@@ -225,6 +229,29 @@ def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
         },
         "segments": segments,
     }
+
+
+def _playlist_items_for_snapshot(playlist: Any, *, segment_index: int) -> list[dict[str, Any]]:
+    """将 state playlist 剪枝为 snapshot 旧子集（track/artist[/bpm]）。"""
+    if not isinstance(playlist, list):
+        raise ValueError(
+            f"snapshot.segments[{segment_index}].playlists 映射失败：playlist 必须是 array"
+        )
+    out: list[dict[str, Any]] = []
+    for item_idx, item in enumerate(playlist):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"snapshot.segments[{segment_index}].playlists[{item_idx}] 映射失败：必须是 object"
+            )
+        if "track" not in item or "artist" not in item:
+            raise ValueError(
+                f"snapshot.segments[{segment_index}].playlists[{item_idx}] 映射失败：缺少 track/artist"
+            )
+        pruned: dict[str, Any] = {"track": item["track"], "artist": item["artist"]}
+        if "bpm" in item:
+            pruned["bpm"] = item["bpm"]
+        out.append(pruned)
+    return out
 
 
 def save_episode_state_snapshot(

@@ -50,18 +50,36 @@ def test_planner_agent_json_repair_truncated_closing_braces(tmp_path: Path) -> N
     truncated = """
     ```json
     {
-      "meta": {"theme_description": "深夜陪伴"},
-      "global_constraints": {"tone": "克制", "avoid": ["说教"]},
-      "plan": {"segments_design": "两段式", "emotion_curve": ["平静", "治愈"]},
+      "meta": {
+        "theme_description": "深夜陪伴",
+        "theme_type": "",
+        "theme_subject": "",
+        "theme_relationship": ""
+      },
+      "global_constraints": {
+        "energy_strategy": "克制",
+        "sonic_world": ["chill"],
+        "avoid": ["说教"]
+      },
+      "plan": {
+        "segment_count": 1,
+        "episode_direction": "两段式",
+        "segments_design": "两段式"
+      },
       "segments": [
         {
           "segment_id": "seg_01",
           "order": 1,
           "name": "开场",
           "target_duration_seconds": 1200,
-          "bpm_range": [90, 105],
-          "mood": "舒缓",
-          "segment_design": "铺垫主题"
+          "narrative_function": "铺垫主题",
+          "scene": "night",
+          "sonic_direction": ["soft"],
+          "lyrical_direction": [],
+          "anchor_tracks": [],
+          "reference_material": [],
+          "sequence_direction": [],
+          "transition_to_next": ""
         }
       ]
     """
@@ -83,18 +101,36 @@ def test_planner_agent_json_repair_success(tmp_path: Path) -> None:
     一些前后文本，以及代码块：
     ```json
     {
-      "meta": {"theme_description": "深夜陪伴"},
-      "global_constraints": {"tone": "克制", "avoid": ["说教",]},
-      "plan": {"segments_design": "两段式", "emotion_curve": ["平静", "治愈",]},
+      "meta": {
+        "theme_description": "深夜陪伴",
+        "theme_type": "",
+        "theme_subject": "",
+        "theme_relationship": "",
+      },
+      "global_constraints": {
+        "energy_strategy": "克制",
+        "sonic_world": ["chill"],
+        "avoid": ["说教",],
+      },
+      "plan": {
+        "segment_count": 1,
+        "episode_direction": "两段式",
+        "segments_design": "两段式",
+      },
       "segments": [
         {
           "segment_id": "seg_01",
           "order": 1,
           "name": "开场",
           "target_duration_seconds": 1200,
-          "bpm_range": [90, 105],
-          "mood": "舒缓",
-          "segment_design": "铺垫主题",
+          "narrative_function": "铺垫主题",
+          "scene": "night",
+          "sonic_direction": ["soft"],
+          "lyrical_direction": [],
+          "anchor_tracks": [],
+          "reference_material": [],
+          "sequence_direction": [],
+          "transition_to_next": "",
         }
       ],
     }
@@ -120,7 +156,14 @@ def test_music_curator_agent_json_repair_success(tmp_path: Path) -> None:
     ```json
     { "segments": [
       { "playlist": [
-        {"track":"Track A - Artist X", "artist":"Artist X","bpm": 98,},
+        {
+          "track":"Track A",
+          "artist":"Artist X",
+          "selection_reason": "fit",
+          "sequence_role": "open",
+          "planner_alignment": ["soft"],
+          "transition_logic": "n/a",
+        },
       ], },
     ] }
     ```

@@ -186,23 +186,26 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
     )
 
     state = {
-        "schema_version": "v3.0",
+        "schema_version": "v4.0",
         "meta": {
             "request_id": "req_single",
             "theme": "Test Single",
             "theme_description": "single agent plan",
             "language": "zh-CN",
             "target_duration_seconds": 600,
-            "overall_bpm_range": [90, 120],
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
         },
         "global_constraints": {
-            "tone": "克制",
-            "language_style": "第一人称",
+            "energy_strategy": "克制",
+            "sonic_world": ["chill"],
             "avoid": [],
         },
         "plan": {
+            "segment_count": 1,
+            "episode_direction": "单段结构",
             "segments_design": "单段结构",
-            "emotion_curve": ["平静"],
         },
         "segments": [
             {
@@ -210,10 +213,24 @@ def test_v31_plan_episode_single_agent_outputs_valid_state_json(
                 "order": 1,
                 "name": "开场",
                 "target_duration_seconds": 300,
-                "bpm_range": [90, 100],
-                "mood": "chill",
-                "segment_design": "开场暖场",
-                "playlist": [{"track": "Track A", "artist": "Artist A", "bpm": 95}],
+                "narrative_function": "开场暖场",
+                "scene": "studio",
+                "sonic_direction": ["soft"],
+                "lyrical_direction": [],
+                "anchor_tracks": [],
+                "reference_material": [],
+                "sequence_direction": [],
+                "transition_to_next": "",
+                "playlist": [
+                    {
+                        "track": "Track A",
+                        "artist": "Artist A",
+                        "selection_reason": "fit",
+                        "sequence_role": "open",
+                        "planner_alignment": ["soft"],
+                        "transition_logic": "n/a",
+                    }
+                ],
                 "script": {
                     "segment_intro": "欢迎来到节目。",
                     "between_tracks": [{"after_track_index": 0, "text": None}],

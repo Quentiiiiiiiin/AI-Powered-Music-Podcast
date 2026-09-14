@@ -123,7 +123,7 @@ class ThemePlanner:
                 except Exception:  # noqa: BLE001
                     bpm_range = None
 
-            mood = str(seg.get("mood") or "")
+            mood = str(seg.get("mood") or seg.get("narrative_function") or "")
             host_script = str(seg.get("host_script") or "")
             if not host_script.strip():
                 raise AIServiceError(f"segments[{idx}].host_script 为空或缺失。")
@@ -330,7 +330,7 @@ def _episode_plan_from_state(state: PlanState) -> EpisodePlan:
             except Exception:  # noqa: BLE001
                 bpm_range = None
 
-        mood = str(seg.get("mood") or "")
+        mood = str(seg.get("mood") or seg.get("narrative_function") or "")
 
         script = seg.get("script") or {}
         host_script = str(script.get("segment_intro") or "")

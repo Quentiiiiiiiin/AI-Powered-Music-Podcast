@@ -9,14 +9,32 @@ from typing import Any, Dict, List, Tuple, Literal
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 
-PLAN_STATE_SCHEMA_VERSION = "3.0"
+PLAN_STATE_SCHEMA_VERSION = "4.0"
 DEFAULT_MAX_ITERATIONS = 5
 
 _TOP_LEVEL_KEYS = ("schema_version", "meta", "global_constraints", "plan", "segments", "critic", "control")
 _SINGLE_AGENT_TOP_LEVEL_KEYS = ("schema_version", "meta", "global_constraints", "plan", "segments")
-_CONTROL_REQUIRED_KEYS = ("max_iterations", "iteration", "status", "next_agent", "last_updated_by")
-_META_REQUIRED_KEYS = ("request_id", "theme", "theme_description", "language", "target_duration_seconds", "overall_bpm_range")
-_PLAN_REQUIRED_KEYS = ("segments_design", "emotion_curve")
+_CONTROL_REQUIRED_KEYS = (
+    "max_iterations",
+    "iteration",
+    "status",
+    "next_agent",
+    "last_updated_by",
+    "failed_stage",
+)
+# v6.1：移除 overall_bpm_range 必填；新增 theme_* 拆解字段
+_META_REQUIRED_KEYS = (
+    "request_id",
+    "theme",
+    "theme_description",
+    "language",
+    "target_duration_seconds",
+    "theme_type",
+    "theme_subject",
+    "theme_relationship",
+)
+_GLOBAL_CONSTRAINTS_REQUIRED_KEYS = ("energy_strategy", "sonic_world", "avoid")
+_PLAN_REQUIRED_KEYS = ("segment_count", "episode_direction", "segments_design")
 _CRITIC_REQUIRED_KEYS = ("pass", "scores", "threshold", "issues", "actions")
 _CRITIC_SCORE_KEYS = ("coherence", "emotion_flow", "immersion")
 
@@ -24,31 +42,21 @@ _CRITIC_SCORE_KEYS = ("coherence", "emotion_flow", "immersion")
 PlanState = Dict[str, Any]
 
 
-def initialize_plan_state(
-    request: EpisodeRequest,
-    *,
-    request_id: str | None = None,
-    max_iterations: int = DEFAULT_MAX_ITERATIONS,
-) -> PlanState:
-    """
-    创建 v3.0 多 Agent 的共享状态。
-
-    保持默认值最小化：仅放置 orchestrator/agent 都需要的公共字段。
-    """
-    rid = request_id or str(uuid.uuid4())
-    language = "zh-CN" if request.language == "zh" else "en-US"
-    target_duration_seconds = request.duration_minutes * 60
-
-    # 为了与 state_schema.json 的 segments[*] 结构对齐，这里放置一个最小 segment 模板。
-    # 后续 Planner 会回写 name/target_duration_seconds/bpm_range/mood/segment_design，并可按索引追加更多 segments。
-    default_segment = {
-        "segment_id": "seg_01",
-        "order": 1,
+def _empty_segment_template(*, target_duration_seconds: int, order: int = 1) -> Dict[str, Any]:
+    """v4 空段落模板：含 Planner 字段默认值 + 空 playlist/script（失败路径仍可建 snapshot）。"""
+    return {
+        "segment_id": f"seg_{order:02d}",
+        "order": order,
         "name": "",
-        "target_duration_seconds": max(1, int(target_duration_seconds // 3)),
-        "bpm_range": None,
-        "mood": "",
-        "segment_design": "",
+        "target_duration_seconds": max(1, int(target_duration_seconds)),
+        "narrative_function": "",
+        "scene": "",
+        "sonic_direction": [],
+        "lyrical_direction": [],
+        "anchor_tracks": [],
+        "reference_material": [],
+        "sequence_direction": [],
+        "transition_to_next": "",
         "playlist": [],
         "script": {
             "segment_intro": "",
@@ -60,6 +68,27 @@ def initialize_plan_state(
             ],
         },
     }
+
+
+def initialize_plan_state(
+    request: EpisodeRequest,
+    *,
+    request_id: str | None = None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> PlanState:
+    """
+    创建 v4.0 多 Agent 的共享状态（Planner/Curator 字段对齐 Schema v4）。
+
+    保持默认值最小化：仅放置 orchestrator/agent 都需要的公共字段。
+    """
+    rid = request_id or str(uuid.uuid4())
+    language = "zh-CN" if request.language == "zh" else "en-US"
+    target_duration_seconds = request.duration_minutes * 60
+
+    default_segment = _empty_segment_template(
+        target_duration_seconds=max(1, int(target_duration_seconds // 3)),
+        order=1,
+    )
     return {
         "schema_version": f"v{PLAN_STATE_SCHEMA_VERSION}",
         "meta": {
@@ -68,16 +97,19 @@ def initialize_plan_state(
             "theme_description": "",
             "language": language,
             "target_duration_seconds": target_duration_seconds,
-            "overall_bpm_range": None,
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
         },
         "global_constraints": {
-            "tone": "",
-            "language_style": "",
+            "energy_strategy": "",
+            "sonic_world": [],
             "avoid": [],
         },
         "plan": {
+            "segment_count": 1,
+            "episode_direction": "",
             "segments_design": "",
-            "emotion_curve": [],
         },
         "segments": [default_segment],
         "critic": {
@@ -93,6 +125,8 @@ def initialize_plan_state(
             "status": "draft",
             "next_agent": "Planner",
             "last_updated_by": "Orchestrator",
+            # v6.0 staged：失败阶段标记；成功/初始为 null
+            "failed_stage": None,
         },
     }
 
@@ -171,6 +205,14 @@ def get_missing_required_fields(state: PlanState) -> List[str]:
     elif "meta" in state:
         missing.append("meta")
 
+    gc = state.get("global_constraints")
+    if isinstance(gc, dict):
+        for key in _GLOBAL_CONSTRAINTS_REQUIRED_KEYS:
+            if key not in gc:
+                missing.append(f"global_constraints.{key}")
+    elif "global_constraints" in state:
+        missing.append("global_constraints")
+
     plan = state.get("plan")
     if isinstance(plan, dict):
         for key in _PLAN_REQUIRED_KEYS:
@@ -226,18 +268,27 @@ def validate_plan_state_schema(state: PlanState) -> Tuple[bool, List[str]]:
             errors.append("meta.language must be string")
         if "target_duration_seconds" in meta and not isinstance(meta.get("target_duration_seconds"), int):
             errors.append("meta.target_duration_seconds must be int")
-        if "overall_bpm_range" in meta:
-            bpm_range = meta.get("overall_bpm_range")
-            if bpm_range is not None:
-                if not isinstance(bpm_range, list) or len(bpm_range) != 2:
-                    errors.append("meta.overall_bpm_range must be [min, max] or null")
+        for key in ("theme_type", "theme_subject", "theme_relationship"):
+            if key in meta and not isinstance(meta.get(key), str):
+                errors.append(f"meta.{key} must be string")
+
+    gc = state.get("global_constraints")
+    if isinstance(gc, dict):
+        if "energy_strategy" in gc and not isinstance(gc.get("energy_strategy"), str):
+            errors.append("global_constraints.energy_strategy must be string")
+        if "sonic_world" in gc and not isinstance(gc.get("sonic_world"), list):
+            errors.append("global_constraints.sonic_world must be array")
+        if "avoid" in gc and not isinstance(gc.get("avoid"), list):
+            errors.append("global_constraints.avoid must be array")
 
     plan = state.get("plan")
     if isinstance(plan, dict):
         if "segments_design" in plan and not isinstance(plan.get("segments_design"), str):
             errors.append("plan.segments_design must be string")
-        if "emotion_curve" in plan and not isinstance(plan.get("emotion_curve"), list):
-            errors.append("plan.emotion_curve must be array")
+        if "episode_direction" in plan and not isinstance(plan.get("episode_direction"), str):
+            errors.append("plan.episode_direction must be string")
+        if "segment_count" in plan and not isinstance(plan.get("segment_count"), int):
+            errors.append("plan.segment_count must be int")
 
     critic = state.get("critic")
     if isinstance(critic, dict):
@@ -278,6 +329,10 @@ def validate_plan_state_schema(state: PlanState) -> Tuple[bool, List[str]]:
             errors.append("control.next_agent must be string")
         if "last_updated_by" in control and not isinstance(control.get("last_updated_by"), str):
             errors.append("control.last_updated_by must be string")
+        if "failed_stage" in control:
+            fs = control.get("failed_stage")
+            if fs is not None and not isinstance(fs, str):
+                errors.append("control.failed_stage must be string or null")
 
     return (len(errors) == 0, errors)
 
@@ -325,9 +380,8 @@ def validate_state_conforms_to_schema(
     严格校验：state.json 的字段层级与类型要与 state_schema.json 同构。
 
     允许的兼容点：
-    - `meta.overall_bpm_range`、`segments[*].bpm_range`：允许为 null
-    - `segments[*].playlist[*].bpm`：允许为 null（Curator 可能未知 BPM）
     - `segments[*].script.between_tracks[*].text`：允许为 null（模板即为 null）
+    - `control.failed_stage`：允许为 null 或 string（staged 失败阶段标记）
     - 单 agent 模式：`critic` / `control` 允许为 null（不涉及字段）
 
     失败时抛出可定位错误：字段路径 + 期望/实际类型。
@@ -340,15 +394,14 @@ def validate_state_conforms_to_schema(
     #
     # v3.1 目前我们主要需要处理 (1)：between_tracks[*].text 允许 string 或 null（交给 agent 决定）。
     nullable_paths: set[Tuple[str, ...]] = {
-        ("meta", "overall_bpm_range"),
-        ("segments", "*", "bpm_range"),
-        ("segments", "*", "playlist", "*", "bpm"),
         # between_tracks[*].text：允许为 null（模板示例），且允许出现真实 string
         ("segments", "*", "script", "between_tracks", "*", "text"),
+        ("control", "failed_stage"),
     }
     # 对 “expected 为 null” 且允许出现非 null 值的字段，按路径给出允许类型
     nullable_expected_none_allows: dict[Tuple[str, ...], tuple[type, ...]] = {
         ("segments", "*", "script", "between_tracks", "*", "text"): (str,),
+        ("control", "failed_stage"): (str,),
     }
     if agent_mode == "single_agent":
         expected_keys = set(_SINGLE_AGENT_TOP_LEVEL_KEYS)
@@ -538,5 +591,18 @@ def validate_episode_snapshot_subset(snapshot: dict[str, Any]) -> None:
             raise AIServiceError(f"snapshot.segments[{idx}].target_duration_seconds：期望 int")
         if not isinstance(seg.get("playlists"), list):
             raise AIServiceError(f"snapshot.segments[{idx}].playlists：期望 array")
+        for p_idx, item in enumerate(seg.get("playlists") or []):
+            if not isinstance(item, dict):
+                raise AIServiceError(f"snapshot.segments[{idx}].playlists[{p_idx}]：期望 object")
+            allowed = {"track", "artist", "bpm"}
+            extra = set(item.keys()) - allowed
+            if extra:
+                raise AIServiceError(
+                    f"snapshot.segments[{idx}].playlists[{p_idx}] 含非法字段：{sorted(extra)}"
+                )
+            if "track" not in item or "artist" not in item:
+                raise AIServiceError(
+                    f"snapshot.segments[{idx}].playlists[{p_idx}]：缺少 track/artist"
+                )
         if not isinstance(seg.get("script"), dict):
             raise AIServiceError(f"snapshot.segments[{idx}].script：期望 object")
