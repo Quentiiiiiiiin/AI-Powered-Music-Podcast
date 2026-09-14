@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.1  
+**文档版本**：v6.2  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.1）
+**产品阶段**：迭代验证中（进入 v6.2）
 
 ---
 
@@ -453,6 +453,33 @@
     4. `staged` / `legacy` 多 agent 路径中涉及 Planner、Music Curator 的 I/O 均完成适配（或明确仅 `staged` 启用并在文档说明）；单 agent 若共用 Planner 契约则一并适配，否则文档标明范围。
     5. 既有审计落盘与 Console 阶段一主流程不因 schema 升级而崩溃；失败时仍有可读错误。
 
+- **v6.2（迭代三十一：Developer Console 参数面板扩展）**：
+  - **问题**：近期 config（见 `config.example.yaml`）新增/强化了混音与编排相关参数，以及 LLM/TTS 细粒度选择；Console 尚未完整暴露，开发者仍需改 YAML/手输模型字符串，调试效率不足。
+  - **变更目标**：在 Developer Console 中补齐可视化配置，覆盖音频混音参数、编排模式关联、LLM 下拉选择、TTS 模型与 voice 选择；控件需有**中文标签/注释**；选项清单允许开发者在**代码层维护**「模型–供应商」「供应商–模型–voice」组合表。
+  - **范围（明确）**：
+    1. **音频参数（Console 可配 + 中文说明）**：
+       - `per_track_normalize_enabled`：是否对每首曲目/TTS 做平均电平 normalize
+       - `voice_gain_db`：串词额外固定增益（dB）
+       - `voice_music_overlay_music_max_db`：串词→歌叠化窗内音乐增益上限（dB）
+       - `voice_music_post_overlay_ramp_seconds`：叠化结束后音乐从上限爬回满电平的时长（秒）
+    2. **编排模式**：Console 支持选择 `orchestration_mode`（`staged` / `legacy`）。**仅 `multi_agent` 可选 `staged`**；若选择 `single_agent`，则 `orchestration_mode` **自动设为 `legacy` 且控件禁用（灰色）**。
+    3. **LLM 选择（下拉为主）**：
+       - **模型接口**：下拉（本轮暂仅 `openrouter`）；选中后 **无需手输 `base_url`**，仅展示对应 base_url。
+       - **模型**：下拉，**允许手动输入**（预设如 `deepseek/deepseek-v3.2`、`openai/gpt-5.6-luna`、`deepseek/deepseek-v4-pro` 等）。
+       - **供应商（OpenRouter provider）**：下拉，**允许为空与手动输入**；与模型关联（如选 GPT 类模型时出现 `azure/eu` 等）；一个模型可对应多个供应商，组合表代码可维护。
+    4. **TTS（阶段二）**：在既有 `tts_provider` 之外，支持 **模型** 与 **voice_id** 的选择/输入：
+       - ElevenLabs：模型预设 `eleven_v3`、`eleven_multilingual_v2`；voice 预设如 `Fc5CaIGWKvLHapoOSM2K`
+       - MiniMax：模型预设 `speech-2.8-hd`；voice 预设如 `Chinese (Mandarin)_Crisp_Girl`、`English_Sharp_Commentator`
+       - 供应商可对应多模型、多 voice；组合表代码可维护。
+  - **功能归类**：**优化**（Console 调试配置完备性）+ **新功能**（关联控件、LLM/TTS 级联下拉）。
+  - **User Story（用户视角）**：作为开发者，我希望在 Console 里用中文注释改混音参数，按 multi/single 自动约束编排模式，并用下拉选 LLM/TTS 模型与音色，必要时仍可手输，而不必反复改 YAML。
+  - **Acceptance Criteria（验收标准）**：
+    1. Console 可配置上述四项音频参数，并展示清晰中文标签/注释；修改后可作用于本次运行（或保存到配置，以实现约定为准）。
+    2. `orchestration_mode` 在 Console 可选；`single_agent` 时强制 `legacy` 且控件禁用；`multi_agent` 时可在 `staged`/`legacy` 间切换。
+    3. LLM：接口下拉（本轮含 openrouter）选中后展示 base_url 且无需手填；模型下拉可选手输；供应商下拉可空/可选手输，并随模型选项联动；预设组合可在代码维护。
+    4. TTS：在 provider 之外可选择/输入 model 与 voice_id；ElevenLabs / MiniMax 至少包含上述预设；允许手输未列出的值；组合表可在代码维护。
+    5. 非法组合或必填缺失时给出明确提示；不破坏既有 Console 三阶段布局与 Run 主路径。
+
 
 ## 1. 产品背景
 
@@ -713,7 +740,7 @@
 - **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
 - **`state` vs snapshot（v6.1）**：Agent I/O 与最终 **`state` 文件**跟随 Planner/Curator v4 字段升级；**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.1）
+### 6.4 当前版本成功指标（v6.2）
 
 | 指标 | 目标 |
 |------|------|
@@ -738,6 +765,7 @@
 | **阶段二转场校验效率** | 阶段二面板可按节目时间线试听音乐/串词，并在线编辑 `vm_seconds` 后另存为新 JSON 供阶段三使用 |
 | **Stage-Gated 编排可用** | 默认 `staged`：三阶段闸门 + 每阶段最多 2 次修复；config 可切 `legacy`；失败仍输出可被阶段二消费的 snapshot |
 | **Planner/Curator Schema v4** | Agent I/O 与 `state` 对齐 Schema_Planner_v4 / Schema_Music-Curator_v4；snapshot 对外格式不变 |
+| **Console 配置完备性** | Console 可配混音关键参数（含中文说明）、编排模式与 multi/single 关联、LLM/TTS 模型与音色下拉（可手输） |
 
 ---
 
@@ -755,7 +783,7 @@
 
 | 需求 | 说明 |
 |------|------|
-| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。多 agent 编排默认 `staged`，config 可切 `legacy`（v6.0） |
+| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。Console 支持混音/编排/LLM/TTS 可视化配置（v6.2）；多 agent 编排默认 `staged`，可切 `legacy`（v6.0） |
 | **错误提示** | 关键步骤失败时给出明确错误信息 |
 | **日志** | 记录主要步骤执行状态，便于排查问题 |
 

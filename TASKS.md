@@ -1,126 +1,118 @@
-﻿## 版本 v6.1（迭代三十：Planner / Music Curator State Schema v4 升级）
+﻿## 版本 v6.2（迭代三十一：Developer Console 参数面板扩展）
 
-基于 PRD **v6.1**：在既有 `state_schema.json` 上**仅升级 Planner / Music Curator 相关字段契约**（参考 `Schema_Planner_v4.txt`、`Schema_Music-Curator_v4.txt`）。同步 structured output、Agent sanitize/patch、最终 **`state` 文件**。
+基于 PRD **v6.2**：在 Developer Console 补齐可视化配置——混音音频参数（中文说明）、`orchestration_mode` 与 `agent_mode` 关联、LLM/TTS 级联下拉（可选手输）。选项清单在**代码层**维护，不追求完整配置中心。
 
 **硬约束**：
-- **snapshot（`<episode_id>.json`）对外格式不变**；阶段二消费契约不改。
-- Script Writer / Critic / `control` 业务字段本轮不改。
-- Planner **不写** `playlist` / `script`；Music Curator **只写** `segments[*].playlist`（含 v4 解释字段）。
-- `Schema_Planner_v4.txt` 样例中的 `playlist` 占位属示意，**落地以 Curator 契约为准**。
-- 避免双轨字段堆叠：以 v4 字段为主替换旧 Planner 表达（如 `emotion_curve` / `segment_design` / `tone` 等），不为兼容保留两套并行必填。
+- 不破坏既有三阶段 Tabs / Run 主路径；密钥仍来自 `.env` / `config.yaml`（Preset 不存 Key）。
+- Console **只映射到 Settings / pipeline**，不复制混音/TTS/编排业务逻辑。
+- 本轮不引入 React；不强制持久写回 `config.yaml`（以「本次 Run 生效 + Preset 可保存」为主即可）。
 
 ---
 
-### Task 01 - `state_schema.json` + PlanState 运行时契约对齐 v4
-- **Task name**: v6.1 - state schema / empty state / validate
-- **目标**: 将仓库 `state_schema.json` 与 `state.py`（空模板、必填键、轻量校验）升级为 Planner/Curator v4 字段；`schema_version` 升至可区分版本（如 `v4.0`）；**不改** `script` / `critic` / `control` 结构。
-- **类型**: backend
+### Task 01 - 代码维护的 LLM / TTS 选项目录
+- **Task name**: v6.2 - console option catalogs
+- **目标**: 在 `console/` 内用简洁常量表维护「接口→base_url」「模型→供应商候选」「TTS provider→model/voice 候选」，供 UI 级联读取；改表无需改业务模块。
+- **类型**: frontend
 - **依赖关系**: 无
 - **Description**:
-  - **Planner 侧（对齐 Schema_Planner_v4，以实现清单为准）**：
-    - `meta`：保留 `request_id`（系统写入）+ `theme` / `theme_description` / `language` / `target_duration_seconds`；新增 `theme_type` / `theme_subject` / `theme_relationship`（可空字符串）；弱化/移除对 `overall_bpm_range` 的 Planner 必填依赖。
-    - `global_constraints`：`energy_strategy`、`sonic_world[]`、`avoid[]`（替换原 `tone` / `language_style` 为主契约）。
-    - `plan`：`segment_count`、`episode_direction`、`segments_design`（替换原 `emotion_curve` 必填）。
-    - `segments[*]`：保留 `segment_id` / `order` / `name` / `target_duration_seconds`；新增 `narrative_function`、`scene`、`sonic_direction[]`、`lyrical_direction[]`、`anchor_tracks[]`、`reference_material[]`、`sequence_direction[]`、`transition_to_next`；移除对 `bpm_range` / `mood` / `segment_design` 的 Planner 必填。
-  - **Curator 侧**：`playlist[*]` 在 `track` / `artist`（`bpm` 可继续允许 null，可选保留）之上增加 `selection_reason`、`sequence_role`、`planner_alignment[]`、`transition_logic`。
-  - `merge_plan_state` / 空 segment 模板同步默认键，保证 staged 失败路径仍可补齐空 playlist/script。
-- **Input**: `Schema_Planner_v4.txt`、`Schema_Music-Curator_v4.txt`、现有 `state.py`
-- **Output**: state 契约与示例文件对齐 v4；非法类型有明确错误
+  - **LLM**：接口本轮仅 `openrouter` → 固定展示对应 `base_url`（与现网默认一致）；模型预设含 PRD 示例（如 `deepseek/deepseek-v3.2`、`openai/gpt-5.6-luna`、`deepseek/deepseek-v4-pro` 等）；`openrouter_provider` 按模型给出候选（可空列表；GPT 类可含 `azure/eu` 等），允许空串与自定义。
+  - **TTS**：ElevenLabs 模型 `eleven_v3` / `eleven_multilingual_v2`，voice 含 `Fc5CaIGWKvLHapoOSM2K`；MiniMax 模型 `speech-2.8-hd`，voice 含 `Chinese (Mandarin)_Crisp_Girl`、`English_Sharp_Commentator`；`edge` 可仅保留 provider、model/voice 留空或沿用 `tts.voice`。
+  - 实现建议：新建 `console/option_catalogs.py`（或等价），纯数据 + 小函数 `providers_for_model` / `models_for_tts` / `voices_for_tts`，无 I/O。
+- **Input**: PRD v6.2 示例清单、现有 Settings 默认值
+- **Output**: 可被 Gradio 引用的选项 API
 - **Files involved**:
-  - `state_schema.json`
-  - `src/podcast_ai/modules/theme/state.py`
-- **Estimated complexity**: M（2–3 小时）
-
----
-
-### Task 02 - Planner：structured output + sanitize + prompts
-- **Task name**: v6.1 - Planner I/O 对齐 Schema_Planner_v4
-- **目标**: Planner 的 response schema、sanitize/patch、staged/legacy prompts（及若共用契约的 single_agent）只产出/合并 v4 规划字段；禁止写入 `playlist` / `script` / `critic` / `control`。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 更新 `PLANNER_RESPONSE_SCHEMA`（及 single_agent 子集中与 Planner 重叠部分）。
-  - 扩展 `_PLANNER_SEGMENT_ALLOWED_KEYS` / meta / plan / global_constraints 白名单与必填校验；缺关键字段明确失败。
-  - 更新 `prompts.py` 与 `prompts_staged.py` 中 Planner 字段说明与 JSON 示例；Critic staged 的 Planner 评审提示改为对照 v4 交付物（不改 Critic 输出 schema）。
-  - **范围**：`staged` + `legacy` 均适配；single_agent 若仍输出同一 state 子集则一并改，否则在 README 标明「仅 multi_agent」。
-- **Input**: Task 01 字段清单
-- **Output**: Planner 端到端可写入升级后的 state 规划部分
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
-  - `src/podcast_ai/modules/theme/planner_agent.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/prompts_staged.py`
-  - （必要时）`src/podcast_ai/modules/theme/llm_planner.py` single_agent 路径
-- **Estimated complexity**: L（3–4 小时）
-
----
-
-### Task 03 - Music Curator：playlist v4 解释字段 I/O
-- **Task name**: v6.1 - Curator playlist 对齐 Schema_Music-Curator_v4
-- **目标**: Curator structured output、sanitize、prompts 要求每条 playlist 含选曲解释字段；非法/缺关键字段明确失败；仍禁止改 plan 骨架与 script。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - `_PLAYLIST_ALLOWED_KEYS` / `build_music_curator_response_schema` 扩展：`selection_reason`、`sequence_role`、`planner_alignment`、`transition_logic`（`bpm` 策略：保留可选或从 required 降级，避免无 BPM 时硬失败——以实现简洁为准并写清）。
-  - Prompt 明确依据 Planner 的 `sonic_direction` / `sequence_direction` / `anchor_tracks` 等填写 `planner_alignment`。
-  - staged + legacy Curator 路径同步。
-- **Input**: `Schema_Music-Curator_v4.txt`、Task 01
-- **Output**: state 中 `segments[*].playlist[*]` 带齐 v4 解释字段
-- **Files involved**:
-  - `src/podcast_ai/modules/theme/music_curator_agent.py`
-  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
-  - `src/podcast_ai/modules/theme/prompts.py`
-  - `src/podcast_ai/modules/theme/prompts_staged.py`
-- **Estimated complexity**: M（2–3 小时）
-
----
-
-### Task 04 - Snapshot 剪枝：对外格式冻结（防字段泄漏）
-- **Task name**: v6.1 - snapshot 仍输出旧子集
-- **目标**: `build_episode_snapshot_from_state`（及校验）保证阶段二输入**字段集不变**；state 中新增的 Planner/Curator 字段**不得**进入 `<episode_id>.json` 的对外契约（尤其 playlist 解释字段、段落叙事字段）。
-- **类型**: backend
-- **依赖关系**: Task 01（可与 02/03 并行开发，联调依赖它们）
-- **Description**:
-  - 现状会把整个 `playlist` 对象拷进 `playlists`；v4 后必须**显式映射**为旧条目子集（至少 `track` / `artist`；若旧快照含 `bpm` 则按现网约定保留或剥离，与阶段二实际读取对齐，不扩新键）。
-  - `meta` / `segments` 顶层仍只输出既有 snapshot 键；不把 `narrative_function` 等写入 snapshot。
-  - 不改 `selector` / `create_episode` 解析逻辑。
-- **Input**: 现有 snapshot 契约、`paths.py`
-- **Output**: 扩字段后的 state → 旧格式 snapshot；阶段二无感
-- **Files involved**:
-  - `src/podcast_ai/infra/storage/paths.py`
-  - （必要时）`src/podcast_ai/modules/theme/state.py` 中 snapshot 校验
+  - `src/podcast_ai/console/option_catalogs.py`（新建）
 - **Estimated complexity**: S（1 小时）
 
 ---
 
-### Task 05 - 单测：v4 merge/sanitize + snapshot 不泄漏
-- **Task name**: v6.1 - schema/sanitize/snapshot 回归
-- **目标**: 用 fixture 锁定 Planner/Curator sanitize 接受 v4、拒绝越权；最终 state 含新字段；snapshot 仅含旧子集；Script/Critic 相关断言不因本轮被破坏。
-- **类型**: backend
-- **依赖关系**: Task 02, Task 03, Task 04
+### Task 02 - 音频四参数：表单 + Settings 映射 + Preset
+- **Task name**: v6.2 - audio normalize/gain/overlay 控件
+- **目标**: Console（建议阶段二混音区 Accordion）暴露并中文标注：`per_track_normalize_enabled`、`voice_gain_db`、`voice_music_overlay_music_max_db`、`voice_music_post_overlay_ramp_seconds`；改参后经 `settings_from_params` 作用于 Stage2/3/one-shot；纳入 Preset 键。
+- **类型**: frontend
+- **依赖关系**: 无（可与 Task 01 并行）
 - **Description**:
-  - 优先单元测，不依赖真实 LLM。
-  - 覆盖：缺 `selection_reason` 等关键字段失败；Planner 写入 `playlist` 失败；snapshot 无 `selection_reason` / 无 `sonic_direction`。
-- **Input**: Task 02–04 完成物
-- **Output**: `pytest` 通过
+  - 扩展 `ConsoleParams` / `defaults_from_settings` / `settings_from_params` 写入 `Settings.audio` 对应字段。
+  - UI 标签用中文释义（对齐 `config.example.yaml` 注释语义）；保留现有 crossfade / intro_align 控件，避免重复造参。
+  - 更新 `PRESET_KEYS` 与 save/load 控件列表，保证快照往返不断键。
+- **Input**: 既有 `audio` Settings、阶段二表单
+- **Output**: 四项可配且本次 Run 生效
 - **Files involved**:
-  - `tests/test_state_schema_v4.py`（新建，或拆入既有 test 文件）
-  - 既有 planner/curator/snapshot 测试按需更新
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/presets.py`
+- **Estimated complexity**: S–M（1–2 小时）
+
+---
+
+### Task 03 - `orchestration_mode` 可选 + 与 `agent_mode` 关联
+- **Task name**: v6.2 - orch mode UI coupling
+- **目标**: 阶段一将只读 Markdown 改为可切换 `staged` / `legacy`；`single_agent` 时强制 `legacy` 且控件禁用（灰色）；`multi_agent` 可自由切换；值写入本次 Run 的 Settings。
+- **类型**: frontend
+- **依赖关系**: 无
+- **Description**:
+  - `ConsoleParams` 增加 `orchestration_mode`；`settings_from_params` 写入 `app.orchestration_mode`。
+  - Gradio：`agent_mode.change` → 更新 orch 控件 `interactive` / `value=legacy`。
+  - Run 前再做一次防御：若 `agent_mode==single_agent` 仍提交了 `staged`，强制改 `legacy` 或明确报错（二选一，推荐静默纠正并在 insight 展示实际 mode）。
+  - Preset 纳入该字段。
+- **Input**: v6.0 orchestration 契约、现有阶段一 UI
+- **Output**: 关联行为符合 PRD AC2
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/presets.py`
+- **Estimated complexity**: S（1–1.5 小时）
+
+---
+
+### Task 04 - LLM：接口 / 模型 / 供应商级联下拉
+- **Task name**: v6.2 - LLM cascading dropdowns
+- **目标**: 阶段一 LLM 区改为：接口下拉（本轮仅 openrouter）→ 只读展示 base_url（无需手填）；模型 Dropdown（`allow_custom_value`）；供应商 Dropdown（可空 + 可选手输），选项随模型联动。
+- **类型**: frontend
+- **依赖关系**: Task 01
+- **Description**:
+  - 去掉「必填手输 base_url」路径：选中接口后自动填/展示 catalog 中的 base_url；高级手改非本轮重点（可不提供或收进 Accordion）。
+  - `model.change` 刷新 provider choices；保留空供应商 = OpenRouter 自动路由。
+  - 缺模型等必填时 Run 前明确提示；非法接口提示清晰。
+- **Input**: Task 01 catalog
+- **Output**: 下拉为主、可选手输的 LLM 选配
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/runner.py`（沿用 llm 字段映射即可）
 - **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 06 - 文档与 Console 冒烟说明（最小）
-- **Task name**: v6.1 - README/范围说明
-- **目标**: README（或简短注释）标明 state v4 与 snapshot 不变；确认 Console 阶段一仍可读/跑通（timeline 只依赖 snapshot 子集，不因 state 扩字段崩溃）。
-- **类型**: backend
-- **依赖关系**: Task 04
+### Task 05 - TTS：model / voice_id 选择并写入 Settings
+- **Task name**: v6.2 - TTS model & voice controls
+- **目标**: 阶段二在 `tts_provider` 外增加 model、voice_id 下拉（可选手输）；随 provider 联动候选；覆盖写入 `tts.elevenlabs` / `tts.minimax`（或等价）供本次 Stage2/Create 使用。
+- **类型**: frontend
+- **依赖关系**: Task 01
 - **Description**:
-  - 不强制改 Console UI；若 timeline 编辑器对未知 segment 键敏感，仅做「忽略额外键」的最小防护。
-  - 写清 single_agent 是否已适配（承接 Task 02 决议）。
-- **Input**: 实现结果
-- **Output**: 开发者可按文档理解双契约（富 state / 瘦 snapshot）
+  - 扩展 `ConsoleParams`：`tts_model`、`tts_voice_id`（命名以实现为准）。
+  - `settings_from_params` / runner：在选定 provider 时 patch 对应子配置的 `model`/`voice_id`；`default` 不覆盖 config。
+  - `edge`：可不强制 model/voice UI，或仅提示使用 config `tts.voice`。
+  - Preset 纳入新键；密钥仍不进 Preset。
+- **Input**: Task 01、现有 `_tts_override`
+- **Output**: 可选预设 + 可手输未列出值；Run 使用覆盖后的 TTS 配置
 - **Files involved**:
-  - `README.md`
-  - （仅必要时）`src/podcast_ai/console/app.py`
-- **Estimated complexity**: S（≤1 小时）
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/presets.py`
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 06 - 校验提示与最小回归（可选单测）
+- **Task name**: v6.2 - validation + smoke
+- **目标**: 非法组合/缺必填有明确中文或可读错误；核心映射（audio 四字段、orch 纠正、TTS patch）有轻量单测或手工验收清单；三阶段布局与既有 Run 不回归。
+- **类型**: backend
+- **依赖关系**: Task 02, Task 03, Task 04, Task 05
+- **Description**:
+  - 优先测 `settings_from_params` / catalog 纯函数，不启 Gradio。
+  - 不强制 E2E 浏览器自动化。
+- **Input**: Task 02–05 完成物
+- **Output**: 映射行为可重复验证
+- **Files involved**:
+  - `tests/test_console_params_v62.py`（新建，建议）
+- **Estimated complexity**: S（1 小时）

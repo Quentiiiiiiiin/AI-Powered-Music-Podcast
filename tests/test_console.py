@@ -191,7 +191,7 @@ def test_insight_md_shows_failure_and_single_agent() -> None:
     single = ConsoleRunResult(status="success", command="plan", plan_current_agent="single_agent")
     md_sa = _insight_md(single, agent_mode="single_agent", orchestration_mode="legacy")
     assert "N/A" in md_sa and "single_agent" in md_sa
-    assert "legacy" in md_sa and "不应用" in md_sa
+    assert "legacy" in md_sa and "强制" in md_sa
 
 
 def test_cli_commands_not_removed() -> None:
