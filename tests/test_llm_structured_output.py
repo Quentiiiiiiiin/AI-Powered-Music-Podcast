@@ -210,12 +210,19 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     payload = {
         "critic": {
-            "pass": True,
-            "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
+            "overall_score": 80,
+            "scores": {
+                "theme_definition": 8,
+                "theme_relationship": 8,
+                "musical_concept": 8,
+                "segment_differentiation": 8,
+                "sequence_narrative": 8,
+                "curator_actionability": 8,
+                "creative_freedom": 8,
+            },
             "issues": [],
             "actions": [],
         },
-        "control": {"next_agent": "Orchestrator"},
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -235,6 +242,10 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     assert bodies[0]["response_format"]["json_schema"]["name"] == "podcast_critic_response"
     assert bodies[0]["response_format"]["json_schema"]["schema"]["properties"]["critic"] is not None
+    # v6.4：模型 schema 不含 pass/control
+    critic_schema = bodies[0]["response_format"]["json_schema"]["schema"]["properties"]["critic"]
+    assert "pass" not in critic_schema.get("required", [])
+    assert "control" not in bodies[0]["response_format"]["json_schema"]["schema"].get("required", [])
 
 
 def test_llm_client_400_hints_response_format_when_body_mentions_schema(

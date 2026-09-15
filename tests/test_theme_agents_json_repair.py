@@ -210,12 +210,19 @@ def test_critic_agent_json_repair_success(tmp_path: Path) -> None:
     ```json
     {
       "critic": {
-        "pass": true,
-        "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8,},
+        "overall_score": 80,
+        "scores": {
+          "theme_definition": 8,
+          "theme_relationship": 8,
+          "musical_concept": 8,
+          "segment_differentiation": 8,
+          "sequence_narrative": 8,
+          "curator_actionability": 8,
+          "creative_freedom": 8,
+        },
         "issues": [],
         "actions": [],
       },
-      "control": {"next_agent": "Planner",},
     }
     ```
     """

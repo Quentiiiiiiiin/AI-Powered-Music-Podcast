@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Tuple, Literal
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
+from podcast_ai.modules.theme.critic_rules import (
+    CRITIC_SCORE_DIMS,
+    default_critic_thresholds,
+)
 
 PLAN_STATE_SCHEMA_VERSION = "4.0"
 DEFAULT_MAX_ITERATIONS = 5
@@ -35,8 +39,9 @@ _META_REQUIRED_KEYS = (
 )
 _GLOBAL_CONSTRAINTS_REQUIRED_KEYS = ("energy_strategy", "sonic_world", "avoid")
 _PLAN_REQUIRED_KEYS = ("segment_count", "episode_direction", "segments_design")
-_CRITIC_REQUIRED_KEYS = ("pass", "scores", "threshold", "issues", "actions")
-_CRITIC_SCORE_KEYS = ("coherence", "emotion_flow", "immersion")
+# v6.4：pass/threshold 由系统写入；overall_score + 七维 scores 为模型字段
+_CRITIC_REQUIRED_KEYS = ("pass", "overall_score", "scores", "threshold", "issues", "actions")
+_CRITIC_SCORE_KEYS = CRITIC_SCORE_DIMS
 
 
 PlanState = Dict[str, Any]
@@ -114,8 +119,9 @@ def initialize_plan_state(
         "segments": [default_segment],
         "critic": {
             "pass": False,
-            "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
-            "threshold": {"coherence": 28, "emotion_flow": 28, "immersion": 24},
+            "overall_score": 0,
+            "scores": {dim: 0 for dim in CRITIC_SCORE_DIMS},
+            "threshold": default_critic_thresholds(),
             "issues": [],
             "actions": [],
         },
@@ -294,6 +300,8 @@ def validate_plan_state_schema(state: PlanState) -> Tuple[bool, List[str]]:
     if isinstance(critic, dict):
         if "pass" in critic and not isinstance(critic.get("pass"), bool):
             errors.append("critic.pass must be bool")
+        if "overall_score" in critic and not isinstance(critic.get("overall_score"), int):
+            errors.append("critic.overall_score must be int")
         if "scores" in critic and not isinstance(critic.get("scores"), dict):
             errors.append("critic.scores must be object")
         if "threshold" in critic and not isinstance(critic.get("threshold"), dict):

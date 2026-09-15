@@ -160,11 +160,13 @@ _CRITIC_ISSUE_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
         "type": {"type": "string"},
+        "severity": {"type": "string", "enum": ["minor", "critical"]},
         "location": {"type": "string"},
         "problem": {"type": "string"},
+        "listener_impact": {"type": "string"},
         "suggestion": {"type": "string"},
     },
-    "required": ["type", "location", "problem", "suggestion"],
+    "required": ["type", "severity", "location", "problem", "listener_impact", "suggestion"],
     "additionalProperties": False,
 }
 
@@ -172,76 +174,49 @@ _CRITIC_ACTION_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
         "target_agent": {"type": "string"},
+        "location": {"type": "string"},
         "instruction": {"type": "string"},
     },
-    "required": ["target_agent", "instruction"],
+    "required": ["target_agent", "location", "instruction"],
     "additionalProperties": False,
 }
 
+_CRITIC_SCORE_PROPS: dict[str, Any] = {
+    "theme_definition": {"type": "integer", "minimum": 0, "maximum": 10},
+    "theme_relationship": {"type": "integer", "minimum": 0, "maximum": 10},
+    "musical_concept": {"type": "integer", "minimum": 0, "maximum": 10},
+    "segment_differentiation": {"type": "integer", "minimum": 0, "maximum": 10},
+    "sequence_narrative": {"type": "integer", "minimum": 0, "maximum": 10},
+    "curator_actionability": {"type": "integer", "minimum": 0, "maximum": 10},
+    "creative_freedom": {"type": "integer", "minimum": 0, "maximum": 10},
+}
+
+_CRITIC_BODY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "overall_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "scores": {
+            "type": "object",
+            "properties": _CRITIC_SCORE_PROPS,
+            "required": list(_CRITIC_SCORE_PROPS.keys()),
+            "additionalProperties": False,
+        },
+        "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
+        "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
+    },
+    "required": ["overall_score", "scores", "issues", "actions"],
+    "additionalProperties": False,
+}
+
+# v6.4：模型仅输出 critic 体（无 pass/threshold/control）；legacy / staged 共用
 CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {
-        "critic": {
-            "type": "object",
-            "properties": {
-                "pass": {"type": "boolean"},
-                "scores": {
-                    "type": "object",
-                    "properties": {
-                        "coherence": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "emotion_flow": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "immersion": {"type": "integer", "minimum": 0, "maximum": 30},
-                    },
-                    "required": ["coherence", "emotion_flow", "immersion"],
-                    "additionalProperties": False,
-                },
-                "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
-                "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
-            },
-            "required": ["pass", "scores", "issues", "actions"],
-            "additionalProperties": False,
-        },
-        "control": {
-            "type": "object",
-            "properties": {
-                "next_agent": {"type": "string"},
-            },
-            "required": ["next_agent"],
-            "additionalProperties": False,
-        },
-    },
-    "required": ["critic", "control"],
-    "additionalProperties": False,
-}
-
-# v6.0 staged：Critic 仅做阶段内评估，禁止 control.next_agent
-CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "critic": {
-            "type": "object",
-            "properties": {
-                "pass": {"type": "boolean"},
-                "scores": {
-                    "type": "object",
-                    "properties": {
-                        "coherence": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "emotion_flow": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "immersion": {"type": "integer", "minimum": 0, "maximum": 30},
-                    },
-                    "required": ["coherence", "emotion_flow", "immersion"],
-                    "additionalProperties": False,
-                },
-                "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
-                "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
-            },
-            "required": ["pass", "scores", "issues", "actions"],
-            "additionalProperties": False,
-        },
-    },
+    "properties": {"critic": _CRITIC_BODY_SCHEMA},
     "required": ["critic"],
     "additionalProperties": False,
 }
+
+CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = CRITIC_RESPONSE_SCHEMA
 
 _PLAYLIST_ITEM: dict[str, Any] = {
     "type": "object",

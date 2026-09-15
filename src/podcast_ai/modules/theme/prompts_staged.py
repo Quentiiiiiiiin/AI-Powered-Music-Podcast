@@ -180,19 +180,31 @@ def build_critic_staged_messages(
     *,
     stage: str,
 ) -> list[dict[str, str]]:
-    """staged Critic：阶段内 pass/评分/issues/actions；禁止 control.next_agent。（v6.3 未改）"""
+    """staged Critic：阶段内评分/issues/actions；禁止 pass/threshold/control（系统派生 pass）。"""
     m = _normalize_mode(mode)
     focus = _CRITIC_STAGE_FOCUS.get(stage, "Evaluate the current stage deliverables only.")
     system = dedent(
         f"""
-        You are the Critic Agent in Stage-Gated mode (v6.0 staged).
+        You are the Critic Agent in Stage-Gated mode (v6.4 staged).
         Current stage under review: {stage}
 
         {focus}
 
-        Output ONLY {{"critic": {{pass, scores, issues, actions}}}}.
-        FORBIDDEN: control, next_agent, rewriting plan/playlist/script yourself.
-        If pass=false, actions must target the current stage's creator agent.
+        Score these dimensions 0–10 integers:
+        theme_definition, theme_relationship, musical_concept,
+        segment_differentiation, sequence_narrative,
+        curator_actionability, creative_freedom.
+        Also set overall_score (0–100).
+
+        Each issue MUST include: type, severity (minor|critical), location,
+        problem, listener_impact, suggestion.
+        Each action MUST include: target_agent, location, instruction.
+        Prefer targeting the current stage's creator agent when actions are needed.
+
+        Output ONLY {{"critic": {{overall_score, scores, issues, actions}}}}.
+        FORBIDDEN: critic.pass, critic.threshold, control, next_agent,
+        rewriting plan/playlist/script yourself.
+        System derives critic.pass from scores + issues/actions.
         """
     ).strip()
     user = _user_plan_state_message(state, mode=m, extra=f"STAGE: {stage}")

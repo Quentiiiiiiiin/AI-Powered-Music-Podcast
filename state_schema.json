@@ -75,31 +75,44 @@
   ],
   "critic": {
     "pass": false,
+    "overall_score": 0,
     "scores": {
-      "coherence": 0,
-      "emotion_flow": 0,
-      "immersion": 0
+      "theme_definition": 0,
+      "theme_relationship": 0,
+      "musical_concept": 0,
+      "segment_differentiation": 0,
+      "sequence_narrative": 0,
+      "curator_actionability": 0,
+      "creative_freedom": 0
     },
     "threshold": {
-      "coherence": 28,
-      "emotion_flow": 28,
-      "immersion": 24
+      "theme_definition": 6,
+      "theme_relationship": 6,
+      "musical_concept": 6,
+      "segment_differentiation": 6,
+      "sequence_narrative": 6,
+      "curator_actionability": 6,
+      "creative_freedom": 6
     },
     "issues": [
       {
-        "type": "emotion_flow",
+        "type": "sequence_narrative",
+        "severity": "critical",
         "location": "segments[1].playlist[2]",
         "problem": "情绪跳跃过大",
+        "listener_impact": "听众感到断档",
         "suggestion": "替换为过渡更平缓的歌曲"
       }
     ],
     "actions": [
       {
         "target_agent": "Music Curator",
+        "location": "segments[1].playlist[2]",
         "instruction": "替换segments[1].playlist[2] 为更平缓的歌曲"
       },
       {
         "target_agent": "Music Curator",
+        "location": "segments[1].playlist[4]",
         "instruction": "删除segments[1].playlist[4] 以缩短时长"
       }
     ]

@@ -16,6 +16,11 @@ from podcast_ai.modules.theme.orchestrator_staged import StagedPlanOrchestrator
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
 from podcast_ai.modules.theme.script_writer_agent import ScriptWriterAgent
 from podcast_ai.modules.theme.state import PlanState, initialize_plan_state, merge_plan_state
+from podcast_ai.modules.theme.critic_rules import CRITIC_SCORE_DIMS
+
+
+def _critic_scores(value: int) -> dict[str, int]:
+    return {dim: value for dim in CRITIC_SCORE_DIMS}
 
 
 class _TraceAgentBase:
@@ -73,7 +78,8 @@ class _CriticAlwaysPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
+                    "overall_score": 80,
+                    "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
                 },
@@ -100,9 +106,29 @@ class _CriticPassAfterN(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": passed,
-                    "scores": {"coherence": 8 if passed else 4, "emotion_flow": 8 if passed else 4, "immersion": 8 if passed else 4},
-                    "issues": [] if passed else [{"type": "coherence", "location": "plan", "problem": "x", "suggestion": "y"}],
-                    "actions": [] if passed else [{"target_agent": "Planner", "instruction": "fix"}],
+                    "overall_score": 80 if passed else 40,
+                    "scores": _critic_scores(8 if passed else 4),
+                    "issues": []
+                    if passed
+                    else [
+                        {
+                            "type": "theme_definition",
+                            "severity": "critical",
+                            "location": "plan",
+                            "problem": "x",
+                            "listener_impact": "y",
+                            "suggestion": "z",
+                        }
+                    ],
+                    "actions": []
+                    if passed
+                    else [
+                        {
+                            "target_agent": "Planner",
+                            "location": "plan",
+                            "instruction": "fix",
+                        }
+                    ],
                 },
             },
         )
@@ -120,9 +146,16 @@ class _CriticNeverPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": False,
-                    "scores": {"coherence": 3, "emotion_flow": 3, "immersion": 3},
+                    "overall_score": 20,
+                    "scores": _critic_scores(3),
                     "issues": [],
-                    "actions": [{"target_agent": "Planner", "instruction": "never"}],
+                    "actions": [
+                        {
+                            "target_agent": "Planner",
+                            "location": "plan",
+                            "instruction": "never",
+                        }
+                    ],
                 },
             },
         )
@@ -214,7 +247,8 @@ def test_staged_fail_mid_stage_no_rollback_to_upstream(tmp_path: Path) -> None:
                 {
                     "critic": {
                         "pass": passed,
-                        "scores": {"coherence": 8 if passed else 2, "emotion_flow": 8 if passed else 2, "immersion": 8 if passed else 2},
+                        "overall_score": 80 if passed else 20,
+                        "scores": _critic_scores(8 if passed else 2),
                         "issues": [],
                         "actions": [],
                     },
@@ -258,9 +292,8 @@ def test_staged_critic_sanitize_rejects_next_agent() -> None:
         _sanitize_critic_patch_staged(
             {
                 "critic": {
-                    "pass": True,
-                    "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
-                    "threshold": {"coherence": 28, "emotion_flow": 28, "immersion": 24},
+                    "overall_score": 80,
+                    "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
                 },

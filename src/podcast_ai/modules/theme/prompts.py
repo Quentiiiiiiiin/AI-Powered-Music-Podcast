@@ -570,77 +570,40 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
 
 def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
-    构造 v3.0 Critic Agent 的消息。
+    构造 v6.4 Critic Agent 消息。
 
-    Critic 输出仅允许写：
-    - critic.pass
-    - critic.scores
-    - critic.issues
-    - critic.actions
-    - control.next_agent
+    模型仅输出：overall_score / scores(七维) / issues / actions。
+    pass、threshold、control.next_agent 由系统规则派生，禁止模型填写。
     """
 
     RUBRIC = dedent(
         """
         ====================
-        RUBRIC (FIXED)
+        RUBRIC (FIXED) — each dimension 0–10
         ====================
 
-        Total Score: 100
+        1. theme_definition
+        Clarity of theme type / subject / relationship in meta and plan.
 
-        1. Coherence (0-35)
-        Definition:
-        Consistency and logical alignment across structure, music selection, and script.
+        2. theme_relationship
+        How well music and script serve the stated theme relationship.
 
-        Evaluation Criteria:
-        - Clear program structure (beginning, transitions, ending)
-        - Logical ordering of music (not random)
-        - Script matches and supports the music
+        3. musical_concept
+        Coherence of sonic world, energy strategy, and playlist concept.
 
-        Scoring Anchors:
-        - 30-35: Highly coherent, smooth transitions, strong alignment
-        - 20-29: Mostly coherent, minor inconsistencies
-        - 10-19: Noticeable disconnections or weak structure
-        - 0-9: Lacks structure, feels random or conflicting
+        4. segment_differentiation
+        Segments are distinct in function/scene without redundant sameness.
 
-        --------------------
+        5. sequence_narrative
+        Ordering and transitions form a listen-through narrative arc.
 
-        2. Emotion Flow (0-35)
-        Definition:
-        The progression and transition of emotional tone throughout the episode.
+        6. curator_actionability
+        Planner directions are concrete enough for Music Curator to execute.
 
-        Evaluation Criteria:
-        - Clear emotional arc (e.g., build-up, climax, resolution)
-        - Smooth transitions between adjacent segments
-        - No abrupt emotional jumps unless clearly justified
+        7. creative_freedom
+        Directions leave room for tasteful curation (not over-constrained).
 
-        Scoring Anchors:
-        - 30-35: Smooth, intentional emotional progression
-        - 20-29: Generally smooth with minor abrupt moments
-        - 10-19: Multiple emotional inconsistencies
-        - 0-9: Emotionally chaotic or random
-
-        --------------------
-
-        3. Immersion (0-30)
-        Definition:
-        The listener's ability to stay engaged without being pulled out of the experience.
-
-        STRICT RULE:
-        Do NOT penalize for lack of creativity or “could be more interesting”.
-        ONLY penalize if immersion is actively broken.
-
-        Evaluation Criteria:
-        - No immersion-breaking elements (awkward transitions, mismatched tone)
-        - Consistent atmosphere
-        - Script enhances rather than distracts
-
-        Scoring Anchors:
-        - 25-30: Strong immersion, no disruptions
-        - 15-24: Mostly immersive, minor disruptions
-        - 5-14: Frequent breaks in immersion
-        - 0-4: Cannot maintain immersion
-        
+        overall_score: integer 0–100 summarizing overall episode quality.
         ====================
         """
     ).strip()
@@ -649,82 +612,88 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
 
     if m == "generation":
         RESPONSIBILITY = dedent(
-          """
-          ====================
-          GENERATION MODE
-          ====================
-          Your responsibility:
-          - Evaluate the overall quality of the episode plan based on the RUBRIC.
-          - Check if the episode plan is PASS or not.
-          - Identify ISSUES as many as possible.
-          - Generate ACTIONS based on the issues.
-          - Determine the NEXT AGENT to be the one that can fix the issues.
+            """
+            ====================
+            GENERATION MODE
+            ====================
+            Your responsibility:
+            - Score ALL seven dimensions (0–10 integers).
+            - Set overall_score (0–100).
+            - List ISSUES (as many as warranted).
+            - Generate ACTIONS from issues (executable, single-decision).
+            - Do NOT decide pass / threshold / next_agent (system derives them).
 
-          ====================
-          ISSUE & ACTION RULES:
-          ====================
-         Each ISSUE MUST include:
-          - type
-          - location
-          - ONE problem
-          - ONE suggestion
-        
-         Actions is based on the issues and MUST include:
-          - target_agent
-          - instruction (specific, executable, single-decision)
-         If an issue requires multiple agents to fix, you need to generate multiple actions.
+            ====================
+            ISSUE & ACTION RULES
+            ====================
+            Each ISSUE MUST include:
+            - type
+            - severity: "minor" | "critical"
+            - location
+            - problem
+            - listener_impact
+            - suggestion
 
-         Next agent should be the one mentioned in the actions:
-          - If multiple agents are mentioned in the actions, choose the one with highest priority.
-          - The priority is:
-            - Planner > Music Curator > Script Writer
-          ====================
-          """
+            Each ACTION MUST include:
+            - target_agent: Planner | Music Curator | Script Writer
+            - location
+            - instruction (specific, executable, single-decision)
+
+            If an issue needs multiple agents, emit multiple actions.
+            System will pick next repair agent from actions by priority:
+            Planner > Music Curator > Script Writer
+            ====================
+            """
         ).strip()
     else:
         RESPONSIBILITY = dedent(
-          """
-          ====================
-          REVISION MODE
-          ====================
-          Your responsibility:
-          - Assess the the ISSUES from last iteration to see if they are resolved, drop the resolved ISSUES, keep the unresolved ones.
-          - DO NOT generate new ISSUES or modify the existing ISSUES. You can only drop the resolved ISSUES.
-          - Generate ACTIONS based on the ISSUES.
-          - Evaluate the overall quality of the episode plan based on the RUBRIC. The score should be higher than the current score if the number of ISSUES is reduced.
-          - Determine the NEXT AGENT to be the one that can fix the ISSUES.
-          ====================
-          ACTION RULES:
-          ====================
-          Each ACTION MUST include:
-          - target_agent
-          - instruction
-          and MUST be:
-          - specific
-          - executable
-          - single-decision (no multiple options)
-
-          Next AGENT should be the one mentioned in the actions:
-          - If multiple agents are mentioned in the actions, choose the one with highest priority.
-          - The priority is:
-            - Planner > Music Curator > Script Writer
-          ====================
-          """
+            """
+            ====================
+            REVISION MODE
+            ====================
+            Your responsibility:
+            - Re-check ISSUES from last iteration; drop resolved ones; keep unresolved.
+            - Do NOT invent brand-new issue types beyond unresolved carry-over + clear regressions.
+            - Generate ACTIONS from remaining ISSUES.
+            - Re-score seven dimensions and overall_score.
+            - Do NOT decide pass / threshold / next_agent.
+            ====================
+            ACTION RULES
+            ====================
+            Each ACTION MUST include target_agent, location, instruction
+            and be specific / executable / single-decision.
+            ====================
+            """
         ).strip()
 
     EXAMPLE_OUTPUT = dedent(
         """
         {
           "critic": {
-            "pass": false,
-            "scores": {"coherence": 0, "emotion_flow": 0, "immersion": 0},
-            "issues": [{"type": "emotion_flow", "location": "segments[1].playlist[2]", "problem": "情绪跳跃过大", "suggestion": "替换为过渡更平缓的歌曲"}],
-            "actions": [
-              {"target_agent": "Music Curator", "instruction": "替换segments[1].playlist[2] 为更平缓的歌曲"},
-              {"target_agent": "Music Curator", "instruction": "删除segments[1].playlist[4] 以缩短时长"}
-              ]
-          },
-          "control": {"next_agent": "highest priority agent name (Planner / Music Curator / Script Writer)."}
+            "overall_score": 62,
+            "scores": {
+              "theme_definition": 7,
+              "theme_relationship": 6,
+              "musical_concept": 7,
+              "segment_differentiation": 7,
+              "sequence_narrative": 5,
+              "curator_actionability": 7,
+              "creative_freedom": 8
+            },
+            "issues": [{
+              "type": "sequence_narrative",
+              "severity": "critical",
+              "location": "segments[1].playlist[2]",
+              "problem": "情绪跳跃过大",
+              "listener_impact": "听众感到断档",
+              "suggestion": "替换为过渡更平缓的歌曲"
+            }],
+            "actions": [{
+              "target_agent": "Music Curator",
+              "location": "segments[1].playlist[2]",
+              "instruction": "替换segments[1].playlist[2] 为更平缓的歌曲"
+            }]
+          }
         }
         """
     ).strip()
@@ -733,8 +702,8 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         f"""
         GENERAL RULES:
         You are a stable and professional CRITIC agent for the Music Podcast.
-        Your role is to improve the quality of the Music Podcast EpisodePlan.
-        You must NOT introduce new evaluation criteria under any circumstances.
+        Your role is to improve quality via structured scores, issues, and actions.
+        You must NOT introduce new evaluation dimensions under any circumstances.
         Your goal is to help the system CONVERGE, not to endlessly criticize.
         No ASCII " inside any JSON string. Use 「」 instead.
 
@@ -743,35 +712,36 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         YOUR RESPONSIBILITY:
         {RESPONSIBILITY}
 
-        EVALUATION DIMENSIONS:
-        - coherence
-        - emotion_flow
-        - immersion
+        EVALUATION DIMENSIONS (0–10 each):
+        - theme_definition
+        - theme_relationship
+        - musical_concept
+        - segment_differentiation
+        - sequence_narrative
+        - curator_actionability
+        - creative_freedom
 
         RUBRIC:
         {RUBRIC}
 
-        PASS RULES:
-        pass = true if:
-          scores >= threshold
-          or
-          no issues remaining
-       
-        WRITE SCOPE:
-        - critic.*
-        - control.next_agent
+        SYSTEM-DERIVED (DO NOT OUTPUT):
+        - critic.pass
+        - critic.threshold
+        - control / control.next_agent
+
+        WRITE SCOPE (model output ONLY):
+        - critic.overall_score
+        - critic.scores
+        - critic.issues
+        - critic.actions
 
         DO NOT WRITE:
-        - meta
-        - global_constraints
-        - plan
-        - segments
-        - control.max_iterations / control.iteration / control.status / control.last_updated_by
-        - critic.threshold
+        - meta / global_constraints / plan / segments
+        - critic.pass / critic.threshold
+        - control.*
 
         OUTPUT EXAMPLE FORMAT:
         {EXAMPLE_OUTPUT}
-
         """
     ).strip()
 
@@ -788,10 +758,10 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         - Do not demand BPM fields on playlist items (Curator no longer outputs bpm).
         - Check whether tracks appear to be real recordings; flag likely invented or unidentifiable titles.
         - Check whether song meanings fit the theme; flag clear mismatches.
-        - Check script coherence, tone, style, and pacing, make sure they look like a real radio host.
-        - Check overall script length, it should be reasonable and not too long or too short.
-        - Mentioning host name Nova and show name Luma Hits in the script in where it fits.
-        - script.between_tracks should be null where appropriate, keep the flow of the episode naturally.
+        - Check script tone, style, and pacing; flag immersion breaks.
+        - Check overall script length; it should be reasonable.
+        - Mentioning host name Nova and show name Luma Hits in the script where it fits.
+        - script.between_tracks should be null where appropriate.
 
         ISSUES FROM LAST ITERATION:
         {issues_from_last_iteration}

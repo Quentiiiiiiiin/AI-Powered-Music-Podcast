@@ -47,8 +47,8 @@ def test_planner_staged_includes_guide_and_mode_envelope() -> None:
     assert "You are not the Music Curator" in sys_gen
     assert "MODE: GENERATION" in sys_gen
     assert "MODE: REVISION" in sys_rev
-    assert "FORBIDDEN" in sys_gen
-    assert "playlist" in sys_gen.lower() or "FORBIDDEN" in sys_gen
+    assert "Current gate: PLANNER only" in sys_gen
+    assert "Do not invent playlist" in sys_gen or "playlist" in sys_gen.lower()
     assert "Current PlanState JSON" in gen[1]["content"]
     assert "Night Drive" in gen[1]["content"]
     # 显著长于旧短 prompt（防误用摘要）

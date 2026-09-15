@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.3  
+**文档版本**：v6.4  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.3）
+**产品阶段**：迭代验证中（进入 v6.4）
 
 ---
 
@@ -497,6 +497,24 @@
     4. `legacy` 路径与 snapshot 消费契约不因本迭代破坏；`staged` 主路径可运行并产出合法 state。
     5. 相关 prompt 变更可在代码中定位（如 `prompts_staged.py`），便于对照 Guide 文件做 diff 验收。
 
+- **v6.4（迭代三十三：Critic 输出 Schema 升级 + 系统规则判定 pass/next_agent）**：
+  - **问题**：Critic 原先在模型输出中同时给出 `pass`、`threshold`、乃至 `control.next_agent`，把「评分/找问题」与「是否通过、下一轮调度」耦合在同一 LLM 响应里，易漂移且与编排 FSM 职责重叠。
+  - **变更目标**：按 `Schema_Critic_v4.txt`（用户所述 Schema_Critic）升级 Critic **模型输出契约**：新增字段（如 `overall_score`、多维 `scores`、issue 的 `severity` / `listener_impact`、action 的 `location` 等），并**从 Critic LLM 输出中移除** `pass`、`threshold`、`control`。**pass** 与 **legacy 的 `next_agent`** 改由**系统规则**计算；同步影响 structured output、merge/patch 与 Orchestrator 运行逻辑。
+  - **系统判定规则（明确）**：
+    1. **`pass=true` 当且仅当**：
+       - 每个评分维度得分 **大于** 系统配置的 `threshold`（threshold 不再由 Critic 输出，而来自配置/常量）；**且**
+       - **仅有 minor severity 的 issues，或 `actions` 为空**（无待修动作）。
+    2. **`staged`**：不需要 Critic 输出 `control`；阶段推进仍由 Orchestrator FSM 负责。
+    3. **`legacy`**：`control.next_agent` 由系统根据 `actions[*].target_agent` 计算——在出现过的目标 Agent 中，按固定顺序 **Planner → Music Curator → Script Writer** 取**最先顺位**者作为 `next_agent`。
+  - **功能归类**：**优化**（Critic 职责收敛）+ **新功能**（规则化 pass / next_agent）+ **对编排逻辑的补强**。
+  - **User Story（用户视角）**：作为开发者，我希望 Critic 只负责打分与指出问题，是否通过与下一轮修谁由稳定规则决定，这样回修更可预期、也更容易对照审计排查。
+  - **Acceptance Criteria（验收标准）**：
+    1. Critic structured output / 解析对齐 `Schema_Critic_v4.txt`：含新增字段；**不再要求**模型输出 `pass`、`threshold`、`control`。
+    2. 系统按上述规则写入 `critic.pass`（及必要的派生字段）；阈值来自系统配置而非 Critic 响应。
+    3. `staged` 路径不依赖 Critic 的 `control`；阶段通过/失败与修订预算行为与 v6.0 一致且可运行。
+    4. `legacy` 路径由系统按 actions 中目标 Agent 的 Planner→Curator→Writer 优先序设置 `next_agent`；无 actions 且已 pass 时不错误路由。
+    5. snapshot 对外消费契约不因本迭代破坏；审计仍可复查 Critic 原始评分/issues/actions 与系统派生的 pass/next_agent。
+
 
 ## 1. 产品背景
 
@@ -739,25 +757,25 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 增补）
+### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 / v6.4 增补）
 
 | Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
 |------|------|------|------|
 | **Planner（v6.1）** | `meta`、`global_constraints`、历史 `critic.issues` | 按 **Schema_Planner_v4** 负责的 `meta` / `global_constraints` / `plan` / `segments[*]` 规划字段（含主题拆解、能量/声景、段落叙事与声响方向、锚定/参考、序列方向等；以实现字段清单为准） | `segments[*].script`、`critic.*`、`control.*`；playlist 细项解释字段归属 Curator（若 Planner 样例含 playlist 占位，以实现边界为准） |
 | **Music Curator（v6.1）** | `meta`、`global_constraints`、`plan`、`segments[*]` 规划字段、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序）及 **Schema_Music-Curator_v4** 解释字段（如 `selection_reason` / `sequence_role` / `planner_alignment` / `transition_logic`） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
 | **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
-| **Critic** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | `critic.pass`、`critic.scores`、`critic.issues`、`critic.actions`；**`legacy` 可写 `control.next_agent`** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**`staged` 下不得通过 Critic 决定下一创作 Agent** |
-| **Orchestrator（流程控制）** | 全量 `state` | `control` 状态机字段（含 phase/revision/status 等，以实现为准）、重试与失败标记；**`staged` 下负责阶段推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
+| **Critic（v6.4）** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | 按 **Schema_Critic_v4**：`overall_score`、多维 `scores`、`issues`（含 `severity` 等）、`actions`（含 `location` 等） | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**不得输出** `pass` / `threshold` / `control`（由系统派生） |
+| **Orchestrator（流程控制）** | 全量 `state` | `control` 状态机字段；**派生写入** `critic.pass`；**`legacy` 下按规则写入 `control.next_agent`**；**`staged` 下负责阶段推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
 
 **契约补充规则**
 - 所有 Agent 仅允许修改自己负责字段；非负责字段必须原样透传。
 - 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
-- Critic 若 `pass=false`，`critic.actions` 必须至少给出 1 条可执行修复指令。
-- **`legacy`**：当达到全局 `max_iterations` 仍未通过时结束回修并输出最终状态。
-- **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
+- **v6.4**：`critic.pass` 由系统规则判定（各维得分 > 系统 threshold，且仅有 minor issues 或无 actions）；Critic 模型不再直接输出 `pass`。
+- **`legacy`（v6.4）**：`next_agent` 由系统根据 `actions` 目标 Agent，按 Planner → Music Curator → Script Writer 取最先顺位；达到全局 `max_iterations` 仍未通过时结束回修。
+- **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计；不依赖 Critic 输出 `control`。
 - **`state` vs snapshot（v6.1）**：Agent I/O 与最终 **`state` 文件**跟随 Planner/Curator v4 字段升级；**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.3）
+### 6.4 当前版本成功指标（v6.4）
 
 | 指标 | 目标 |
 |------|------|
@@ -784,6 +802,7 @@
 | **Planner/Curator Schema v4** | Agent I/O 与 `state` 对齐 Schema_Planner_v4 / Schema_Music-Curator_v4；snapshot 对外格式不变 |
 | **Console 配置完备性** | Console 可配混音关键参数（含中文说明）、编排模式与 multi/single 关联、LLM/TTS 模型与音色下拉（可手输） |
 | **staged Prompt 对齐 Guide** | Planner / Music Curator 的 staged prompt 完整承载 Guide 思考框架，并保留 REVISION 等编排约束 |
+| **Critic 规则化 pass/路由** | Critic 按 Schema_Critic_v4 只输出评分与 issues/actions；`pass` 与 legacy `next_agent` 由系统规则派生 |
 
 ---
 

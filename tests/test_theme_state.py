@@ -85,11 +85,11 @@ def test_v30_assert_plan_state_valid_raises_on_invalid_state() -> None:
 def test_v30_validate_plan_state_schema_checks_nested_types() -> None:
     state = initialize_plan_state(_request())
     state["meta"]["theme_type"] = 123  # type: ignore[assignment]
-    state["critic"]["scores"]["coherence"] = "bad"
+    state["critic"]["scores"]["theme_definition"] = "bad"  # type: ignore[assignment]
     ok, errors = validate_plan_state_schema(state)
     assert ok is False
     assert any("meta.theme_type" in e for e in errors)
-    assert any("critic.scores.coherence" in e for e in errors)
+    assert any("critic.scores.theme_definition" in e for e in errors)
 
 
 def test_v30_merge_list_of_dict_merges_by_index() -> None:
