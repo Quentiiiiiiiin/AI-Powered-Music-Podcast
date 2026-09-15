@@ -147,12 +147,17 @@ def get_state_path(episode_root: Path) -> Path:
 def save_state_json(state: PlanState, output_dir: Path, episode_id: str) -> Path:
     """
     将 PlanState 落盘为 state.json，并返回文件路径。
+
+    v6.6：主产物去掉顶层 `critic` / `control`（过程态 / 审计仍可保留完整字段）。
+    内存中的 `state` 参数不被修改。
     """
     episode_root = get_episode_root(output_dir, episode_id)
     state_path = get_state_path(episode_root)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    # PlanState 约定为结构化 dict，可直接 JSON 化
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = dict(state)
+    payload.pop("critic", None)
+    payload.pop("control", None)
+    state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return state_path
 
 

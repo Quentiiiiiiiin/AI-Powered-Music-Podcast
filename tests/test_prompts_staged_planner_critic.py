@@ -87,10 +87,12 @@ def test_planner_critic_revision_includes_constraints_and_snapshot() -> None:
     assert "You are the PLANNER CRITIC agent" in sys
 
 
-def test_non_planner_critic_still_uses_short_prompt() -> None:
-    msgs = build_critic_staged_messages(_minimal_state(), "generation", stage="music_curator")
+def test_script_writer_critic_still_uses_short_prompt() -> None:
+    """v6.6：Writer Critic 本轮仍无专用 Guide。"""
+    msgs = build_critic_staged_messages(_minimal_state(), "generation", stage="script_writer")
     sys = msgs[0]["content"]
     assert "PROMPT_Guide_Planner_Critic" not in sys
+    assert "PROMPT_Guide_Curator_Critic" not in sys
     assert "PLANNER CRITIC THINKING GUIDE" not in sys
     assert "0–100" in sys
-    assert "music_curator" in sys or "playlist" in sys.lower()
+    assert "script" in sys.lower()

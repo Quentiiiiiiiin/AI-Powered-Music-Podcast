@@ -5,6 +5,7 @@ import pytest
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.modules.theme.critic_rules import (
+    CURATOR_CRITIC_SCORE_DIMS,
     CRITIC_SCORE_DIMS,
     DEFAULT_CRITIC_THRESHOLDS,
     assert_planner_revision_constraints,

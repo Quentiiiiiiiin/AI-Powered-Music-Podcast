@@ -298,16 +298,16 @@ def test_v31_plan_episode_multi_agent_outputs_valid_state_json(
     assert not (state_path.parent.parent / "playlist.md").exists()
 
     raw = json.loads(state_path.read_text(encoding="utf-8"))
-    validate_state_conforms_to_schema(raw, agent_mode="multi_agent")
+    # v6.6：主 state.json 不含 critic/control（与 single_agent 顶层子集同构）
+    assert "critic" not in raw
+    assert "control" not in raw
+    validate_state_conforms_to_schema(raw, agent_mode="single_agent")
     snapshot_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
     validate_episode_snapshot_subset(snapshot_raw)
     assert set(snapshot_raw.keys()) == {"schema", "meta", "segments"}
     assert set(snapshot_raw["meta"].keys()) == {"request_id", "theme", "language", "target_duration_seconds"}
     assert "global_constraints" not in snapshot_raw
     assert "plan" not in snapshot_raw
-
-    assert isinstance(raw["critic"], dict)
-    assert isinstance(raw["control"], dict)
 
 
 @patch("podcast_ai.modules.theme.llm_planner.ThemePlanner.generate_plan_and_state")

@@ -181,7 +181,7 @@ _CRITIC_ACTION_ITEM: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# v6.5：各维满分 100（与 Planner Critic Guide 一致）
+# v6.5：Planner Critic 各维满分 100
 _CRITIC_SCORE_PROPS: dict[str, Any] = {
     "theme_definition": {"type": "integer", "minimum": 0, "maximum": 100},
     "theme_relationship": {"type": "integer", "minimum": 0, "maximum": 100},
@@ -209,7 +209,7 @@ _CRITIC_BODY_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# v6.4：模型仅输出 critic 体（无 pass/threshold/control）；legacy / staged 共用
+# v6.4：Planner Critic（legacy 与 staged planner/writer 共用模型字段）
 CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"critic": _CRITIC_BODY_SCHEMA},
@@ -218,6 +218,62 @@ CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = CRITIC_RESPONSE_SCHEMA
+
+# v6.6：Curator Critic（Schema_Curator_Critic_v4；无 overall_score / action.location）
+_CURATOR_CRITIC_ISSUE_ITEM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string"},
+        "severity": {"type": "string", "enum": ["minor", "major", "critical"]},
+        "location": {"type": "string"},
+        "problem": {"type": "string"},
+        "reason": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["type", "severity", "location", "problem", "reason", "suggestion"],
+    "additionalProperties": False,
+}
+
+_CURATOR_CRITIC_ACTION_ITEM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "target_agent": {"type": "string"},
+        "instruction": {"type": "string"},
+    },
+    "required": ["target_agent", "instruction"],
+    "additionalProperties": False,
+}
+
+_CURATOR_CRITIC_SCORE_PROPS: dict[str, Any] = {
+    "planner_alignment": {"type": "integer", "minimum": 0, "maximum": 100},
+    "thematic_relevance": {"type": "integer", "minimum": 0, "maximum": 100},
+    "sequence_coherence": {"type": "integer", "minimum": 0, "maximum": 100},
+    "audience_listening_quality": {"type": "integer", "minimum": 0, "maximum": 100},
+    "track_fitness": {"type": "integer", "minimum": 0, "maximum": 100},
+}
+
+_CURATOR_CRITIC_BODY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "object",
+            "properties": _CURATOR_CRITIC_SCORE_PROPS,
+            "required": list(_CURATOR_CRITIC_SCORE_PROPS.keys()),
+            "additionalProperties": False,
+        },
+        "issues": {"type": "array", "items": _CURATOR_CRITIC_ISSUE_ITEM},
+        "actions": {"type": "array", "items": _CURATOR_CRITIC_ACTION_ITEM},
+    },
+    "required": ["scores", "issues", "actions"],
+    "additionalProperties": False,
+}
+
+CURATOR_CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"critic": _CURATOR_CRITIC_BODY_SCHEMA},
+    "required": ["critic"],
+    "additionalProperties": False,
+}
 
 _PLAYLIST_ITEM: dict[str, Any] = {
     "type": "object",

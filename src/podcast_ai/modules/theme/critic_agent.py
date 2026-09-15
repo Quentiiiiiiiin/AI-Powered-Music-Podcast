@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.infra.config import Settings, load_settings, should_use_structured_output
@@ -10,13 +10,16 @@ from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_response_schemas import (
     CRITIC_RESPONSE_SCHEMA,
     CRITIC_STAGED_RESPONSE_SCHEMA,
+    CURATOR_CRITIC_RESPONSE_SCHEMA,
     build_openrouter_response_format,
 )
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.critic_rules import (
-    CRITIC_SCORE_DIMS,
-    CRITIC_SEVERITIES,
-    assert_planner_revision_constraints,
+    CURATOR_CRITIC_SCORE_DIMS,
+    CURATOR_CRITIC_SEVERITIES,
+    PLANNER_CRITIC_SCORE_DIMS,
+    PLANNER_CRITIC_SEVERITIES,
+    assert_staged_revision_constraints,
     derive_critic_pass,
     derive_next_agent,
     normalize_target_agent,
@@ -30,22 +33,47 @@ logger = logging.getLogger(__name__)
 
 AGENT_LABEL = "Critic Agent"
 
-# 模型允许写入的 critic 字段（pass/threshold 由系统派生，禁止模型输出）
-_CRITIC_MODEL_KEYS = {"overall_score", "scores", "issues", "actions"}
 _CRITIC_FORBIDDEN_MODEL_KEYS = frozenset({"pass", "threshold"})
-_ISSUE_ALLOWED_KEYS = {
-    "type",
-    "severity",
-    "location",
-    "problem",
-    "listener_impact",
-    "suggestion",
-}
-_ACTION_ALLOWED_KEYS = {"target_agent", "location", "instruction"}
+
+_PLANNER_ISSUE_KEYS = frozenset(
+    {"type", "severity", "location", "problem", "listener_impact", "suggestion"}
+)
+_PLANNER_ACTION_KEYS = frozenset({"target_agent", "location", "instruction"})
+_CURATOR_ISSUE_KEYS = frozenset(
+    {"type", "severity", "location", "problem", "reason", "suggestion"}
+)
+_CURATOR_ACTION_KEYS = frozenset({"target_agent", "instruction"})
+
+
+def _staged_critic_profile(stage: str) -> dict[str, Any]:
+    """按阶段选择 schema / 分数维 / severity（扩展点：未来可加 Writer）。"""
+    key = (stage or "").strip().lower()
+    if key == "music_curator":
+        return {
+            "schema": CURATOR_CRITIC_RESPONSE_SCHEMA,
+            "schema_name": "podcast_curator_critic_staged_response",
+            "score_dims": CURATOR_CRITIC_SCORE_DIMS,
+            "severities": CURATOR_CRITIC_SEVERITIES,
+            "require_overall_score": False,
+            "issue_keys": _CURATOR_ISSUE_KEYS,
+            "action_keys": _CURATOR_ACTION_KEYS,
+            "revision_label": "curator revision",
+        }
+    # planner / script_writer：暂用 Planner Critic 契约（Writer 专用 Guide 本轮不做）
+    return {
+        "schema": CRITIC_STAGED_RESPONSE_SCHEMA,
+        "schema_name": "podcast_critic_staged_response",
+        "score_dims": PLANNER_CRITIC_SCORE_DIMS,
+        "severities": PLANNER_CRITIC_SEVERITIES,
+        "require_overall_score": True,
+        "issue_keys": _PLANNER_ISSUE_KEYS,
+        "action_keys": _PLANNER_ACTION_KEYS,
+        "revision_label": "planner revision",
+    }
 
 
 class CriticAgent:
-    """v6.5 Critic：模型只评分数/issues/actions；pass 与 legacy next_agent 由系统规则派生。"""
+    """v6.6 Critic：按阶段切换 schema/sanitize/pass 维；pass 与 legacy next_agent 由系统派生。"""
 
     def __init__(
         self,
@@ -69,20 +97,32 @@ class CriticAgent:
     ) -> PlanState:
         """
         orchestration_mode:
-          - legacy：sanitize 后系统写 control.next_agent
-          - staged：仅写 critic.*（含派生 pass）；须传 stage
+          - legacy：Planner Critic schema；系统写 control.next_agent
+          - staged：按 stage 切换 schema/prompt/分数维；仅写 critic.*
         """
         orch = (orchestration_mode or "legacy").strip().lower()
         if orch == "staged":
             if not stage:
                 raise AIServiceError("staged Critic 必须指定 stage（planner|music_curator|script_writer）。")
+            profile = _staged_critic_profile(stage)
             messages = build_critic_staged_messages(state, mode, stage=stage)
-            schema = CRITIC_STAGED_RESPONSE_SCHEMA
-            schema_name = "podcast_critic_staged_response"
+            schema = profile["schema"]
+            schema_name = profile["schema_name"]
         else:
+            # legacy：继续用 Planner Critic（本轮不强制切 Curator 专用）
+            profile = {
+                "schema": CRITIC_RESPONSE_SCHEMA,
+                "schema_name": "podcast_critic_response",
+                "score_dims": PLANNER_CRITIC_SCORE_DIMS,
+                "severities": PLANNER_CRITIC_SEVERITIES,
+                "require_overall_score": True,
+                "issue_keys": _PLANNER_ISSUE_KEYS,
+                "action_keys": _PLANNER_ACTION_KEYS,
+                "revision_label": "legacy revision",
+            }
             messages = build_critic_agent_messages(state, mode)
-            schema = CRITIC_RESPONSE_SCHEMA
-            schema_name = "podcast_critic_response"
+            schema = profile["schema"]
+            schema_name = profile["schema_name"]
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.2}
         structured = should_use_structured_output(self._settings.llm)
@@ -122,21 +162,41 @@ class CriticAgent:
                 revision=audit_revision,
             )
 
-        model_body = _sanitize_critic_model_payload(data, staged=(orch == "staged"))
+        model_body = _sanitize_critic_model_payload(
+            data,
+            staged=(orch == "staged"),
+            score_dims=profile["score_dims"],
+            severities=profile["severities"],
+            issue_keys=profile["issue_keys"],
+            action_keys=profile["action_keys"],
+            require_overall_score=profile["require_overall_score"],
+        )
 
-        # v6.5：staged Planner revision 轻量护栏（禁止新 issues；issues 减少则分数不降）
         mode_n = (mode or "").strip().lower()
-        if orch == "staged" and stage == "planner" and mode_n == "revision":
+        # revision 护栏：仅 staged 的 planner / music_curator（按本阶段维）
+        if orch == "staged" and mode_n == "revision" and stage in ("planner", "music_curator"):
             prev_critic = state.get("critic") if isinstance(state.get("critic"), dict) else None
-            assert_planner_revision_constraints(prev_critic, model_body)
+            assert_staged_revision_constraints(
+                prev_critic,
+                model_body,
+                score_dims=profile["score_dims"],
+                label=profile["revision_label"],
+            )
 
-        passed, thr = derive_critic_pass(model_body)
+        passed, thr = derive_critic_pass(
+            model_body,
+            score_dims=profile["score_dims"],
+            allowed_severities=profile["severities"],
+        )
         critic_out: Dict[str, Any] = {
             **model_body,
             "pass": passed,
             "threshold": thr,
         }
-        patch: Dict[str, Any] = {"critic": critic_out}
+
+        # 整块替换 critic，避免 Planner/Curator 分数维在 merge 时互相污染
+        next_state = merge_plan_state(state, {})
+        next_state["critic"] = critic_out
 
         if orch == "legacy":
             prev = None
@@ -148,28 +208,28 @@ class CriticAgent:
                 passed=passed,
                 previous_next_agent=prev,
             )
-            # pass=true 时不改写 next_agent（编排以 critic.pass 结束）
             if next_agent is not None:
-                patch["control"] = {"next_agent": next_agent}
+                next_state = merge_plan_state(next_state, {"control": {"next_agent": next_agent}})
 
-        return merge_plan_state(state, patch)
+        return next_state
 
 
-def _sanitize_critic_model_payload(data: Dict[str, Any], *, staged: bool) -> Dict[str, Any]:
-    """校验模型输出；只返回 overall_score/scores/issues/actions（不含 pass/threshold/control）。"""
-    if staged:
-        allowed_top = {"critic"}
-        forbidden_top = set(data.keys()) - allowed_top
-        if forbidden_top:
-            raise AIServiceError(
-                f"staged Critic 禁止写入字段：{', '.join(sorted(forbidden_top))}（含 control.next_agent）。"
-            )
-    else:
-        # legacy 也不再接受模型 control；系统派生 next_agent
-        allowed_top = {"critic"}
-        forbidden_top = set(data.keys()) - allowed_top
-        if forbidden_top:
-            raise AIServiceError(f"Critic 越权写入顶层字段：{', '.join(sorted(forbidden_top))}。")
+def _sanitize_critic_model_payload(
+    data: Dict[str, Any],
+    *,
+    staged: bool,
+    score_dims: Sequence[str],
+    severities: frozenset[str],
+    issue_keys: frozenset[str],
+    action_keys: frozenset[str],
+    require_overall_score: bool,
+) -> Dict[str, Any]:
+    """校验模型输出；只返回模型字段（不含 pass/threshold/control）。"""
+    allowed_top = {"critic"}
+    forbidden_top = set(data.keys()) - allowed_top
+    if forbidden_top:
+        prefix = "staged Critic 禁止写入字段" if staged else "Critic 越权写入顶层字段"
+        raise AIServiceError(f"{prefix}：{', '.join(sorted(forbidden_top))}。")
 
     critic = data.get("critic")
     if not isinstance(critic, dict):
@@ -181,33 +241,41 @@ def _sanitize_critic_model_payload(data: Dict[str, Any], *, staged: bool) -> Dic
             f"Critic 禁止输出系统字段：{', '.join(sorted(leaked))}（由系统规则派生）。"
         )
 
-    forbidden_critic_keys = set(critic.keys()) - _CRITIC_MODEL_KEYS
+    model_keys = {"scores", "issues", "actions"}
+    if require_overall_score:
+        model_keys.add("overall_score")
+    forbidden_critic_keys = set(critic.keys()) - model_keys
     if forbidden_critic_keys:
         raise AIServiceError(f"Critic 越权写入 critic 字段：{', '.join(sorted(forbidden_critic_keys))}。")
 
-    missing = [k for k in ("overall_score", "scores", "issues", "actions") if k not in critic]
+    required = ["scores", "issues", "actions"] + (["overall_score"] if require_overall_score else [])
+    missing = [k for k in required if k not in critic]
     if missing:
         raise AIServiceError(f"Critic 输出缺少字段：{', '.join(missing)}。")
 
-    overall = critic.get("overall_score")
-    if not isinstance(overall, int) or overall < 0 or overall > 100:
-        raise AIServiceError("Critic 输出中 critic.overall_score 必须是 0–100 的 int。")
+    out: Dict[str, Any] = {}
+    if require_overall_score:
+        overall = critic.get("overall_score")
+        if not isinstance(overall, int) or overall < 0 or overall > 100:
+            raise AIServiceError("Critic 输出中 critic.overall_score 必须是 0–100 的 int。")
+        out["overall_score"] = overall
 
     scores = critic.get("scores")
     if not isinstance(scores, dict):
         raise AIServiceError("Critic 输出中 critic.scores 必须是对象。")
-    forbidden_scores = set(scores.keys()) - set(CRITIC_SCORE_DIMS)
+    forbidden_scores = set(scores.keys()) - set(score_dims)
     if forbidden_scores:
         raise AIServiceError(f"Critic 越权写入 critic.scores 字段：{', '.join(sorted(forbidden_scores))}。")
-    missing_scores = [k for k in CRITIC_SCORE_DIMS if k not in scores]
+    missing_scores = [k for k in score_dims if k not in scores]
     if missing_scores:
         raise AIServiceError(f"Critic 输出中 critic.scores 缺少字段：{', '.join(missing_scores)}。")
     sanitized_scores: Dict[str, int] = {}
-    for dim in CRITIC_SCORE_DIMS:
+    for dim in score_dims:
         val = scores[dim]
         if not isinstance(val, int) or val < 0 or val > 100:
             raise AIServiceError(f"Critic 输出中 critic.scores.{dim} 必须是 0–100 的 int。")
         sanitized_scores[dim] = val
+    out["scores"] = sanitized_scores
 
     issues = critic.get("issues")
     if not isinstance(issues, list):
@@ -216,24 +284,25 @@ def _sanitize_critic_model_payload(data: Dict[str, Any], *, staged: bool) -> Dic
     for idx, issue in enumerate(issues):
         if not isinstance(issue, dict):
             raise AIServiceError(f"Critic 输出中 critic.issues[{idx}] 必须是对象。")
-        forbidden_issue = set(issue.keys()) - _ISSUE_ALLOWED_KEYS
+        forbidden_issue = set(issue.keys()) - issue_keys
         if forbidden_issue:
             raise AIServiceError(
                 f"Critic 越权写入 critic.issues[{idx}] 字段：{', '.join(sorted(forbidden_issue))}。",
             )
-        for k in _ISSUE_ALLOWED_KEYS:
+        for k in issue_keys:
             if k not in issue:
                 raise AIServiceError(f"Critic 输出中 critic.issues[{idx}] 缺少字段：{k}。")
         sev = issue.get("severity")
-        if not isinstance(sev, str) or sev not in CRITIC_SEVERITIES:
+        if not isinstance(sev, str) or sev not in severities:
             raise AIServiceError(
                 f"Critic 输出中 critic.issues[{idx}].severity 必须是 "
-                f"{'/'.join(sorted(CRITIC_SEVERITIES))}。"
+                f"{'/'.join(sorted(severities))}。"
             )
-        for k in _ISSUE_ALLOWED_KEYS - {"severity"}:
+        for k in issue_keys - {"severity"}:
             if not isinstance(issue.get(k), str):
                 raise AIServiceError(f"Critic 输出中 critic.issues[{idx}].{k} 必须是字符串。")
-        sanitized_issues.append({k: issue[k] for k in _ISSUE_ALLOWED_KEYS})
+        sanitized_issues.append({k: issue[k] for k in issue_keys})
+    out["issues"] = sanitized_issues
 
     actions = critic.get("actions")
     if not isinstance(actions, list):
@@ -242,32 +311,48 @@ def _sanitize_critic_model_payload(data: Dict[str, Any], *, staged: bool) -> Dic
     for idx, action in enumerate(actions):
         if not isinstance(action, dict):
             raise AIServiceError(f"Critic 输出中 critic.actions[{idx}] 必须是对象。")
-        forbidden_action = set(action.keys()) - _ACTION_ALLOWED_KEYS
+        forbidden_action = set(action.keys()) - action_keys
         if forbidden_action:
             raise AIServiceError(
                 f"Critic 越权写入 critic.actions[{idx}] 字段：{', '.join(sorted(forbidden_action))}。",
             )
-        for k in _ACTION_ALLOWED_KEYS:
+        for k in action_keys:
             if k not in action:
                 raise AIServiceError(f"Critic 输出中 critic.actions[{idx}] 缺少字段：{k}。")
             if not isinstance(action.get(k), str):
                 raise AIServiceError(f"Critic 输出中 critic.actions[{idx}].{k} 必须是字符串。")
-        sanitized_actions.append(
-            {
-                "target_agent": normalize_target_agent(action["target_agent"]),
-                "location": action["location"],
-                "instruction": action["instruction"],
-            }
-        )
-
-    return {
-        "overall_score": overall,
-        "scores": sanitized_scores,
-        "issues": sanitized_issues,
-        "actions": sanitized_actions,
-    }
+        item = {k: action[k] for k in action_keys}
+        item["target_agent"] = normalize_target_agent(action["target_agent"])
+        sanitized_actions.append(item)
+    out["actions"] = sanitized_actions
+    return out
 
 
 def _sanitize_critic_patch_staged(data: Dict[str, Any]) -> Dict[str, Any]:
-    """测试/兼容入口：仅返回模型字段 patch（不含系统派生 pass）。"""
-    return {"critic": _sanitize_critic_model_payload(data, staged=True)}
+    """测试兼容：默认按 Planner Critic 契约 sanitize。"""
+    return {
+        "critic": _sanitize_critic_model_payload(
+            data,
+            staged=True,
+            score_dims=PLANNER_CRITIC_SCORE_DIMS,
+            severities=PLANNER_CRITIC_SEVERITIES,
+            issue_keys=_PLANNER_ISSUE_KEYS,
+            action_keys=_PLANNER_ACTION_KEYS,
+            require_overall_score=True,
+        )
+    }
+
+
+def _sanitize_curator_critic_patch_staged(data: Dict[str, Any]) -> Dict[str, Any]:
+    """测试入口：Curator Critic sanitize。"""
+    return {
+        "critic": _sanitize_critic_model_payload(
+            data,
+            staged=True,
+            score_dims=CURATOR_CRITIC_SCORE_DIMS,
+            severities=CURATOR_CRITIC_SEVERITIES,
+            issue_keys=_CURATOR_ISSUE_KEYS,
+            action_keys=_CURATOR_ACTION_KEYS,
+            require_overall_score=False,
+        )
+    }

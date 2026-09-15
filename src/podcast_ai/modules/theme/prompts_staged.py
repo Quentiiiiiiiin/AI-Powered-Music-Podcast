@@ -1,12 +1,10 @@
 """
 v6.0+：staged（Stage-Gated）专用 prompt；与 legacy `prompts.py` 分离，互不改写。
 
-v6.3：staged Planner / Music Curator 对齐 Guide 全文
-（`guides/PROMPT_Guide_Planner.txt`、`guides/PROMPT_Guide_Music-Curator.txt`）。
-
-v6.5：仅 **Planner 阶段 Critic** 对齐 `guides/PROMPT_Guide_Planner_Critic.txt`
-（外壳 + Guide 全文；generation/revision 产品化区分）。
-**Curator / Writer Critic 与 legacy Critic 本轮未换 Guide**（仍用通用 staged/legacy 文案，刻度已统一为 0–100）。
+v6.3：staged Planner / Music Curator 对齐 Guide 全文。
+v6.5：仅 **Planner 阶段 Critic** 对齐 `PROMPT_Guide_Planner_Critic.txt`。
+v6.6：新增 **Music Curator 阶段 Critic** 对齐 `PROMPT_Guide_Curator_Critic.txt`
+（维度与 Planner Critic 分离）。Script Writer Critic / legacy Critic 本轮仍未换专用 Guide。
 """
 from __future__ import annotations
 
@@ -21,13 +19,14 @@ _GUIDES_DIR = Path(__file__).resolve().parent / "guides"
 _GUIDE_PLANNER = "PROMPT_Guide_Planner.txt"
 _GUIDE_MUSIC_CURATOR = "PROMPT_Guide_Music-Curator.txt"
 _GUIDE_PLANNER_CRITIC = "PROMPT_Guide_Planner_Critic.txt"
+_GUIDE_CURATOR_CRITIC = "PROMPT_Guide_Curator_Critic.txt"
 
 
 def _state_json(state: dict[str, Any]) -> str:
     return json.dumps(state, ensure_ascii=False, indent=2)
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)
 def _load_guide(filename: str) -> str:
     """读取 `modules/theme/guides/` 下 Guide 全文；缺失则明确报错。"""
     path = _GUIDES_DIR / filename
@@ -165,10 +164,6 @@ def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> lis
 
 
 _CRITIC_STAGE_FOCUS = {
-    "music_curator": (
-        "Evaluate ONLY playlist quality vs locked Planner structure, including v4 explanation "
-        "fields (selection_reason/sequence_role/planner_alignment/transition_logic). Do not demand script changes."
-    ),
     "script_writer": "Evaluate ONLY script vs locked structure+playlist.",
 }
 
@@ -192,6 +187,29 @@ def _planner_critic_mode_envelope(mode: Literal["generation", "revision"]) -> st
         MODE: GENERATION
         - Evaluate Planner deliverables from scratch.
         - Score all seven dimensions (0–100), list issues, and list actions.
+        """
+    ).strip()
+
+
+def _curator_critic_mode_envelope(mode: Literal["generation", "revision"]) -> str:
+    """v6.6 Curator Critic：generation / revision 外壳。"""
+    if mode == "revision":
+        return dedent(
+            """
+            MODE: REVISION
+            - Re-score Curator dimensions (0–100): planner_alignment, thematic_relevance,
+              sequence_coherence, audience_listening_quality, track_fitness.
+            - Converge previous issues only; FORBIDDEN: inventing NEW issues
+              (new location+problem pairs) unless clearly a regression of prior problems.
+            - Regenerate actions for remaining issues (target Music Curator).
+            - If issue count decreased, each dimension score MUST be >= previous.
+            """
+        ).strip()
+    return dedent(
+        """
+        MODE: GENERATION
+        - Evaluate the Music Curator's playlist from scratch.
+        - Score Curator dimensions (0–100), list issues, and list actions.
         """
     ).strip()
 
@@ -240,6 +258,52 @@ def _build_planner_critic_staged_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _build_curator_critic_staged_messages(
+    state: dict[str, Any],
+    mode: Literal["generation", "revision"],
+) -> list[dict[str, str]]:
+    """staged + stage=music_curator：Curator Critic Guide 全文 + 薄外壳。"""
+    guide = _load_guide(_GUIDE_CURATOR_CRITIC)
+    envelope = dedent(
+        f"""
+        === STAGE-GATED CURATOR CRITIC ENVELOPE (v6.6 staged) ===
+        Current stage under review: music_curator.
+        Evaluate ONLY playlist / track sequence vs locked Planner structure.
+        Do NOT reopen Planner structure problems; do NOT demand script changes.
+
+        {_curator_critic_mode_envelope(mode)}
+
+        OUTPUT CONTRACT (Schema_Curator_Critic_v4):
+        - scores: planner_alignment, thematic_relevance, sequence_coherence,
+          audience_listening_quality, track_fitness (each 0–100 integer).
+        - issues: type, severity (minor|major|critical), location, problem, reason, suggestion.
+        - actions: target_agent, instruction (no action.location field).
+        - Output ONLY {{"critic": {{scores, issues, actions}}}}.
+        FORBIDDEN: overall_score, critic.pass, critic.threshold, control, next_agent,
+        rewriting plan/playlist/script yourself.
+        System derives critic.pass (threshold default 80; only severity=minor counts as minor).
+
+        === CURATOR CRITIC THINKING GUIDE (verbatim from {_GUIDE_CURATOR_CRITIC}) ===
+        """
+    ).strip()
+    system = f"{envelope}\n\n{guide}"
+
+    extra_parts: list[str] = ["STAGE: music_curator"]
+    if mode == "revision":
+        critic = state.get("critic") if isinstance(state.get("critic"), dict) else {}
+        snapshot = {
+            "scores": critic.get("scores"),
+            "issues": critic.get("issues"),
+            "actions": critic.get("actions"),
+        }
+        extra_parts.append(
+            "Previous critic snapshot (baseline for REVISION — do not invent new issues):\n"
+            + json.dumps(snapshot, ensure_ascii=False, indent=2)
+        )
+    user = _user_plan_state_message(state, mode=mode, extra="\n\n".join(extra_parts))
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def build_critic_staged_messages(
     state: dict[str, Any],
     mode: str,
@@ -249,18 +313,21 @@ def build_critic_staged_messages(
     """
     staged Critic：阶段内评分/issues/actions；禁止 pass/threshold/control。
 
-    - stage=planner：v6.5 专用 Guide（`PROMPT_Guide_Planner_Critic.txt`）
-    - 其他 stage：通用短 prompt（本轮未换 Guide）
+    - stage=planner → Planner Critic Guide（v6.5）
+    - stage=music_curator → Curator Critic Guide（v6.6）
+    - stage=script_writer → 通用短提示（本轮无专用 Guide）
     """
     m = _normalize_mode(mode)
     stage_key = (stage or "").strip().lower()
     if stage_key == "planner":
         return _build_planner_critic_staged_messages(state, m)
+    if stage_key == "music_curator":
+        return _build_curator_critic_staged_messages(state, m)
 
     focus = _CRITIC_STAGE_FOCUS.get(stage_key, "Evaluate the current stage deliverables only.")
     system = dedent(
         f"""
-        You are the Critic Agent in Stage-Gated mode (v6.5 staged).
+        You are the Critic Agent in Stage-Gated mode (v6.6 staged).
         Current stage under review: {stage}
 
         {focus}

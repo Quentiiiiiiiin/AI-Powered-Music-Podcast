@@ -136,7 +136,8 @@ def test_v65_staged_does_not_write_next_agent() -> None:
         )
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
-    next_state = agent.run(state, orchestration_mode="staged", stage="music_curator")
+    # script_writer 仍用 Planner Critic 契约；断言 staged 不改 next_agent
+    next_state = agent.run(state, orchestration_mode="staged", stage="script_writer")
     assert next_state["critic"]["pass"] is False
     assert next_state["control"]["next_agent"] == "Planner"
 
