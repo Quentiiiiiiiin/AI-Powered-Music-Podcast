@@ -102,6 +102,8 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 
 **v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。`legacy` 下文件名为 `iteration{i}_{agent}.json` / `iteration{i}_state.json`；**v6.0 `staged`** 下为 `stage_{planner|music_curator|script_writer}_rev{r}_{agent}.json` 与对应 `_state.json`（`rev0`=首次生成，`rev1/2`=修复轮）。写盘失败只记日志。配置：`app.orchestration_mode`（默认 `staged`）与 `app.multi_agent_audit_enabled`。
 
+**v6.3（staged prompt）：** `orchestration_mode=staged` 时 Planner / Music Curator 使用 `modules/theme/guides/PROMPT_Guide_*.txt` 全文 + 闸门外壳（见 `prompts_staged.py`）；**legacy `prompts.py` 未同步**；Script Writer / Critic 本轮未改。
+
 根据歌单到各平台搜索、下载歌曲，放入指定目录（如 `./music/本期节目`）。
 
 **plan-episode 示例输出：**

@@ -607,7 +607,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
 
         2. Emotion Flow (0-35)
         Definition:
-        The progression and transition of emotional tone לאורך time.
+        The progression and transition of emotional tone throughout the episode.
 
         Evaluation Criteria:
         - Clear emotional arc (e.g., build-up, climax, resolution)

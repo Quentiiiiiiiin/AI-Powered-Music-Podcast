@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.2  
+**文档版本**：v6.3  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.2）
+**产品阶段**：迭代验证中（进入 v6.3）
 
 ---
 
@@ -480,6 +480,23 @@
     4. TTS：在 provider 之外可选择/输入 model 与 voice_id；ElevenLabs / MiniMax 至少包含上述预设；允许手输未列出的值；组合表可在代码维护。
     5. 非法组合或必填缺失时给出明确提示；不破坏既有 Console 三阶段布局与 Run 主路径。
 
+- **v6.3（迭代三十二：staged 模式 Planner / Music Curator Prompt 对齐 Guide）**：
+  - **问题**：v6.1 已升级 Planner / Music Curator 的 schema，但 `staged` 模式下的 prompt 尚未充分教会 Agent「如何按字段思考与填写」，导致结构化字段有了、创作质量仍不稳。
+  - **变更目标**：基于 `PROMPT_Guide_Planner.txt` 与 `PROMPT_Guide_Music-Curator.txt`，重写/升级 **`prompts_staged` 中 Planner 与 Music Curator 的 prompt**。理想效果是将两份 Guide 的**字段释义与思考方法原封不动**传递给对应 Agent，同时**保留既有 staged prompt 中的必要编排信息**（如 generation / **REVISION** 模式、输入 state、输出契约、禁止越权改写他 Agent 字段等）。
+  - **范围（明确）**：
+    1. 仅影响 **`orchestration_mode=staged`** 下 Planner、Music Curator 的 messages 构建。
+    2. Guide 定位：指导「schema 字段含义 + 如何思考」；实现上应尽量完整纳入，而非摘要阉割关键规则。
+    3. **不改** snapshot 对外格式；**不强制**本轮改 Script Writer / Critic prompt（除非为引用 Planner/Curator 新语义所必需，以实现最小改动为准）。
+    4. **`legacy` prompt（`prompts.py`）本轮不要求同步**，避免双栈意外分叉扩大（可后续单独评估）。
+  - **功能归类**：**优化**（staged Agent 创作质量与 schema 利用率）。
+  - **User Story（用户视角）**：作为使用 `staged` 编排的开发者，我希望 Planner / Music Curator 真正按 v4 schema 的意图创作（懂字段、会取舍），修订模式下仍能按 Critic 意见精准修补，从而减少无效回修。
+  - **Acceptance Criteria（验收标准）**：
+    1. `staged` 下 Planner / Music Curator 的 prompt 已纳入对应 Guide 的核心内容（字段释义与思考框架），且与 v6.1 schema / structured output 一致。
+    2. 原 staged prompt 中的 **REVISION / generation** 等模式说明、输入输出约束、职责边界（不越权写他 Agent 字段）仍保留且可正确切换。
+    3. Guide 关键约束（如 Planner 不选曲、Curator 不重设计 episode）在 prompt 中明确可见，不因拼接而丢失。
+    4. `legacy` 路径与 snapshot 消费契约不因本迭代破坏；`staged` 主路径可运行并产出合法 state。
+    5. 相关 prompt 变更可在代码中定位（如 `prompts_staged.py`），便于对照 Guide 文件做 diff 验收。
+
 
 ## 1. 产品背景
 
@@ -740,7 +757,7 @@
 - **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
 - **`state` vs snapshot（v6.1）**：Agent I/O 与最终 **`state` 文件**跟随 Planner/Curator v4 字段升级；**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.2）
+### 6.4 当前版本成功指标（v6.3）
 
 | 指标 | 目标 |
 |------|------|
@@ -766,6 +783,7 @@
 | **Stage-Gated 编排可用** | 默认 `staged`：三阶段闸门 + 每阶段最多 2 次修复；config 可切 `legacy`；失败仍输出可被阶段二消费的 snapshot |
 | **Planner/Curator Schema v4** | Agent I/O 与 `state` 对齐 Schema_Planner_v4 / Schema_Music-Curator_v4；snapshot 对外格式不变 |
 | **Console 配置完备性** | Console 可配混音关键参数（含中文说明）、编排模式与 multi/single 关联、LLM/TTS 模型与音色下拉（可手输） |
+| **staged Prompt 对齐 Guide** | Planner / Music Curator 的 staged prompt 完整承载 Guide 思考框架，并保留 REVISION 等编排约束 |
 
 ---
 
