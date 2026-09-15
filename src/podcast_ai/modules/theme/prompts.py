@@ -579,7 +579,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     RUBRIC = dedent(
         """
         ====================
-        RUBRIC (FIXED) — each dimension 0–10
+        RUBRIC (FIXED) — each dimension 0–100
         ====================
 
         1. theme_definition
@@ -617,7 +617,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
             GENERATION MODE
             ====================
             Your responsibility:
-            - Score ALL seven dimensions (0–10 integers).
+            - Score ALL seven dimensions (0–100 integers).
             - Set overall_score (0–100).
             - List ISSUES (as many as warranted).
             - Generate ACTIONS from issues (executable, single-decision).
@@ -655,7 +655,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
             - Re-check ISSUES from last iteration; drop resolved ones; keep unresolved.
             - Do NOT invent brand-new issue types beyond unresolved carry-over + clear regressions.
             - Generate ACTIONS from remaining ISSUES.
-            - Re-score seven dimensions and overall_score.
+            - Re-score seven dimensions (0–100) and overall_score.
             - Do NOT decide pass / threshold / next_agent.
             ====================
             ACTION RULES
@@ -672,13 +672,13 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
           "critic": {
             "overall_score": 62,
             "scores": {
-              "theme_definition": 7,
-              "theme_relationship": 6,
-              "musical_concept": 7,
-              "segment_differentiation": 7,
-              "sequence_narrative": 5,
-              "curator_actionability": 7,
-              "creative_freedom": 8
+              "theme_definition": 75,
+              "theme_relationship": 70,
+              "musical_concept": 72,
+              "segment_differentiation": 68,
+              "sequence_narrative": 55,
+              "curator_actionability": 74,
+              "creative_freedom": 80
             },
             "issues": [{
               "type": "sequence_narrative",
@@ -712,7 +712,7 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         YOUR RESPONSIBILITY:
         {RESPONSIBILITY}
 
-        EVALUATION DIMENSIONS (0–10 each):
+        EVALUATION DIMENSIONS (0–100 each):
         - theme_definition
         - theme_relationship
         - musical_concept

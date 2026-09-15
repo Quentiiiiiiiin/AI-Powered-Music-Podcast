@@ -16,6 +16,7 @@ from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.critic_rules import (
     CRITIC_SCORE_DIMS,
     CRITIC_SEVERITIES,
+    assert_planner_revision_constraints,
     derive_critic_pass,
     derive_next_agent,
     normalize_target_agent,
@@ -44,7 +45,7 @@ _ACTION_ALLOWED_KEYS = {"target_agent", "location", "instruction"}
 
 
 class CriticAgent:
-    """v6.4 Critic：模型只评分数/issues/actions；pass 与 legacy next_agent 由系统规则派生。"""
+    """v6.5 Critic：模型只评分数/issues/actions；pass 与 legacy next_agent 由系统规则派生。"""
 
     def __init__(
         self,
@@ -122,6 +123,13 @@ class CriticAgent:
             )
 
         model_body = _sanitize_critic_model_payload(data, staged=(orch == "staged"))
+
+        # v6.5：staged Planner revision 轻量护栏（禁止新 issues；issues 减少则分数不降）
+        mode_n = (mode or "").strip().lower()
+        if orch == "staged" and stage == "planner" and mode_n == "revision":
+            prev_critic = state.get("critic") if isinstance(state.get("critic"), dict) else None
+            assert_planner_revision_constraints(prev_critic, model_body)
+
         passed, thr = derive_critic_pass(model_body)
         critic_out: Dict[str, Any] = {
             **model_body,
@@ -197,8 +205,8 @@ def _sanitize_critic_model_payload(data: Dict[str, Any], *, staged: bool) -> Dic
     sanitized_scores: Dict[str, int] = {}
     for dim in CRITIC_SCORE_DIMS:
         val = scores[dim]
-        if not isinstance(val, int) or val < 0 or val > 10:
-            raise AIServiceError(f"Critic 输出中 critic.scores.{dim} 必须是 0–10 的 int。")
+        if not isinstance(val, int) or val < 0 or val > 100:
+            raise AIServiceError(f"Critic 输出中 critic.scores.{dim} 必须是 0–100 的 int。")
         sanitized_scores[dim] = val
 
     issues = critic.get("issues")

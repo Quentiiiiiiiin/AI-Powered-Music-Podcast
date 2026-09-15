@@ -86,13 +86,13 @@
       "creative_freedom": 0
     },
     "threshold": {
-      "theme_definition": 6,
-      "theme_relationship": 6,
-      "musical_concept": 6,
-      "segment_differentiation": 6,
-      "sequence_narrative": 6,
-      "curator_actionability": 6,
-      "creative_freedom": 6
+      "theme_definition": 80,
+      "theme_relationship": 80,
+      "musical_concept": 80,
+      "segment_differentiation": 80,
+      "sequence_narrative": 80,
+      "curator_actionability": 80,
+      "creative_freedom": 80
     },
     "issues": [
       {

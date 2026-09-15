@@ -210,15 +210,15 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     payload = {
         "critic": {
-            "overall_score": 80,
+            "overall_score": 85,
             "scores": {
-                "theme_definition": 8,
-                "theme_relationship": 8,
-                "musical_concept": 8,
-                "segment_differentiation": 8,
-                "sequence_narrative": 8,
-                "curator_actionability": 8,
-                "creative_freedom": 8,
+                "theme_definition": 85,
+                "theme_relationship": 85,
+                "musical_concept": 85,
+                "segment_differentiation": 85,
+                "sequence_narrative": 85,
+                "curator_actionability": 85,
+                "creative_freedom": 85,
             },
             "issues": [],
             "actions": [],

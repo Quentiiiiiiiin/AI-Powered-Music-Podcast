@@ -1,9 +1,12 @@
 """
 v6.0+：staged（Stage-Gated）专用 prompt；与 legacy `prompts.py` 分离，互不改写。
 
-v6.3：staged Planner / Music Curator 的思考框架对齐仓库 Guide 全文
-（`guides/PROMPT_Guide_Planner.txt`、`guides/PROMPT_Guide_Music-Curator.txt`），
-仅在本文件做「编排外壳 + Guide 正文」拼接；**legacy 未同步**；Script Writer / Critic 本轮未改 Guide。
+v6.3：staged Planner / Music Curator 对齐 Guide 全文
+（`guides/PROMPT_Guide_Planner.txt`、`guides/PROMPT_Guide_Music-Curator.txt`）。
+
+v6.5：仅 **Planner 阶段 Critic** 对齐 `guides/PROMPT_Guide_Planner_Critic.txt`
+（外壳 + Guide 全文；generation/revision 产品化区分）。
+**Curator / Writer Critic 与 legacy Critic 本轮未换 Guide**（仍用通用 staged/legacy 文案，刻度已统一为 0–100）。
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from typing import Any, Literal
 _GUIDES_DIR = Path(__file__).resolve().parent / "guides"
 _GUIDE_PLANNER = "PROMPT_Guide_Planner.txt"
 _GUIDE_MUSIC_CURATOR = "PROMPT_Guide_Music-Curator.txt"
+_GUIDE_PLANNER_CRITIC = "PROMPT_Guide_Planner_Critic.txt"
 
 
 def _state_json(state: dict[str, Any]) -> str:
@@ -161,11 +165,6 @@ def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> lis
 
 
 _CRITIC_STAGE_FOCUS = {
-    "planner": (
-        "Evaluate ONLY Planner deliverables (v4): meta theme_*, global_constraints "
-        "(energy_strategy/sonic_world/avoid), plan (segment_count/episode_direction/segments_design), "
-        "and segment narrative/sonic fields. Ignore missing playlist/script."
-    ),
     "music_curator": (
         "Evaluate ONLY playlist quality vs locked Planner structure, including v4 explanation "
         "fields (selection_reason/sequence_role/planner_alignment/transition_logic). Do not demand script changes."
@@ -174,23 +173,99 @@ _CRITIC_STAGE_FOCUS = {
 }
 
 
+def _planner_critic_mode_envelope(mode: Literal["generation", "revision"]) -> str:
+    """v6.5 Planner Critic：generation / revision 产品化外壳（不替代 Guide）。"""
+    if mode == "revision":
+        return dedent(
+            """
+            MODE: REVISION
+            - Re-score all seven dimensions (0–100 integers).
+            - Check previous issues: drop resolved ones; keep unresolved.
+            - FORBIDDEN: inventing NEW issues (new location+problem pairs).
+            - Regenerate actions only for remaining issues.
+            - If the issue count decreased vs previous critic, each dimension score
+              MUST be >= the previous score for that dimension (equal or higher only).
+            """
+        ).strip()
+    return dedent(
+        """
+        MODE: GENERATION
+        - Evaluate Planner deliverables from scratch.
+        - Score all seven dimensions (0–100), list issues, and list actions.
+        """
+    ).strip()
+
+
+def _build_planner_critic_staged_messages(
+    state: dict[str, Any],
+    mode: Literal["generation", "revision"],
+) -> list[dict[str, str]]:
+    """staged + stage=planner：Guide 全文 + 薄外壳。"""
+    guide = _load_guide(_GUIDE_PLANNER_CRITIC)
+    envelope = dedent(
+        f"""
+        === STAGE-GATED PLANNER CRITIC ENVELOPE (v6.5 staged) ===
+        Current stage under review: planner only.
+        Ignore missing playlist/script (downstream not run yet).
+
+        {_planner_critic_mode_envelope(mode)}
+
+        OUTPUT CONTRACT:
+        - Each dimension score is an integer 0–100 (same scale as the Guide).
+        - overall_score is an integer 0–100.
+        - Output ONLY {{"critic": {{overall_score, scores, issues, actions}}}}.
+        FORBIDDEN: critic.pass, critic.threshold, control, next_agent,
+        rewriting plan/playlist/script yourself.
+        System derives critic.pass from scores + issues/actions (threshold default 80).
+
+        === PLANNER CRITIC THINKING GUIDE (verbatim from {_GUIDE_PLANNER_CRITIC}) ===
+        """
+    ).strip()
+    system = f"{envelope}\n\n{guide}"
+
+    extra_parts: list[str] = ["STAGE: planner"]
+    if mode == "revision":
+        critic = state.get("critic") if isinstance(state.get("critic"), dict) else {}
+        snapshot = {
+            "scores": critic.get("scores"),
+            "issues": critic.get("issues"),
+            "actions": critic.get("actions"),
+            "overall_score": critic.get("overall_score"),
+        }
+        extra_parts.append(
+            "Previous critic snapshot (baseline for REVISION — do not invent new issues):\n"
+            + json.dumps(snapshot, ensure_ascii=False, indent=2)
+        )
+    user = _user_plan_state_message(state, mode=mode, extra="\n\n".join(extra_parts))
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def build_critic_staged_messages(
     state: dict[str, Any],
     mode: str,
     *,
     stage: str,
 ) -> list[dict[str, str]]:
-    """staged Critic：阶段内评分/issues/actions；禁止 pass/threshold/control（系统派生 pass）。"""
+    """
+    staged Critic：阶段内评分/issues/actions；禁止 pass/threshold/control。
+
+    - stage=planner：v6.5 专用 Guide（`PROMPT_Guide_Planner_Critic.txt`）
+    - 其他 stage：通用短 prompt（本轮未换 Guide）
+    """
     m = _normalize_mode(mode)
-    focus = _CRITIC_STAGE_FOCUS.get(stage, "Evaluate the current stage deliverables only.")
+    stage_key = (stage or "").strip().lower()
+    if stage_key == "planner":
+        return _build_planner_critic_staged_messages(state, m)
+
+    focus = _CRITIC_STAGE_FOCUS.get(stage_key, "Evaluate the current stage deliverables only.")
     system = dedent(
         f"""
-        You are the Critic Agent in Stage-Gated mode (v6.4 staged).
+        You are the Critic Agent in Stage-Gated mode (v6.5 staged).
         Current stage under review: {stage}
 
         {focus}
 
-        Score these dimensions 0–10 integers:
+        Score these dimensions 0–100 integers:
         theme_definition, theme_relationship, musical_concept,
         segment_differentiation, sequence_narrative,
         curator_actionability, creative_freedom.
@@ -204,7 +279,7 @@ def build_critic_staged_messages(
         Output ONLY {{"critic": {{overall_score, scores, issues, actions}}}}.
         FORBIDDEN: critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
-        System derives critic.pass from scores + issues/actions.
+        System derives critic.pass from scores + issues/actions (threshold default 80).
         """
     ).strip()
     user = _user_plan_state_message(state, mode=m, extra=f"STAGE: {stage}")

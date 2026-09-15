@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from podcast_ai.core.exceptions import AIServiceError
 
-# Schema_Critic_v4 分数维（0–10；须严格大于 threshold）
+# Schema_Critic_v4 分数维（0–100；须严格大于 threshold）
 CRITIC_SCORE_DIMS: tuple[str, ...] = (
     "theme_definition",
     "theme_relationship",
@@ -19,8 +19,8 @@ CRITIC_SCORE_DIMS: tuple[str, ...] = (
     "creative_freedom",
 )
 
-# 系统阈值（不入模型输出）；默认 6 → 需 ≥7 才算过线
-DEFAULT_CRITIC_THRESHOLDS: dict[str, int] = {dim: 6 for dim in CRITIC_SCORE_DIMS}
+# 系统阈值（不入模型输出）；默认 80 → 需 ≥81 才算过线（v6.5）
+DEFAULT_CRITIC_THRESHOLDS: dict[str, int] = {dim: 80 for dim in CRITIC_SCORE_DIMS}
 
 CRITIC_SEVERITIES: frozenset[str] = frozenset({"minor", "critical"})
 
@@ -151,3 +151,62 @@ def derive_next_agent(
         except AIServiceError:
             pass
     return "Planner"
+
+
+def _issue_fingerprint(issue: Mapping[str, Any]) -> str:
+    """revision 对照用：location + problem（规范化空白）。不做语义等价判断。"""
+    loc = str(issue.get("location") or "").strip()
+    problem = str(issue.get("problem") or "").strip()
+    return f"{loc}::{problem}"
+
+
+def assert_planner_revision_constraints(
+    previous_critic: Mapping[str, Any] | None,
+    new_body: Mapping[str, Any],
+) -> None:
+    """
+    v6.5 轻量护栏（仅 staged Planner Critic + revision）：
+    - 禁止新增 location+problem 指纹（相对上一轮 issues）；
+    - 若 issues 条数下降，则各维 score 不得低于上一轮（优先报错，不夹紧）。
+
+    不做「问题是否真的已解决」的语义判定。
+    """
+    if not previous_critic:
+        return
+
+    prev_issues = previous_critic.get("issues") or []
+    new_issues = new_body.get("issues") or []
+    if not isinstance(prev_issues, list) or not isinstance(new_issues, list):
+        raise AIServiceError("planner revision 校验：issues 必须是数组。")
+
+    prev_keys = {
+        _issue_fingerprint(i) for i in prev_issues if isinstance(i, dict)
+    }
+    new_keys = {
+        _issue_fingerprint(i) for i in new_issues if isinstance(i, dict)
+    }
+    novel = sorted(k for k in new_keys if k and k not in prev_keys)
+    if novel:
+        raise AIServiceError(
+            "planner revision 禁止新增 issues（相对上一轮 location+problem）："
+            + "; ".join(novel[:5])
+        )
+
+    if len(new_issues) >= len(prev_issues):
+        return
+
+    prev_scores = previous_critic.get("scores")
+    new_scores = new_body.get("scores")
+    if not isinstance(prev_scores, dict) or not isinstance(new_scores, dict):
+        raise AIServiceError("planner revision 校验：scores 必须是对象。")
+
+    for dim in CRITIC_SCORE_DIMS:
+        prev_v = prev_scores.get(dim)
+        new_v = new_scores.get(dim)
+        if not isinstance(prev_v, int) or not isinstance(new_v, int):
+            raise AIServiceError(f"planner revision 校验：scores.{dim} 必须是 int。")
+        if new_v < prev_v:
+            raise AIServiceError(
+                f"planner revision：issues 已减少时 scores.{dim} 不得低于上一轮 "
+                f"（prev={prev_v}, new={new_v}）。"
+            )

@@ -181,14 +181,15 @@ _CRITIC_ACTION_ITEM: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# v6.5：各维满分 100（与 Planner Critic Guide 一致）
 _CRITIC_SCORE_PROPS: dict[str, Any] = {
-    "theme_definition": {"type": "integer", "minimum": 0, "maximum": 10},
-    "theme_relationship": {"type": "integer", "minimum": 0, "maximum": 10},
-    "musical_concept": {"type": "integer", "minimum": 0, "maximum": 10},
-    "segment_differentiation": {"type": "integer", "minimum": 0, "maximum": 10},
-    "sequence_narrative": {"type": "integer", "minimum": 0, "maximum": 10},
-    "curator_actionability": {"type": "integer", "minimum": 0, "maximum": 10},
-    "creative_freedom": {"type": "integer", "minimum": 0, "maximum": 10},
+    "theme_definition": {"type": "integer", "minimum": 0, "maximum": 100},
+    "theme_relationship": {"type": "integer", "minimum": 0, "maximum": 100},
+    "musical_concept": {"type": "integer", "minimum": 0, "maximum": 100},
+    "segment_differentiation": {"type": "integer", "minimum": 0, "maximum": 100},
+    "sequence_narrative": {"type": "integer", "minimum": 0, "maximum": 100},
+    "curator_actionability": {"type": "integer", "minimum": 0, "maximum": 100},
+    "creative_freedom": {"type": "integer", "minimum": 0, "maximum": 100},
 }
 
 _CRITIC_BODY_SCHEMA: dict[str, Any] = {

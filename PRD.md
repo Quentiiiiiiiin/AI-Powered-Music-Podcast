@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.4  
+**文档版本**：v6.5  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.4）
+**产品阶段**：迭代验证中（进入 v6.5）
 
 ---
 
@@ -515,6 +515,22 @@
     4. `legacy` 路径由系统按 actions 中目标 Agent 的 Planner→Curator→Writer 优先序设置 `next_agent`；无 actions 且已 pass 时不错误路由。
     5. snapshot 对外消费契约不因本迭代破坏；审计仍可复查 Critic 原始评分/issues/actions 与系统派生的 pass/next_agent。
 
+- **v6.5（迭代三十四：staged Planner Critic Prompt 对齐 Guide）**：
+  - **问题**：`staged` 下 Critic 已按阶段拆分职责，但 Planner 阶段仍缺少专用评估 prompt；通用 Critic 提示无法充分对齐 Planner v4 schema 与 Guide 中的评审逻辑，且 generation / revision 两种模式行为未产品化区分。
+  - **变更目标**：基于 `PROMPT_Guide_Planner_Critic.txt`，为 **staged 模式 Planner 阶段 Critic** 提供专用 prompt。Guide 的评估方法应尽量**原样纳入**；同时明确区分：
+    - **generation**：从头评估——打分、列出 issues、列出 actions；
+    - **revision**：不从头开新 issues——打分、检查既有 issues 是否解决并舍弃已解决项、再列 actions；**禁止生成新的 issues**；若 issues 确实减少，则各维分数**不得低于上一轮**（只能持平或更高）。
+  - **评分与阈值（补充，对齐 v6.4 规则）**：各评分维度满分为 **100**；系统 `threshold` **暂定 80**（即每维得分须 **> 80** 才满足分数门槛，与 v6.4 pass 规则合取）。
+  - **范围**：本轮聚焦 **Planner Critic**（staged）；Music Curator / Script Writer 的专用 Critic prompt 可后续迭代。`legacy` 路径本轮不强制同步。
+  - **功能归类**：**优化**（阶段 Critic 评审质量与修订模式稳定性）。
+  - **User Story（用户视角）**：作为使用 staged 的开发者，我希望 Planner 阶段的 Critic 按专用 Guide 评审，初评能完整找问题，修订轮只验证修复进度且分数不无故倒退，从而减少反复拉扯。
+  - **Acceptance Criteria（验收标准）**：
+    1. `staged` 下 Planner 阶段 Critic 使用纳入 `PROMPT_Guide_Planner_Critic.txt` 核心内容的专用 prompt（可定位于 `prompts_staged` 或等价模块）。
+    2. **generation** 模式可完整产出打分、issues、actions；**revision** 模式禁止新增 issues，仅验证/收敛既有 issues 并更新 actions；issues 减少时分数不得低于上一轮。
+    3. 系统 threshold 按维度满分 100、默认 **80** 参与 v6.4 的 `pass` 判定；与 Critic 输出 schema（无模型侧 pass/threshold）一致。
+    4. 不破坏 staged 闸门预算（每阶段最多 2 次修复）及审计落盘；snapshot 对外契约不变。
+    5. Curator/Writer Critic 与 `legacy` 路径不因本迭代意外回退（未改动或行为保持可用）。
+
 
 ## 1. 产品背景
 
@@ -770,12 +786,12 @@
 **契约补充规则**
 - 所有 Agent 仅允许修改自己负责字段；非负责字段必须原样透传。
 - 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
-- **v6.4**：`critic.pass` 由系统规则判定（各维得分 > 系统 threshold，且仅有 minor issues 或无 actions）；Critic 模型不再直接输出 `pass`。
+- **v6.4 / v6.5**：`critic.pass` 由系统规则判定（各维得分 **> threshold**，threshold 默认 **80**/100，且仅有 minor issues 或无 actions）；Critic 模型不再直接输出 `pass`。
 - **`legacy`（v6.4）**：`next_agent` 由系统根据 `actions` 目标 Agent，按 Planner → Music Curator → Script Writer 取最先顺位；达到全局 `max_iterations` 仍未通过时结束回修。
 - **`staged`（v6.0）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计；不依赖 Critic 输出 `control`。
 - **`state` vs snapshot（v6.1）**：Agent I/O 与最终 **`state` 文件**跟随 Planner/Curator v4 字段升级；**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.4）
+### 6.4 当前版本成功指标（v6.5）
 
 | 指标 | 目标 |
 |------|------|
@@ -803,6 +819,7 @@
 | **Console 配置完备性** | Console 可配混音关键参数（含中文说明）、编排模式与 multi/single 关联、LLM/TTS 模型与音色下拉（可手输） |
 | **staged Prompt 对齐 Guide** | Planner / Music Curator 的 staged prompt 完整承载 Guide 思考框架，并保留 REVISION 等编排约束 |
 | **Critic 规则化 pass/路由** | Critic 按 Schema_Critic_v4 只输出评分与 issues/actions；`pass` 与 legacy `next_agent` 由系统规则派生 |
+| **Planner Critic Prompt（staged）** | staged 下 Planner Critic 对齐 Guide；generation/revision 行为分离；维度满分 100、threshold 默认 80 |
 
 ---
 

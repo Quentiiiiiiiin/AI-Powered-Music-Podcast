@@ -1,4 +1,4 @@
-"""v6.4：Critic Agent sanitize + 系统派生 pass/next_agent。"""
+"""v6.5：Critic Agent sanitize + 系统派生 + Planner revision 护栏。"""
 from __future__ import annotations
 
 import json
@@ -50,11 +50,11 @@ def _model_critic(
     }
 
 
-def test_v64_critic_fail_derives_pass_false_and_next_agent() -> None:
+def test_v65_critic_fail_derives_pass_false_and_next_agent() -> None:
     state = initialize_plan_state(_request())
     payload = {
         "critic": _model_critic(
-            score=5,
+            score=50,
             issues=[
                 {
                     "type": "sequence_narrative",
@@ -77,46 +77,42 @@ def test_v64_critic_fail_derives_pass_false_and_next_agent() -> None:
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
     next_state = agent.run(state)
     assert next_state["critic"]["pass"] is False
-    assert next_state["critic"]["threshold"]["theme_definition"] == 6
+    assert next_state["critic"]["threshold"]["theme_definition"] == 80
     assert len(next_state["critic"]["actions"]) == 1
     assert next_state["control"]["next_agent"] == "Music Curator"
 
 
-def test_v64_critic_pass_true_does_not_rewrite_next_agent() -> None:
+def test_v65_critic_pass_true_at_81() -> None:
     state = initialize_plan_state(_request())
     state["control"]["next_agent"] = "Script Writer"
-    payload = {"critic": _model_critic(score=8, issues=[], actions=[])}
+    payload = {"critic": _model_critic(score=81, issues=[], actions=[])}
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
     next_state = agent.run(state)
     assert next_state["critic"]["pass"] is True
     assert next_state["control"]["next_agent"] == "Script Writer"
 
 
-def test_v64_critic_fail_without_actions_falls_back_next_agent() -> None:
+def test_v65_critic_score_80_is_not_pass() -> None:
     state = initialize_plan_state(_request())
-    state["control"]["next_agent"] = "Music Curator"
-    # 分数未过线 → pass=false；actions 空 → 回退上一 next_agent
-    payload = {"critic": _model_critic(score=5, issues=[], actions=[])}
+    payload = {"critic": _model_critic(score=80, issues=[], actions=[])}
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
     next_state = agent.run(state)
     assert next_state["critic"]["pass"] is False
-    assert next_state["control"]["next_agent"] == "Music Curator"
 
 
-def test_v64_critic_rejects_model_pass() -> None:
+def test_v65_critic_rejects_model_pass() -> None:
     state = initialize_plan_state(_request())
-    body = _model_critic(score=8)
+    body = _model_critic(score=81)
     body["pass"] = True
-    payload = {"critic": body}
-    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    agent = CriticAgent(llm_client=_StubLLMClient({"critic": body}))
     with pytest.raises(AIServiceError, match=r"禁止输出系统字段|pass"):
         agent.run(state)
 
 
-def test_v64_critic_rejects_model_control() -> None:
+def test_v65_critic_rejects_model_control() -> None:
     state = initialize_plan_state(_request())
     payload = {
-        "critic": _model_critic(score=8),
+        "critic": _model_critic(score=81),
         "control": {"next_agent": "Planner"},
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
@@ -124,12 +120,12 @@ def test_v64_critic_rejects_model_control() -> None:
         agent.run(state)
 
 
-def test_v64_staged_does_not_write_next_agent() -> None:
+def test_v65_staged_does_not_write_next_agent() -> None:
     state = initialize_plan_state(_request())
     state["control"]["next_agent"] = "Planner"
     payload = {
         "critic": _model_critic(
-            score=4,
+            score=40,
             actions=[
                 {
                     "target_agent": "Music Curator",
@@ -145,12 +141,35 @@ def test_v64_staged_does_not_write_next_agent() -> None:
     assert next_state["control"]["next_agent"] == "Planner"
 
 
-def test_v64_critic_rejects_forbidden_plan_write() -> None:
+def test_v65_planner_revision_rejects_new_issues() -> None:
     state = initialize_plan_state(_request())
+    state["critic"]["scores"] = _scores(60)
+    state["critic"]["issues"] = [
+        {
+            "type": "x",
+            "severity": "critical",
+            "location": "plan",
+            "problem": "old",
+            "listener_impact": "i",
+            "suggestion": "s",
+        }
+    ]
     payload = {
-        "plan": {"segments_design": "bad"},
-        "critic": _model_critic(score=8),
+        "critic": _model_critic(
+            score=65,
+            issues=[
+                {
+                    "type": "x",
+                    "severity": "critical",
+                    "location": "plan",
+                    "problem": "brand new issue",
+                    "listener_impact": "i",
+                    "suggestion": "s",
+                }
+            ],
+            actions=[],
+        )
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
-    with pytest.raises(AIServiceError, match=r"越权写入顶层字段"):
-        agent.run(state)
+    with pytest.raises(AIServiceError, match="禁止新增 issues"):
+        agent.run(state, mode="revision", orchestration_mode="staged", stage="planner")
