@@ -570,10 +570,10 @@ def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str,
 
 def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
-    构造 v6.4 Critic Agent 消息。
+    构造 v6.7 Critic Agent 消息。
 
-    模型仅输出：overall_score / scores(七维) / issues / actions。
-    pass、threshold、control.next_agent 由系统规则派生，禁止模型填写。
+    模型仅输出：scores(七维) / issues / actions。
+    pass、threshold、control.next_agent 由系统派生；overall_score 已移除。
     """
 
     RUBRIC = dedent(
@@ -602,8 +602,6 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
 
         7. creative_freedom
         Directions leave room for tasteful curation (not over-constrained).
-
-        overall_score: integer 0–100 summarizing overall episode quality.
         ====================
         """
     ).strip()
@@ -618,10 +616,10 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
             ====================
             Your responsibility:
             - Score ALL seven dimensions (0–100 integers).
-            - Set overall_score (0–100).
             - List ISSUES (as many as warranted).
             - Generate ACTIONS from issues (executable, single-decision).
             - Do NOT decide pass / threshold / next_agent (system derives them).
+            - Do NOT output overall_score.
 
             ====================
             ISSUE & ACTION RULES
@@ -655,8 +653,9 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
             - Re-check ISSUES from last iteration; drop resolved ones; keep unresolved.
             - Do NOT invent brand-new issue types beyond unresolved carry-over + clear regressions.
             - Generate ACTIONS from remaining ISSUES.
-            - Re-score seven dimensions (0–100) and overall_score.
+            - Re-score seven dimensions (0–100).
             - Do NOT decide pass / threshold / next_agent.
+            - Do NOT output overall_score.
             ====================
             ACTION RULES
             ====================
@@ -670,7 +669,6 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         """
         {
           "critic": {
-            "overall_score": 62,
             "scores": {
               "theme_definition": 75,
               "theme_relationship": 70,
@@ -724,20 +722,20 @@ def build_critic_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
         RUBRIC:
         {RUBRIC}
 
-        SYSTEM-DERIVED (DO NOT OUTPUT):
+        SYSTEM-DERIVED / FORBIDDEN (DO NOT OUTPUT):
         - critic.pass
         - critic.threshold
+        - critic.overall_score
         - control / control.next_agent
 
         WRITE SCOPE (model output ONLY):
-        - critic.overall_score
         - critic.scores
         - critic.issues
         - critic.actions
 
         DO NOT WRITE:
         - meta / global_constraints / plan / segments
-        - critic.pass / critic.threshold
+        - critic.pass / critic.threshold / critic.overall_score
         - control.*
 
         OUTPUT EXAMPLE FORMAT:

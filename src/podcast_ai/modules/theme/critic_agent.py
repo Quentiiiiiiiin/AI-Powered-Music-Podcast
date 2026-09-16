@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 AGENT_LABEL = "Critic Agent"
 
-_CRITIC_FORBIDDEN_MODEL_KEYS = frozenset({"pass", "threshold"})
+_CRITIC_FORBIDDEN_MODEL_KEYS = frozenset({"pass", "threshold", "overall_score"})
 
 _PLANNER_ISSUE_KEYS = frozenset(
     {"type", "severity", "location", "problem", "listener_impact", "suggestion"}
@@ -42,7 +42,8 @@ _PLANNER_ACTION_KEYS = frozenset({"target_agent", "location", "instruction"})
 _CURATOR_ISSUE_KEYS = frozenset(
     {"type", "severity", "location", "problem", "reason", "suggestion"}
 )
-_CURATOR_ACTION_KEYS = frozenset({"target_agent", "instruction"})
+# v6.7：与 Planner actions 字段集对齐
+_CURATOR_ACTION_KEYS = frozenset({"target_agent", "location", "instruction"})
 
 
 def _staged_critic_profile(stage: str) -> dict[str, Any]:
@@ -54,7 +55,6 @@ def _staged_critic_profile(stage: str) -> dict[str, Any]:
             "schema_name": "podcast_curator_critic_staged_response",
             "score_dims": CURATOR_CRITIC_SCORE_DIMS,
             "severities": CURATOR_CRITIC_SEVERITIES,
-            "require_overall_score": False,
             "issue_keys": _CURATOR_ISSUE_KEYS,
             "action_keys": _CURATOR_ACTION_KEYS,
             "revision_label": "curator revision",
@@ -65,7 +65,6 @@ def _staged_critic_profile(stage: str) -> dict[str, Any]:
         "schema_name": "podcast_critic_staged_response",
         "score_dims": PLANNER_CRITIC_SCORE_DIMS,
         "severities": PLANNER_CRITIC_SEVERITIES,
-        "require_overall_score": True,
         "issue_keys": _PLANNER_ISSUE_KEYS,
         "action_keys": _PLANNER_ACTION_KEYS,
         "revision_label": "planner revision",
@@ -73,7 +72,7 @@ def _staged_critic_profile(stage: str) -> dict[str, Any]:
 
 
 class CriticAgent:
-    """v6.6 Critic：按阶段切换 schema/sanitize/pass 维；pass 与 legacy next_agent 由系统派生。"""
+    """v6.7 Critic：按阶段切换 schema/sanitize/pass 维；无 overall_score；pass 由系统派生。"""
 
     def __init__(
         self,
@@ -115,7 +114,6 @@ class CriticAgent:
                 "schema_name": "podcast_critic_response",
                 "score_dims": PLANNER_CRITIC_SCORE_DIMS,
                 "severities": PLANNER_CRITIC_SEVERITIES,
-                "require_overall_score": True,
                 "issue_keys": _PLANNER_ISSUE_KEYS,
                 "action_keys": _PLANNER_ACTION_KEYS,
                 "revision_label": "legacy revision",
@@ -169,7 +167,6 @@ class CriticAgent:
             severities=profile["severities"],
             issue_keys=profile["issue_keys"],
             action_keys=profile["action_keys"],
-            require_overall_score=profile["require_overall_score"],
         )
 
         mode_n = (mode or "").strip().lower()
@@ -222,9 +219,8 @@ def _sanitize_critic_model_payload(
     severities: frozenset[str],
     issue_keys: frozenset[str],
     action_keys: frozenset[str],
-    require_overall_score: bool,
 ) -> Dict[str, Any]:
-    """校验模型输出；只返回模型字段（不含 pass/threshold/control）。"""
+    """校验模型输出；只返回 scores/issues/actions（不含 pass/threshold/overall_score/control）。"""
     allowed_top = {"critic"}
     forbidden_top = set(data.keys()) - allowed_top
     if forbidden_top:
@@ -238,27 +234,19 @@ def _sanitize_critic_model_payload(
     leaked = _CRITIC_FORBIDDEN_MODEL_KEYS.intersection(critic.keys())
     if leaked:
         raise AIServiceError(
-            f"Critic 禁止输出系统字段：{', '.join(sorted(leaked))}（由系统规则派生）。"
+            f"Critic 禁止输出字段：{', '.join(sorted(leaked))}（pass/threshold 由系统派生；overall_score 已移除）。"
         )
 
     model_keys = {"scores", "issues", "actions"}
-    if require_overall_score:
-        model_keys.add("overall_score")
     forbidden_critic_keys = set(critic.keys()) - model_keys
     if forbidden_critic_keys:
         raise AIServiceError(f"Critic 越权写入 critic 字段：{', '.join(sorted(forbidden_critic_keys))}。")
 
-    required = ["scores", "issues", "actions"] + (["overall_score"] if require_overall_score else [])
-    missing = [k for k in required if k not in critic]
+    missing = [k for k in ("scores", "issues", "actions") if k not in critic]
     if missing:
         raise AIServiceError(f"Critic 输出缺少字段：{', '.join(missing)}。")
 
     out: Dict[str, Any] = {}
-    if require_overall_score:
-        overall = critic.get("overall_score")
-        if not isinstance(overall, int) or overall < 0 or overall > 100:
-            raise AIServiceError("Critic 输出中 critic.overall_score 必须是 0–100 的 int。")
-        out["overall_score"] = overall
 
     scores = critic.get("scores")
     if not isinstance(scores, dict):
@@ -338,7 +326,6 @@ def _sanitize_critic_patch_staged(data: Dict[str, Any]) -> Dict[str, Any]:
             severities=PLANNER_CRITIC_SEVERITIES,
             issue_keys=_PLANNER_ISSUE_KEYS,
             action_keys=_PLANNER_ACTION_KEYS,
-            require_overall_score=True,
         )
     }
 
@@ -353,6 +340,5 @@ def _sanitize_curator_critic_patch_staged(data: Dict[str, Any]) -> Dict[str, Any
             severities=CURATOR_CRITIC_SEVERITIES,
             issue_keys=_CURATOR_ISSUE_KEYS,
             action_keys=_CURATOR_ACTION_KEYS,
-            require_overall_score=False,
         )
     }

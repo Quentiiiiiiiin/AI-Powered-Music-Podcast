@@ -38,12 +38,10 @@ def _scores(value: int) -> dict[str, int]:
 def _model_critic(
     *,
     score: int,
-    overall_score: int = 70,
     issues: list | None = None,
     actions: list | None = None,
 ) -> dict[str, Any]:
     return {
-        "overall_score": overall_score,
         "scores": _scores(score),
         "issues": issues if issues is not None else [],
         "actions": actions if actions is not None else [],

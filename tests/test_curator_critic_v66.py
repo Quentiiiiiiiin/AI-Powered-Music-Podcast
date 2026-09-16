@@ -132,7 +132,7 @@ def test_curator_major_issue_with_actions_fails() -> None:
                 "suggestion": "replace",
             }
         ],
-        actions=[{"target_agent": "Music Curator", "instruction": "replace track"}],
+        actions=[{"target_agent": "Music Curator", "location": "segments[0].playlist[0]", "instruction": "replace track"}],
     )
     passed, _ = derive_critic_pass(
         body,
@@ -155,7 +155,7 @@ def test_curator_minor_only_with_actions_passes() -> None:
                 "suggestion": "optional tweak",
             }
         ],
-        actions=[{"target_agent": "Music Curator", "instruction": "optional tweak"}],
+        actions=[{"target_agent": "Music Curator", "location": "segments[0].playlist[0]", "instruction": "optional tweak"}],
     )
     passed, _ = derive_critic_pass(
         body,

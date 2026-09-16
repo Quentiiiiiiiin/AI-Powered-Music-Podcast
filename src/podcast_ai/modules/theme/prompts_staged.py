@@ -230,9 +230,8 @@ def _build_planner_critic_staged_messages(
 
         OUTPUT CONTRACT:
         - Each dimension score is an integer 0–100 (same scale as the Guide).
-        - overall_score is an integer 0–100.
-        - Output ONLY {{"critic": {{overall_score, scores, issues, actions}}}}.
-        FORBIDDEN: critic.pass, critic.threshold, control, next_agent,
+        - Output ONLY {{"critic": {{scores, issues, actions}}}}.
+        FORBIDDEN: critic.overall_score, critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
 
@@ -248,7 +247,6 @@ def _build_planner_critic_staged_messages(
             "scores": critic.get("scores"),
             "issues": critic.get("issues"),
             "actions": critic.get("actions"),
-            "overall_score": critic.get("overall_score"),
         }
         extra_parts.append(
             "Previous critic snapshot (baseline for REVISION — do not invent new issues):\n"
@@ -277,7 +275,7 @@ def _build_curator_critic_staged_messages(
         - scores: planner_alignment, thematic_relevance, sequence_coherence,
           audience_listening_quality, track_fitness (each 0–100 integer).
         - issues: type, severity (minor|major|critical), location, problem, reason, suggestion.
-        - actions: target_agent, instruction (no action.location field).
+        - actions: target_agent, location, instruction (location required).
         - Output ONLY {{"critic": {{scores, issues, actions}}}}.
         FORBIDDEN: overall_score, critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
@@ -336,15 +334,14 @@ def build_critic_staged_messages(
         theme_definition, theme_relationship, musical_concept,
         segment_differentiation, sequence_narrative,
         curator_actionability, creative_freedom.
-        Also set overall_score (0–100).
 
         Each issue MUST include: type, severity (minor|critical), location,
         problem, listener_impact, suggestion.
         Each action MUST include: target_agent, location, instruction.
         Prefer targeting the current stage's creator agent when actions are needed.
 
-        Output ONLY {{"critic": {{overall_score, scores, issues, actions}}}}.
-        FORBIDDEN: critic.pass, critic.threshold, control, next_agent,
+        Output ONLY {{"critic": {{scores, issues, actions}}}}.
+        FORBIDDEN: critic.overall_score, critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
         """

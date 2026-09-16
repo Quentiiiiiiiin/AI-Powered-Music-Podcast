@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.6  
+**文档版本**：v6.7  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.6）
+**产品阶段**：迭代验证中（进入 v6.7）
 
 ---
 
@@ -547,6 +547,19 @@
     4. **最终写出的主 `state` 文件**（staged/legacy）**不含**顶层 `critic`、`control`；审计/过程落盘仍可复查完整 critic。
     5. snapshot 对外契约与阶段二消费不因本迭代破坏；Planner Critic（v6.5）行为不回退。
 
+- **v6.7（迭代三十六：Critic Schema 一致性修复）**：
+  - **问题**：v6 系列落地后两处契约不一致——（1）Planner Critic 仍携带不需要的 `overall_score`；（2）Music Curator Critic 的 `actions` 缺少与 Planner Critic 对齐的 `location`，影响定位与修订指令精度。
+  - **变更目标**：
+    1. **移除** Planner Critic schema 中的 `overall_score`，并同步修改相关 **state / structured output / 校验与 merge** 等代码路径，消除残留引用。
+    2. **为** Music Curator Critic 的 `actions[*]` **增加 `location` 字段**，与 Planner Critic 的 actions 结构保持一致。
+  - **功能归类**：**bug 修复**（契约一致性与校验对齐）。
+  - **User Story（用户视角）**：作为开发者，我希望各阶段 Critic 的输出字段干净、一致，避免多余总分字段干扰，且 Curator 的修复指令也能精确落到具体位置。
+  - **Acceptance Criteria（验收标准）**：
+    1. Planner Critic 的 structured output / 解析 / state 过程结构中**不再出现** `overall_score`；相关校验与测试通过。
+    2. Curator Critic 的 `actions[*]` **包含 `location`**，与 Planner Critic actions 字段对齐；structured output 与校验已更新。
+    3. `staged` 下 Planner / Curator Critic 主路径可运行；系统 `pass` 规则（各维 >80 等）不因本修复回退。
+    4. 终态主 `state` 仍不含 `critic`/`control`（v6.6）；审计产物可反映修复后的 Critic 字段。
+
 
 ## 1. 产品背景
 
@@ -796,7 +809,7 @@
 | **Planner（v6.1）** | `meta`、`global_constraints`、历史 `critic.issues` | 按 **Schema_Planner_v4** 负责的 `meta` / `global_constraints` / `plan` / `segments[*]` 规划字段（含主题拆解、能量/声景、段落叙事与声响方向、锚定/参考、序列方向等；以实现字段清单为准） | `segments[*].script`、`critic.*`、`control.*`；playlist 细项解释字段归属 Curator（若 Planner 样例含 playlist 占位，以实现边界为准） |
 | **Music Curator（v6.1）** | `meta`、`global_constraints`、`plan`、`segments[*]` 规划字段、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序）及 **Schema_Music-Curator_v4** 解释字段（如 `selection_reason` / `sequence_role` / `planner_alignment` / `transition_logic`） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
 | **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
-| **Critic（v6.4 / v6.6）** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | **`staged` 按阶段 schema**：Planner Critic 用 Schema_Critic_v4（或 Planner 专用）；**Curator Critic 用 Schema_Curator_Critic_v4**（维度不同）；仅 scores/issues/actions 等，**不含 pass** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**不得输出** `pass` / `threshold` / `control`（由系统派生） |
+| **Critic（v6.4 / v6.6 / v6.7）** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | **`staged` 按阶段 schema**：Planner Critic **无 `overall_score`**，含多维 `scores` / `issues` / `actions`（含 `location`）；**Curator Critic** 用 Schema_Curator_Critic_v4，**`actions` 含 `location`**；均**不含 pass** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**不得输出** `pass` / `threshold` / `control`（由系统派生） |
 | **Orchestrator（流程控制）** | 全量 `state` | 过程态 `control`；**派生写入** `critic.pass`；**`legacy` 下按规则写入 `control.next_agent`**；**`staged` 下按阶段选择 Critic 变体并推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
 
 **契约补充规则**
@@ -808,7 +821,7 @@
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
 - **snapshot（v6.1）**：**snapshot 对外格式不变**，阶段二消费契约不因此变更。
 
-### 6.4 当前版本成功指标（v6.6）
+### 6.4 当前版本成功指标（v6.7）
 
 | 指标 | 目标 |
 |------|------|
@@ -838,6 +851,7 @@
 | **Critic 规则化 pass/路由** | Critic 按 Schema_Critic_v4 只输出评分与 issues/actions；`pass` 与 legacy `next_agent` 由系统规则派生 |
 | **Planner Critic Prompt（staged）** | staged 下 Planner Critic 对齐 Guide；generation/revision 行为分离；维度满分 100、threshold 默认 80 |
 | **Curator Critic 分阶段（staged）** | Curator Critic 使用独立 schema/prompt；终态主 `state` 不含 `critic`/`control` |
+| **Critic Schema 一致性** | Planner Critic 无 `overall_score`；Curator Critic `actions` 含 `location`，与 Planner 对齐 |
 
 ---
 

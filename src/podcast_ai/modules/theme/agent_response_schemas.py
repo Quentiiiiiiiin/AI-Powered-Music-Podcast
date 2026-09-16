@@ -195,7 +195,6 @@ _CRITIC_SCORE_PROPS: dict[str, Any] = {
 _CRITIC_BODY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "overall_score": {"type": "integer", "minimum": 0, "maximum": 100},
         "scores": {
             "type": "object",
             "properties": _CRITIC_SCORE_PROPS,
@@ -205,11 +204,11 @@ _CRITIC_BODY_SCHEMA: dict[str, Any] = {
         "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
         "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
     },
-    "required": ["overall_score", "scores", "issues", "actions"],
+    "required": ["scores", "issues", "actions"],
     "additionalProperties": False,
 }
 
-# v6.4：Planner Critic（legacy 与 staged planner/writer 共用模型字段）
+# v6.4 / v6.7：Planner Critic（无 overall_score；legacy 与 staged planner/writer 共用）
 CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"critic": _CRITIC_BODY_SCHEMA},
@@ -219,7 +218,7 @@ CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
 
 CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = CRITIC_RESPONSE_SCHEMA
 
-# v6.6：Curator Critic（Schema_Curator_Critic_v4；无 overall_score / action.location）
+# v6.6 / v6.7：Curator Critic（actions 含 location，与 Planner 对齐）
 _CURATOR_CRITIC_ISSUE_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -238,9 +237,10 @@ _CURATOR_CRITIC_ACTION_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
         "target_agent": {"type": "string"},
+        "location": {"type": "string"},
         "instruction": {"type": "string"},
     },
-    "required": ["target_agent", "instruction"],
+    "required": ["target_agent", "location", "instruction"],
     "additionalProperties": False,
 }
 

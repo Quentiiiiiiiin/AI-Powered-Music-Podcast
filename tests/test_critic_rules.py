@@ -34,10 +34,8 @@ def _body(
     score: int = 81,
     issues: list | None = None,
     actions: list | None = None,
-    overall_score: int = 81,
 ) -> dict:
     return {
-        "overall_score": overall_score,
         "scores": _scores(score),
         "issues": issues if issues is not None else [],
         "actions": actions if actions is not None else [],

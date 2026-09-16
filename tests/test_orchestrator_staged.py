@@ -78,7 +78,6 @@ class _CriticAlwaysPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "overall_score": 80,
                     "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
@@ -106,7 +105,6 @@ class _CriticPassAfterN(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": passed,
-                    "overall_score": 80 if passed else 40,
                     "scores": _critic_scores(8 if passed else 4),
                     "issues": []
                     if passed
@@ -146,7 +144,6 @@ class _CriticNeverPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": False,
-                    "overall_score": 20,
                     "scores": _critic_scores(3),
                     "issues": [],
                     "actions": [
@@ -247,7 +244,6 @@ def test_staged_fail_mid_stage_no_rollback_to_upstream(tmp_path: Path) -> None:
                 {
                     "critic": {
                         "pass": passed,
-                        "overall_score": 80 if passed else 20,
                         "scores": _critic_scores(8 if passed else 2),
                         "issues": [],
                         "actions": [],
@@ -292,7 +288,6 @@ def test_staged_critic_sanitize_rejects_next_agent() -> None:
         _sanitize_critic_patch_staged(
             {
                 "critic": {
-                    "overall_score": 80,
                     "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],

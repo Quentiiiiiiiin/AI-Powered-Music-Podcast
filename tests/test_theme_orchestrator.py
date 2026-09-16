@@ -72,7 +72,6 @@ class _CriticStubOncePass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "overall_score": 80,
                     "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
@@ -99,7 +98,6 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
                 {
                     "critic": {
                         "pass": False,
-                        "overall_score": 40,
                         "scores": _critic_scores(5),
                         "issues": [
                             {
@@ -128,7 +126,6 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "overall_score": 80,
                     "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
@@ -148,7 +145,6 @@ class _CriticStubNeverPass(_TraceAgentBase, CriticAgent):
         state = self._append_trace(state)
         critic = {
             "pass": False,
-            "overall_score": 30,
             "scores": _critic_scores(5),
             "issues": [],
             "actions": [

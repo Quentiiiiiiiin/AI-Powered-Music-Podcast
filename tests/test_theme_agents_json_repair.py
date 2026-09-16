@@ -210,7 +210,6 @@ def test_critic_agent_json_repair_success(tmp_path: Path) -> None:
     ```json
     {
       "critic": {
-        "overall_score": 85,
         "scores": {
           "theme_definition": 85,
           "theme_relationship": 85,

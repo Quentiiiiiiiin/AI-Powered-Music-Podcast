@@ -210,7 +210,6 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     payload = {
         "critic": {
-            "overall_score": 85,
             "scores": {
                 "theme_definition": 85,
                 "theme_relationship": 85,

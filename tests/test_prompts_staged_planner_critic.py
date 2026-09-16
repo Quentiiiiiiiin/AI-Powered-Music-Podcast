@@ -16,7 +16,6 @@ def _minimal_state(*, with_prev_critic: bool = False) -> dict:
         "plan": {},
         "segments": [],
         "critic": {
-            "overall_score": 60,
             "scores": {
                 "theme_definition": 60,
                 "theme_relationship": 60,

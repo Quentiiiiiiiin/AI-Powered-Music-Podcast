@@ -75,7 +75,6 @@
   ],
   "critic": {
     "pass": false,
-    "overall_score": 0,
     "scores": {
       "theme_definition": 0,
       "theme_relationship": 0,
