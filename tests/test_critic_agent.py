@@ -140,7 +140,8 @@ def test_v65_staged_does_not_write_next_agent() -> None:
     assert next_state["control"]["next_agent"] == "Planner"
 
 
-def test_v65_planner_revision_rejects_new_issues() -> None:
+def test_v68_planner_revision_allows_new_issue_wording() -> None:
+    """v6.8：revision 换 problem / 新指纹不再硬失败。"""
     state = initialize_plan_state(_request())
     state["critic"]["scores"] = _scores(60)
     state["critic"]["issues"] = [
@@ -161,7 +162,7 @@ def test_v65_planner_revision_rejects_new_issues() -> None:
                     "type": "x",
                     "severity": "critical",
                     "location": "plan",
-                    "problem": "brand new issue",
+                    "problem": "brand new issue wording",
                     "listener_impact": "i",
                     "suggestion": "s",
                 }
@@ -170,5 +171,6 @@ def test_v65_planner_revision_rejects_new_issues() -> None:
         )
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
-    with pytest.raises(AIServiceError, match="禁止新增 issues"):
-        agent.run(state, mode="revision", orchestration_mode="staged", stage="planner")
+    next_state = agent.run(state, mode="revision", orchestration_mode="staged", stage="planner")
+    assert next_state["critic"]["issues"][0]["problem"] == "brand new issue wording"
+    assert next_state["critic"]["pass"] is False

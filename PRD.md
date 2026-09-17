@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.7  
+**文档版本**：v6.8  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.7）
+**产品阶段**：迭代验证中（进入 v6.8）
 
 ---
 
@@ -560,6 +560,22 @@
     3. `staged` 下 Planner / Curator Critic 主路径可运行；系统 `pass` 规则（各维 >80 等）不因本修复回退。
     4. 终态主 `state` 仍不含 `critic`/`control`（v6.6）；审计产物可反映修复后的 Critic 字段。
 
+- **v6.8（迭代三十七：revision 护栏放宽 + 失败路径补写 snapshot）**：
+  - **问题**：
+    1. `staged` 下 Critic **revision** 曾用「前后 `issue.problem` 文本是否一致」护栏判定是否出现 new issue；同一问题换表述即被误判，导致流程报错中止，拉低整体成功率。
+    2. 运行报错时虽写出 `state_partial` 与审计，但**未**写出可被 Console / 阶段二消费的 **snapshot**，高完成度策划无法复用。
+  - **变更目标**：
+    1. **关闭**上述「revision 禁止新 issue / 以 `problem` 文本比对」的系统护栏；是否出现新 issues **不以规则硬判**，更**不得**因此报错停止运行（prompt 侧引导可保留，但不作为硬失败条件）。
+    2. 失败或中断时，在写出 `state_partial` 的同一目录，**基于 `state_partial` 再写出可被前端 Console 消费的 snapshot**（字段契约与既有 snapshot 一致，命名由实现约定并文档化）。
+  - **功能归类**：**优化**（提升成功率 / 稳定性）+ **bug 修复**（失败路径缺少可消费 snapshot）。
+  - **User Story（用户视角）**：作为使用 staged 的开发者，我希望 Critic revision 不再因措辞差异被护栏误杀；即便中途报错，也能在 partial 旁拿到可打开、可编辑、可交给下游的 snapshot，不浪费已完成的策划。
+  - **Acceptance Criteria（验收标准）**：
+    1. revision 路径**不再**因「`issue.problem` 文本不一致 / 疑似新 issue」触发硬校验失败或中止流程。
+    2. 正常成功路径行为与既有 `pass` / 闸门预算不受本迭代破坏；审计仍完整保留各次 Agent 输出。
+    3. 报错或阶段失败写出 `state_partial` 时，**同目录**同步产出可被 Console 加载的 snapshot（可由 `state_partial` 派生）。
+    4. 该失败路径 snapshot 字段契约与既有成功路径 snapshot 对齐，可供阶段二或 Console 继续消费（内容完整度以 partial 所能覆盖为限）。
+    5. 不因本迭代回退 v6.6/v6.7 的 Critic schema 与终态 `state` 精简约定。
+
 
 ## 1. 产品背景
 
@@ -817,11 +833,11 @@
 - 写入必须是结构化 JSON，禁止自由文本拼接覆盖整个 state。
 - **v6.4 / v6.5 / v6.6**：`critic.pass` 由系统规则判定（各维得分 **> 80**/100，且仅有 minor issues 或无 actions）；Critic 模型不再直接输出 `pass`。
 - **`legacy`（v6.4）**：`next_agent` 由系统根据 `actions` 目标 Agent，按 Planner → Music Curator → Script Writer 取最先顺位；达到全局 `max_iterations` 仍未通过时结束回修。
-- **`staged`（v6.0 / v6.6）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；**Planner / Curator（及未来 Writer）Critic 使用各自 schema+prompt**；阶段失败仍输出主 snapshot（可被阶段二消费）并保留审计。
+- **`staged`（v6.0 / v6.6 / v6.8）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；**Planner / Curator（及未来 Writer）Critic 使用各自 schema+prompt**；阶段失败仍应输出可被阶段二/Console 消费的 snapshot 并保留审计。**v6.8**：revision **不以** `issue.problem` 文本比对做「禁止新 issue」硬护栏，更不得因此中止运行。
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
-- **snapshot（v6.1）**：**snapshot 对外格式不变**，阶段二消费契约不因此变更。
+- **snapshot（v6.1 / v6.8）**：**snapshot 对外格式不变**；**v6.8** 在写出 `state_partial` 的失败路径上，须于**同目录**再写一份由 partial 派生的可消费 snapshot。
 
-### 6.4 当前版本成功指标（v6.7）
+### 6.4 当前版本成功指标（v6.8）
 
 | 指标 | 目标 |
 |------|------|
@@ -852,6 +868,8 @@
 | **Planner Critic Prompt（staged）** | staged 下 Planner Critic 对齐 Guide；generation/revision 行为分离；维度满分 100、threshold 默认 80 |
 | **Curator Critic 分阶段（staged）** | Curator Critic 使用独立 schema/prompt；终态主 `state` 不含 `critic`/`control` |
 | **Critic Schema 一致性** | Planner Critic 无 `overall_score`；Curator Critic `actions` 含 `location`，与 Planner 对齐 |
+| **revision 护栏不误杀** | staged Critic revision 不以 `problem` 文本比对硬判新 issue，不因此中止运行 |
+| **失败路径可消费 snapshot** | 写出 `state_partial` 时同目录同步产出可被 Console/阶段二消费的 snapshot |
 
 ---
 

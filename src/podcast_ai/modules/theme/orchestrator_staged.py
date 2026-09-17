@@ -25,7 +25,7 @@ from podcast_ai.modules.theme.music_curator_agent import MusicCuratorAgent
 from podcast_ai.modules.theme.plan_audit import FilePlanAuditSink, PlanAuditSink
 from podcast_ai.modules.theme.planner_agent import PlannerAgent
 from podcast_ai.modules.theme.script_writer_agent import ScriptWriterAgent
-from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, initialize_plan_state, merge_plan_state
+from podcast_ai.modules.theme.state import PlanState, assert_plan_state_valid, ensure_segment_snapshot_defaults, initialize_plan_state, merge_plan_state
 
 logger = logging.getLogger(__name__)
 
@@ -44,36 +44,8 @@ _STAGES: tuple[tuple[StageSlug, str], ...] = (
 
 
 def _ensure_segment_snapshot_defaults(state: PlanState) -> PlanState:
-    """保证 segments 具备 playlist/script，便于失败路径仍可构建 snapshot。"""
-    segs = state.get("segments")
-    if not isinstance(segs, list):
-        return state
-    patched = False
-    new_segs = []
-    for seg in segs:
-        if not isinstance(seg, dict):
-            new_segs.append(seg)
-            continue
-        s = dict(seg)
-        if "playlist" not in s:
-            s["playlist"] = []
-            patched = True
-        if "script" not in s or not isinstance(s.get("script"), dict):
-            s["script"] = {"segment_intro": "", "between_tracks": []}
-            patched = True
-        else:
-            script = dict(s["script"])
-            if "segment_intro" not in script:
-                script["segment_intro"] = ""
-                patched = True
-            if "between_tracks" not in script:
-                script["between_tracks"] = []
-                patched = True
-            s["script"] = script
-        new_segs.append(s)
-    if not patched:
-        return state
-    return merge_plan_state(state, {"segments": new_segs})
+    """兼容旧名；实现见 state.ensure_segment_snapshot_defaults。"""
+    return ensure_segment_snapshot_defaults(state)
 
 
 class StagedPlanOrchestrator:

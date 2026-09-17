@@ -535,6 +535,39 @@ def validate_state_subset_for_single_agent(state: PlanState) -> None:
     validate_state_conforms_to_schema(state, agent_mode="single_agent")
 
 
+def ensure_segment_snapshot_defaults(state: PlanState) -> PlanState:
+    """保证 segments 具备 playlist/script，便于失败路径仍可构建 snapshot（v6.0 / v6.8）。"""
+    segs = state.get("segments")
+    if not isinstance(segs, list):
+        return state
+    patched = False
+    new_segs: List[Any] = []
+    for seg in segs:
+        if not isinstance(seg, dict):
+            new_segs.append(seg)
+            continue
+        s = dict(seg)
+        if "playlist" not in s:
+            s["playlist"] = []
+            patched = True
+        if "script" not in s or not isinstance(s.get("script"), dict):
+            s["script"] = {"segment_intro": "", "between_tracks": []}
+            patched = True
+        else:
+            script = dict(s["script"])
+            if "segment_intro" not in script:
+                script["segment_intro"] = ""
+                patched = True
+            if "between_tracks" not in script:
+                script["between_tracks"] = []
+                patched = True
+            s["script"] = script
+        new_segs.append(s)
+    if not patched:
+        return state
+    return merge_plan_state(state, {"segments": new_segs})
+
+
 def validate_episode_snapshot_subset(snapshot: dict[str, Any]) -> None:
     """
     v3.8 fix：校验 `{episode_id}.json` 子集结构。

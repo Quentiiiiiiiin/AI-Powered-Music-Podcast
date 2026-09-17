@@ -310,6 +310,11 @@ def format_audit_state_partial_filename(iteration: int) -> str:
     return f"iteration{int(iteration)}_state_partial.json"
 
 
+def format_audit_failure_snapshot_filename(iteration: int) -> str:
+    """v6.8：与 state_partial 同目录的可消费 snapshot：``iteration{i}_snapshot.json``。"""
+    return f"iteration{int(iteration)}_snapshot.json"
+
+
 def format_audit_staged_agent_filename(stage: str, revision: int, agent_slug: str) -> str:
     """
     v6.0 staged 审计命名：``stage_{stage}_rev{r}_{agent_slug}.json``。
@@ -331,4 +336,10 @@ def format_audit_staged_state_partial_filename(stage: str, revision: int) -> str
     """v6.0 staged：``stage_{stage}_rev{r}_state_partial.json``。"""
     safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
     return f"stage_{safe_stage}_rev{int(revision)}_state_partial.json"
+
+
+def format_audit_staged_failure_snapshot_filename(stage: str, revision: int) -> str:
+    """v6.8：与 staged partial 同目录：``stage_{stage}_rev{r}_snapshot.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_snapshot.json"
 

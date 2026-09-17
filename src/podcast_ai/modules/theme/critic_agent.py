@@ -19,7 +19,6 @@ from podcast_ai.modules.theme.critic_rules import (
     CURATOR_CRITIC_SEVERITIES,
     PLANNER_CRITIC_SCORE_DIMS,
     PLANNER_CRITIC_SEVERITIES,
-    assert_staged_revision_constraints,
     derive_critic_pass,
     derive_next_agent,
     normalize_target_agent,
@@ -57,7 +56,6 @@ def _staged_critic_profile(stage: str) -> dict[str, Any]:
             "severities": CURATOR_CRITIC_SEVERITIES,
             "issue_keys": _CURATOR_ISSUE_KEYS,
             "action_keys": _CURATOR_ACTION_KEYS,
-            "revision_label": "curator revision",
         }
     # planner / script_writer：暂用 Planner Critic 契约（Writer 专用 Guide 本轮不做）
     return {
@@ -67,7 +65,6 @@ def _staged_critic_profile(stage: str) -> dict[str, Any]:
         "severities": PLANNER_CRITIC_SEVERITIES,
         "issue_keys": _PLANNER_ISSUE_KEYS,
         "action_keys": _PLANNER_ACTION_KEYS,
-        "revision_label": "planner revision",
     }
 
 
@@ -116,7 +113,6 @@ class CriticAgent:
                 "severities": PLANNER_CRITIC_SEVERITIES,
                 "issue_keys": _PLANNER_ISSUE_KEYS,
                 "action_keys": _PLANNER_ACTION_KEYS,
-                "revision_label": "legacy revision",
             }
             messages = build_critic_agent_messages(state, mode)
             schema = profile["schema"]
@@ -169,17 +165,7 @@ class CriticAgent:
             action_keys=profile["action_keys"],
         )
 
-        mode_n = (mode or "").strip().lower()
-        # revision 护栏：仅 staged 的 planner / music_curator（按本阶段维）
-        if orch == "staged" and mode_n == "revision" and stage in ("planner", "music_curator"):
-            prev_critic = state.get("critic") if isinstance(state.get("critic"), dict) else None
-            assert_staged_revision_constraints(
-                prev_critic,
-                model_body,
-                score_dims=profile["score_dims"],
-                label=profile["revision_label"],
-            )
-
+        # v6.8：不再对 revision「新 issue / 分数不降」做系统硬护栏（prompt 软引导仍保留）
         passed, thr = derive_critic_pass(
             model_body,
             score_dims=profile["score_dims"],

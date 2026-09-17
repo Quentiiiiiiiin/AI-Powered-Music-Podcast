@@ -1,14 +1,12 @@
-"""v6.5：Critic 系统规则（pass / next_agent / planner revision 护栏）。"""
+"""v6.5 / v6.8：Critic 系统规则（pass / next_agent；revision 硬护栏已移除）。"""
 from __future__ import annotations
 
 import pytest
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.modules.theme.critic_rules import (
-    CURATOR_CRITIC_SCORE_DIMS,
     CRITIC_SCORE_DIMS,
     DEFAULT_CRITIC_THRESHOLDS,
-    assert_planner_revision_constraints,
     derive_critic_pass,
     derive_next_agent,
 )
@@ -137,29 +135,3 @@ def test_next_agent_fallback_when_fail_without_actions() -> None:
         "Music Curator"
     )
     assert derive_next_agent(_body(actions=[]), passed=False, previous_next_agent=None) == "Planner"
-
-
-def test_planner_revision_rejects_new_issue_fingerprint() -> None:
-    prev = {"scores": _scores(70), "issues": [_issue(location="plan", problem="old")]}
-    new = _body(score=75, issues=[_issue(location="plan", problem="brand new")])
-    with pytest.raises(AIServiceError, match="禁止新增 issues"):
-        assert_planner_revision_constraints(prev, new)
-
-
-def test_planner_revision_rejects_score_drop_when_issues_shrink() -> None:
-    prev = {
-        "scores": _scores(70),
-        "issues": [_issue(location="a", problem="1"), _issue(location="b", problem="2")],
-    }
-    new = _body(score=65, issues=[_issue(location="a", problem="1")])
-    with pytest.raises(AIServiceError, match="不得低于上一轮"):
-        assert_planner_revision_constraints(prev, new)
-
-
-def test_planner_revision_allows_score_hold_when_issues_shrink() -> None:
-    prev = {
-        "scores": _scores(70),
-        "issues": [_issue(location="a", problem="1"), _issue(location="b", problem="2")],
-    }
-    new = _body(score=70, issues=[_issue(location="a", problem="1")])
-    assert_planner_revision_constraints(prev, new)  # no raise
