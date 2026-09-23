@@ -27,7 +27,7 @@ from podcast_ai.console.option_catalogs import (
     voices_for_tts,
 )
 from podcast_ai.console.presets import list_preset_names, load_preset_by_name, save_preset
-from podcast_ai.console.run_progress import progress_from_events
+from podcast_ai.console.run_progress import parse_plan_progress_from_logs, progress_from_events
 from podcast_ai.console.runner import (
     ConsoleParams,
     ConsoleRunResult,
@@ -73,6 +73,9 @@ def _params_from_form(
     openrouter_provider: str,
     llm_base_url: str,
     web_search_enabled: bool | None,
+    web_search_engine: str,
+    web_search_max_results: float | int | None,
+    web_search_max_uses: float | int | None,
     snapshot_path: str,
     music_dir: str,
     tts_provider: str,
@@ -87,6 +90,7 @@ def _params_from_form(
     voice_gain_db: float | None,
     voice_music_overlay_music_max_db: float | None,
     voice_music_post_overlay_ramp_seconds: float | None,
+    debug: bool | None,
 ) -> ConsoleParams:
     defaults = defaults_from_settings()
     return ConsoleParams(
@@ -104,6 +108,17 @@ def _params_from_form(
             defaults.web_search_enabled
             if web_search_enabled is None
             else bool(web_search_enabled)
+        ),
+        web_search_engine=web_search_engine or "auto",
+        web_search_max_results=int(
+            web_search_max_results
+            if web_search_max_results is not None
+            else defaults.web_search_max_results
+        ),
+        web_search_max_uses=(
+            None
+            if web_search_max_uses is None or web_search_max_uses == ""
+            else int(web_search_max_uses)
         ),
         snapshot_path=snapshot_path or "",
         music_dir=music_dir or defaults.music_dir,
@@ -143,6 +158,7 @@ def _params_from_form(
             if voice_music_post_overlay_ramp_seconds is not None
             else defaults.voice_music_post_overlay_ramp_seconds
         ),
+        debug=bool(debug),
     )
 
 
@@ -194,6 +210,7 @@ _INSIGHT_IDLE = (
     "**stage**: `—`  \n"
     "**revision**: `—`  \n"
     "**当前 Agent**: `—`  \n"
+    "**web_search_requests**: `—`  \n"
     "**失败原因**: `—`"
 )
 
@@ -204,7 +221,7 @@ def _insight_md(
     agent_mode: str = "",
     orchestration_mode: str = "",
 ) -> str:
-    """阶段一运行态：mode / iteration / stage / revision / Agent / 失败原因。"""
+    """阶段一运行态：mode / iteration / stage / revision / Agent / web_search_requests / 失败原因。"""
     if result.status == "idle":
         return _INSIGHT_IDLE
     it = result.plan_iteration
@@ -219,18 +236,22 @@ def _insight_md(
         agent_disp = agent or "single_agent"
         stage_disp = "N/A"
         rev_disp = "N/A"
+        ws_disp = "N/A"
     elif result.status == "running" and it is None and not agent and not stage:
         orch_disp = orch
         it_disp = "…"
         agent_disp = "…"
         stage_disp = "…"
         rev_disp = "…"
+        ws_disp = "…"
     else:
         orch_disp = orch
         it_disp = "N/A" if it is None else str(it)
         agent_disp = agent or "N/A"
         stage_disp = stage or "N/A"
         rev_disp = "N/A" if revision is None else str(revision)
+        ws_n = result.plan_web_search_requests
+        ws_disp = "N/A" if ws_n is None else str(ws_n)
     if result.status == "error":
         fail = (result.error or "").strip() or "未知错误"
     else:
@@ -241,6 +262,7 @@ def _insight_md(
         f"**stage**: `{stage_disp}`  \n"
         f"**revision**: `{rev_disp}`  \n"
         f"**当前 Agent**: `{agent_disp}`  \n"
+        f"**web_search_requests**: `{ws_disp}`  \n"
         f"**失败原因**: {fail}"
     )
 
@@ -281,6 +303,7 @@ def _yield_run(
 def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
     """计划运行：先标 running，再按进度钩子刷新洞察，最后给出完整结果。"""
     sink: list[dict[str, Any]] = []
+    log_sink: list[str] = []
     running = ConsoleRunResult.running("plan")
     orch = str(settings_from_params(params).app.orchestration_mode)
     running.orchestration_mode = orch
@@ -291,7 +314,7 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
     holder: list[ConsoleRunResult] = []
 
     def _work() -> None:
-        holder.append(run_plan(params, progress_sink=sink))
+        holder.append(run_plan(params, progress_sink=sink, log_sink=log_sink))
 
     worker = threading.Thread(target=_work, daemon=True)
     worker.start()
@@ -300,10 +323,12 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
         if not worker.is_alive():
             break
         hooked = progress_from_events(sink)
+        from_logs = parse_plan_progress_from_logs("\n".join(log_sink))
         running.plan_iteration = hooked.iteration
         running.plan_current_agent = hooked.current_agent
         running.plan_stage = hooked.stage
         running.plan_revision = hooked.revision
+        running.plan_web_search_requests = from_logs.web_search_requests
         if params.agent_mode == "single_agent" and not running.plan_current_agent:
             running.plan_current_agent = "single_agent"
         packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
@@ -372,6 +397,12 @@ def build_app():
                 refresh_btn = gr.Button("刷新列表")
             preset_msg = gr.Markdown("")
 
+        debug = gr.Checkbox(
+            label="DEBUG 全量日志",
+            info="等价 CLI --log-level DEBUG；日志区含 DEBUG 行，失败时错误框附 traceback 末段（不含密钥）",
+            value=False,
+        )
+
         with gr.Tabs():
             with gr.Tab("阶段一 · 计划生成"):
                 topic = gr.Textbox(label="topic", placeholder="Late Night Chill Electronic", lines=2)
@@ -422,15 +453,32 @@ def build_app():
                 )
                 web_search_enabled = gr.Checkbox(
                     label="联网搜索（OpenRouter web_search）",
-                    info="本次 Run 覆盖 llm.web_search.enabled；仅 OpenRouter 时注入。会产生搜索费用。",
+                    info="本次 Run 覆盖 enabled；仅 OpenRouter 时注入。会产生搜索费用。",
                     value=defaults.web_search_enabled,
                 )
-                _ws = load_settings().llm.web_search
-                _ws_uses = "不限制" if _ws.max_uses is None else str(_ws.max_uses)
-                gr.Markdown(
-                    f"_engine=`{_ws.engine}` · max_results=`{_ws.max_results}` · "
-                    f"max_uses=`{_ws_uses}`（只读，改 `config.yaml`）_"
+                web_search_engine = gr.Dropdown(
+                    label="搜索引擎 engine",
+                    choices=["auto", "native", "exa", "firecrawl", "parallel", "perplexity"],
+                    value=defaults.web_search_engine or "auto",
+                    info="默认 auto；非 OpenRouter 时即使填写也不会注入",
                 )
+                with gr.Row():
+                    web_search_max_results = gr.Number(
+                        label="max_results（每次搜索条数）",
+                        value=defaults.web_search_max_results,
+                        minimum=1,
+                        maximum=25,
+                        precision=0,
+                        info="默认 5；范围 1–25",
+                    )
+                    web_search_max_uses = gr.Number(
+                        label="max_uses（单次请求搜索次数上限）",
+                        value=defaults.web_search_max_uses,
+                        minimum=0,
+                        precision=0,
+                        info="留空或 0=不限制；会产生搜索费用",
+                    )
+                gr.Markdown("_非 OpenRouter 时以上参数可编辑，但请求不会注入 web_search。_")
                 plan_btn = gr.Button("Run Plan", variant="primary")
                 gr.Markdown("#### 运行态洞察")
                 plan_insight_md = gr.Markdown(_INSIGHT_IDLE)
@@ -577,7 +625,7 @@ def build_app():
         obs_insight_md = gr.Markdown(_INSIGHT_IDLE)
         summary_md = gr.Markdown("")
         artifacts_md = gr.Markdown("_（尚无产物路径）_")
-        error_box = gr.Textbox(label="错误", lines=4, interactive=False)
+        error_box = gr.Textbox(label="错误", lines=8, interactive=False)
         audio_out = gr.Audio(label="音频预览（final mp3 / 若存在）", type="filepath", interactive=False)
         show_notes_box = gr.Textbox(label="Show Notes", lines=8, interactive=False)
         logs_box = gr.Textbox(label="日志", lines=12, interactive=False)
@@ -594,6 +642,9 @@ def build_app():
             openrouter_provider,
             llm_base_url,
             web_search_enabled,
+            web_search_engine,
+            web_search_max_results,
+            web_search_max_uses,
             snapshot_path,
             music_dir,
             tts_provider,
@@ -608,6 +659,7 @@ def build_app():
             voice_gain_db,
             voice_music_overlay_music_max_db,
             voice_music_post_overlay_ramp_seconds,
+            debug,
         ]
         result_outputs = [
             status_md,
@@ -1046,6 +1098,9 @@ def build_app():
                 gr.update(value=provider, choices=provider_dropdown_choices(model, provider)),
                 base_url,
                 merged.get("web_search_enabled", False),
+                merged.get("web_search_engine") or "auto",
+                merged.get("web_search_max_results", 5),
+                merged.get("web_search_max_uses"),
                 merged["snapshot_path"],
                 merged["music_dir"],
                 tts_prov,
@@ -1068,6 +1123,7 @@ def build_app():
                 merged.get("voice_gain_db", 0.0),
                 merged.get("voice_music_overlay_music_max_db", 0.0),
                 merged.get("voice_music_post_overlay_ramp_seconds", 0.0),
+                merged.get("debug", False),
             ]
             return [*updates, tts_msg, f"已加载 `{name}`"]
 

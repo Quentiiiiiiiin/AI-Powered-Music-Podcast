@@ -101,3 +101,14 @@ def test_empty_logs_yield_none_fields() -> None:
     assert prog.iteration is None
     assert prog.current_agent is None
     assert prog.failure_reason is None
+    assert prog.web_search_requests is None
+
+
+def test_parse_web_search_requests_from_logs() -> None:
+    logs = """
+LLM request (sanitized) web_search=on engine=auto max_results=5: {}
+LLM usage server_tool_use.web_search_requests=2
+LLM usage server_tool_use.web_search_requests=4
+""".strip()
+    prog = parse_plan_progress_from_logs(logs)
+    assert prog.web_search_requests == 4

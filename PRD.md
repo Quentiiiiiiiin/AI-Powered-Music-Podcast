@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v7.0  
+**文档版本**：v7.1  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v7.0）
+**产品阶段**：迭代验证中（进入 v7.1）
 
 ---
 
@@ -593,6 +593,26 @@
     4. `config` 可开关并可调整关键搜索参数；修改后无需改业务代码即可生效（Console 若本轮暴露开关为加分项，非必须）。
     5. 日志/审计至少能区分「已启用 web_search」；在 API 返回用量字段时可复查搜索次数。
 
+- **v7.1（迭代三十九：Console 调试可观测性增强 + 联网搜索控件）**：
+  - **问题**：
+    1. Console 执行 plan / stage2 / stage3 / create 等操作时日志颗粒度不足，报错后难定位；CMD 下可用 `podcast-ai --log-level DEBUG` 看全量日志，Console 尚无对等能力。
+    2. `staged` 下 Agent 返回解析失败（如「Critic Agent JSON解析失败」）时，审计**未**保存该次 Agent 原始返回，无法对照失败内容。
+    3. v7.0 联网搜索的 `web_search_requests` 尚未在 Console **运行态洞察**中展示。
+    4. Console 尚未暴露 web_search 的 `engine` / `max_results` / `max_uses`，调试需改 YAML。
+  - **变更目标**：
+    1. Console 支持 **DEBUG 全量日志**观测（覆盖 plan / stage2 / stage3 / create 等入口）；DEBUG 下报错须展示更详细错误信息，达到与 CLI `--log-level DEBUG` 相当的排查能力。
+    2. Agent **JSON/结构化解析失败**时，将该次 Agent **原始返回内容**写入审计产物（与既有按 Agent 落盘约定对齐），便于事后对照。
+    3. 运行态洞察展示当前（或最近一次）Agent 的 **`web_search_requests` 次数**（无用量或未启用时明确显示 0 / N/A，以实现约定为准）。
+    4. Console 可配置联网搜索：`engine`（下拉：`auto` / `native` / `exa` / `firecrawl` / `parallel` / `perplexity`）、`max_results`（默认 **5**）、`max_uses`（默认 **不限制**）；与 v7.0 config / 请求参数对齐。
+  - **功能归类**：**优化**（Console 调试效率）+ **bug 修复**（解析失败审计缺口）+ **新功能**（运行态 web_search 次数与 Console 搜索参数控件）。
+  - **User Story（用户视角）**：作为用 Console 调试的开发者，我希望能像 CMD DEBUG 一样看到全量日志与详细报错；解析失败时审计里能看到 Agent 原话；运行中能看到本次搜了几次网，并能在面板上直接改 engine / max_results / max_uses。
+  - **Acceptance Criteria（验收标准）**：
+    1. Console 开启 DEBUG（或等价控件）后，plan / stage2 / stage3 / create 等操作可观测全量日志；失败时可见比默认更详细的报错信息。
+    2. Agent 返回解析失败时，审计目录中存在该次 Agent 的原始返回（或等价可复查落盘）；不得仅有错误摘要而无原文。
+    3. 运行态洞察可展示当前 Agent 的 `web_search_requests`（有用量则显示次数；未启用/无字段时有明确占位，不静默空白误导）。
+    4. Console 可设置 `engine`（上述 6 项下拉）、`max_results`（默认 5）、`max_uses`（默认不限制），并实际作用于 OpenRouter `openrouter:web_search` 请求参数。
+    5. 不破坏 v7.0 联网搜索主路径、结构化输出及既有 snapshot / 终态 state 契约。
+
 
 ## 1. 产品背景
 
@@ -853,9 +873,10 @@
 - **`staged`（v6.0 / v6.6 / v6.8）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；**Planner / Curator（及未来 Writer）Critic 使用各自 schema+prompt**；阶段失败仍应输出可被阶段二/Console 消费的 snapshot 并保留审计。**v6.8**：revision **不以** `issue.problem` 文本比对做「禁止新 issue」硬护栏，更不得因此中止运行。
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
 - **snapshot（v6.1 / v6.8）**：**snapshot 对外格式不变**；**v6.8** 在写出 `state_partial` 的失败路径上，须于**同目录**再写一份由 partial 派生的可消费 snapshot。
-- **联网搜索（v7.0）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。
+- **联网搜索（v7.0 / v7.1）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。**v7.1**：Console 可配 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）；运行态洞察展示 `web_search_requests`。
+- **审计完整性（v7.1）**：Agent 输出解析失败时，仍须落盘该次**原始返回**，不得因解析失败而跳过审计写入。
 
-### 6.4 当前版本成功指标（v7.0）
+### 6.4 当前版本成功指标（v7.1）
 
 | 指标 | 目标 |
 |------|------|
@@ -889,6 +910,9 @@
 | **revision 护栏不误杀** | staged Critic revision 不以 `problem` 文本比对硬判新 issue，不因此中止运行 |
 | **失败路径可消费 snapshot** | 写出 `state_partial` 时同目录同步产出可被 Console/阶段二消费的 snapshot |
 | **OpenRouter 联网搜索（全 Agent）** | OpenRouter 下可配置启用 `openrouter:web_search`；各 Agent 按需联网；与结构化输出及 snapshot 契约兼容 |
+| **Console DEBUG 全量日志** | Console 可观测与 CLI `--log-level DEBUG` 对等的全量日志；失败时有更详细报错 |
+| **解析失败审计原文** | Agent JSON/结构化解析失败时审计仍保存该次原始返回 |
+| **Console 联网搜索调试** | 运行态洞察展示 `web_search_requests`；可配 engine / max_results / max_uses（默认 auto / 5 / 不限制） |
 
 ---
 
@@ -906,9 +930,9 @@
 
 | 需求 | 说明 |
 |------|------|
-| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。Console 支持混音/编排/LLM/TTS 可视化配置（v6.2）；多 agent 编排默认 `staged`，可切 `legacy`（v6.0） |
-| **错误提示** | 关键步骤失败时给出明确错误信息 |
-| **日志** | 记录主要步骤执行状态，便于排查问题 |
+| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。Console 支持混音/编排/LLM/TTS 可视化配置（v6.2）；多 agent 编排默认 `staged`，可切 `legacy`（v6.0）；**v7.1** 支持 DEBUG 全量日志与联网搜索参数控件 |
+| **错误提示** | 关键步骤失败时给出明确错误信息；Console DEBUG 下展示更详细报错 |
+| **日志** | 记录主要步骤执行状态；Console 可选 DEBUG 全量日志便于排查 |
 
 ### 7.3 可维护性需求
 

@@ -1,107 +1,110 @@
-﻿## 版本 v7.0（迭代三十八：OpenRouter Server Tool 联网搜索接入全 Agent）
+﻿## 版本 v7.1（迭代三十九：Console 调试可观测性增强 + 联网搜索控件）
 
-基于 PRD **v7.0** 与 ARCHITECTURE **AD-v7.0**：经 OpenRouter 时，在 LLM 请求中统一附带 Server Tool **`openrouter:web_search`**，覆盖阶段一**每一个** Agent 调用（`staged` / `legacy` / 各阶段 Critic；同客户端的 `single_agent` 一并生效）。模型按需搜索；OpenRouter 服务端执行。
+基于 PRD **v7.1**：补齐 Console 与 CLI `--log-level DEBUG` 对等的排查能力；修复 Agent **解析失败时审计无原文**的缺口；在运行态洞察展示 `web_search_requests`；Console 暴露 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）。
 
-**选型硬约束**：
-- **只用** `tools: [{ "type": "openrouter:web_search", "parameters": {…} }]`
-- **禁止**弃用路径：`plugins: [{ id: "web" }]`、模型名 `:online` 后缀
-- 参考：`OpenRouter_Web_Search_Guide.md`
-
-**架构原则（避免过度设计）**：
-- 能力落在 **`infra/llm_client.py` + `infra/config.py`**；Agent / Orchestrator / sanitize **不改**业务 I/O
-- 与既有 `response_format` / json_schema **并存**；不改 snapshot、终态 `state` 精简、编排 FSM
-- Console 暴露开关
+**硬约束**：
+- 不破坏 v7.0 联网搜索主路径、结构化输出、snapshot / 终态 `state` 契约。
+- Console 仍只装配 Settings / pipeline，不复制 Agent 业务逻辑。
+- 避免过度设计：DEBUG 用现有 logging；用量优先复用日志/轻量回传，不另造监控子系统。
 
 ---
 
-### Task 01 - 配置：`web_search` 开关与参数
-- **Task name**: v7.0 - llm.web_search Settings
-- **目标**: 在 Settings / `config.example.yaml` / init-config 模板增加联网搜索配置；非法值明确报错；环境变量可覆盖（与现有 pydantic-settings 风格一致）。
+### Task 01 - Console DEBUG 全量日志 + 详细报错
+- **Task name**: v7.1 - Console DEBUG log level
+- **目标**: Console 提供 DEBUG（或等价）控件；开启后 plan / stage2 / stage3 / create 等 Run 可在日志区看到 DEBUG 级全量日志；失败时错误展示比默认更详细（含异常链/关键上下文，以实现简洁为准）。
+- **类型**: frontend
+- **依赖关系**: 无
+- **Description**:
+  - 现状：`runner._run_command` 将 root logger 提到 INFO 并缓冲 handler 行。
+  - 扩展：`ConsoleParams` 增加 `log_level`/`debug`；Run 期间 `root.setLevel(DEBUG)`（结束后恢复）；日志框展示缓冲全文。
+  - 错误路径：DEBUG 下 `error`/`summary` 可附 `repr(exc)` 或 `traceback` 末段（注意勿泄露 api_key）。
+  - 覆盖所有经 `_run_command` 的入口；Preset 可纳入该字段（可选）。
+- **Input**: 现有 `console/runner.py`、`app.py`
+- **Output**: 与 CLI DEBUG 相当的 Console 日志可观测性
+- **Files involved**:
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/presets.py`（可选）
+- **Estimated complexity**: S–M（1–2 小时）
+
+---
+
+### Task 02 - 解析失败仍落盘 Agent 原始返回
+- **Task name**: v7.1 - audit raw on parse failure
+- **目标**: 任一 Agent（Planner / Curator / Writer / Critic，含 staged）在 JSON/结构化解析失败时，审计目录仍写出该次 **原始返回**（与既有 `write_agent_artifact` 约定对齐）；不得仅有错误摘要而无原文。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 建议挂在 `llm` 下，例如 `llm.web_search`：
-    - `enabled: bool`（必有；默认值实现选定并在 README 写清，建议默认 `false` 控成本，或 `true` 开箱可用——二选一）
-    - `engine: str = "auto"`
-    - `max_results: int = 5`（建议校验 1–25）
-    - `max_uses: int | null = None`（可选；有值才写入 parameters）
-  - 关闭或非 OpenRouter 时下游不注入 tool（逻辑在 Task 02）。
-- **Input**: PRD/AD-v7.0、Guide 参数表、现有 `LLMConfig`
-- **Output**: 可开关、可调参的配置契约
+  - 现状：多数 Agent 在 `parse_agent_json_response` **成功后**才 `write_agent_artifact`；解析抛错则跳过。
+  - 改法（选简单一种并统一四 Agent）：
+    1. `try/except`：失败时仍调用 audit，`parsed_patch=None` 或带 `parse_error`；或
+    2. 在 `parse_agent_json_response` 接受可选 `on_raw`/`audit` 回调——**优先方案 1**，少改公共解析器签名。
+  - `parsed_patch` 缺失时文件名/内容仍可复查 `raw_llm_text`；写盘失败不掩盖原解析错误。
+  - 单测：mock 非法 raw + FilePlanAuditSink 临时目录，断言文件存在且含原文片段。
+- **Input**: 各 `*_agent.py`、`plan_audit.write_agent_artifact`
+- **Output**: 解析失败可对照审计原文
 - **Files involved**:
-  - `src/podcast_ai/infra/config.py`
-  - `config.example.yaml`
-  - `src/podcast_ai/cli.py`（init-config 模板，若有）
-  - `README.md`（一行说明）
-- **Estimated complexity**: S（1 小时）
+  - `src/podcast_ai/modules/theme/planner_agent.py`
+  - `src/podcast_ai/modules/theme/music_curator_agent.py`
+  - `src/podcast_ai/modules/theme/script_writer_agent.py`
+  - `src/podcast_ai/modules/theme/critic_agent.py`
+  - `src/podcast_ai/modules/theme/plan_audit.py`（若需允许 parsed 为空）
+  - `tests/test_audit_parse_failure_v71.py`（新建）
+- **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 02 - `LLMClient` 统一注入 `openrouter:web_search`
-- **Task name**: v7.0 - inject Server Tool in llm_client
-- **目标**: `OpenAICompatibleLLMClient.generate` 在 **OpenRouter + `web_search.enabled`** 时，向 `/chat/completions` payload 注入官方形态的 `tools` 项；否则不注入。与 `response_format` / `provider` 并存；不实现插件或 `:online`。
-- **类型**: backend
-- **依赖关系**: Task 01
-- **Description**:
-  - 注入时机：与 `provider` 类似，在 `payload.update(kwargs)` **之后**写入（避免被 Agent kwargs 误覆盖）；若调用方显式传入 `tools`，定义简单策略（推荐：合并或配置优先——选一种并注释，避免双 web 表面）。
-  - tool 对象形态：
-    ```json
-    { "type": "openrouter:web_search", "parameters": { "engine": "auto", "max_results": 5 } }
-    ```
-    仅包含已配置的非空参数；勿塞弃用字段。
-  - 判定 OpenRouter：复用 `is_openrouter_base_url`。
-  - 响应：继续以 `choices[0].message.content` 为主路径（Server Tool 由网关侧完成搜索回路）；content 缺失时给出可读错误（可附带 status/usage 线索）。
-  - **不**在各 Agent 文件复制注入逻辑。
-- **Input**: Task 01、现有 `llm_client.py`、Guide
-- **Output**: 全 Agent 经同一客户端自动带上/不带上 web_search
-- **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
-- **Estimated complexity**: M（1.5–2 小时）
-
----
-
-### Task 03 - 可观测：启用标记 + 搜索用量日志
-- **Task name**: v7.0 - web_search observability
-- **目标**: 每次 LLM 调用日志可区分是否启用 `web_search`；若响应含 `usage.server_tool_use.web_search_requests`（或 Guide/文档等价字段）则记录次数，便于成本排查。
-- **类型**: backend
-- **依赖关系**: Task 02
-- **Description**:
-  - 在现有 sanitized request debug 日志中体现 `web_search=on|off`（及 engine/max_results 摘要即可）。
-  - 解析 `resp.json()` 的 usage 子树；字段缺失不报错。
-  - 审计落盘：若改动成本低，可在 Agent audit 元数据带 `web_search_enabled`；**非必须**深改 `plan_audit`——日志满足 AC 即可。
-- **Input**: Task 02 响应解析点
-- **Output**: 开发者可从日志判断启用与用量
-- **Files involved**:
-  - `src/podcast_ai/infra/llm_client.py`
-- **Estimated complexity**: S（≤1 小时）
-
----
-
-### Task 04 - 单测：注入条件 + 禁止弃用路径 + 与 response_format 共存
-- **Task name**: v7.0 - llm web_search unit tests
-- **目标**: 用 mock httpx/transport 锁定：① OpenRouter+enabled → payload 含 `openrouter:web_search` 且 parameters 正确；② enabled=false 或不含 openrouter host → 无 `tools`（或无该 tool）；③ 同时带 `response_format` 时二者皆在；④ 代码/payload **不出现** `plugins` web 或 model `:online`。
-- **类型**: backend
-- **依赖关系**: Task 01, Task 02
-- **Description**:
-  - 不强制真实 OpenRouter 联调；可选手工验收清单写在测试注释或 README。
-- **Input**: Task 01–02
-- **Output**: `pytest` 通过
-- **Files involved**:
-  - `tests/test_llm_web_search_v70.py`（新建）
-- **Estimated complexity**: M（1–2 小时）
-
----
-
-### Task 05 -（可选）Console / README 可观测开关
-- **Task name**: v7.0 - docs + optional Console toggle
-- **目标**: README 说明如何开关与调参、费用注意、与 Guide 的对应关系；Console 若改成本低可加只读展示或 Checkbox（非 AC 必须）。
+### Task 03 - 运行态洞察展示 `web_search_requests`
+- **Task name**: v7.1 - insight web_search_requests
+- **目标**: 阶段一运行态洞察展示当前/最近一次 Agent 相关的 `web_search_requests`；有用量显示次数，未启用或无字段时显示明确占位（如 `0` / `N/A` / `—`），不静默空白。
 - **类型**: frontend
-- **依赖关系**: Task 01
+- **依赖关系**: 无（可与 Task 04 并行；若需更准的「当前 Agent」次数，可轻触 llm_client 日志格式）
 - **Description**:
-  - 不做完整搜索结果 UI；不改三阶段主路径。
-- **Input**: Task 01 配置字段
-- **Output**: 开发者可按文档启用联网搜索
+  - v7.0 已有日志：`LLM usage server_tool_use.web_search_requests=%d`。
+  - 优先：在 `run_progress.py` 从缓冲日志解析最近次数 → 写入 `ConsoleRunResult` → `_insight_md` 展示。
+  - 可选增强：`LLMClient` 记录 `last_web_search_requests` 并在 DEBUG/INFO 用固定前缀日志，便于解析（仍不改 Agent I/O）。
+  - 流式 progress yield 时尽量更新该字段（有则更新，无则占位）。
+- **Input**: 现有 insight / run_progress / llm 用量日志
+- **Output**: 洞察区可见搜索次数或占位
 - **Files involved**:
-  - `README.md`
-  - `src/podcast_ai/console/app.py` / `runner.py` / `presets.py`
-- **Estimated complexity**: S（≤1 小时）
+  - `src/podcast_ai/console/run_progress.py`
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/app.py`
+  - （可选）`src/podcast_ai/infra/llm_client.py`
+- **Estimated complexity**: S–M（1–2 小时）
+
+---
+
+### Task 04 - Console 联网搜索参数：engine / max_results / max_uses
+- **Task name**: v7.1 - Console web_search params
+- **目标**: 在已有「联网搜索开关」旁增加：`engine` 下拉（`auto`/`native`/`exa`/`firecrawl`/`parallel`/`perplexity`）、`max_results`（默认 5）、`max_uses`（默认不限制，空/0/null 表示不写入限制）；经 `settings_from_params` 写入 `llm.web_search`，实际作用于 OpenRouter tool parameters。
+- **类型**: frontend
+- **依赖关系**: 无（依赖 v7.0 已有 `WebSearchConfig`）
+- **Description**:
+  - 扩展 `ConsoleParams` / `defaults_from_settings` / `settings_from_params`（今日仅覆盖 `enabled`）。
+  - `max_uses` UI：Number 可空，或 Checkbox「限制次数」+ Number；映射为 `None` vs int。
+  - 纳入 `PRESET_KEYS`；中文 info 简短说明费用与默认值。
+  - 非 OpenRouter 时控件可仍可编辑，但实际不注入（与 v7.0 行为一致，可用 Markdown 提示）。
+- **Input**: `WebSearchConfig`、现有 `web_search_enabled` 控件
+- **Output**: Console 改参无需改 YAML 即可影响本次 Run
+- **Files involved**:
+  - `src/podcast_ai/console/app.py`
+  - `src/podcast_ai/console/runner.py`
+  - `src/podcast_ai/console/presets.py`
+- **Estimated complexity**: S（1–1.5 小时）
+
+---
+
+### Task 05 - 轻量回归
+- **Task name**: v7.1 - smoke tests
+- **目标**: ① `settings_from_params` 正确合并 web_search 三参数；② 解析失败审计测（Task 02）通过；③ 日志解析能抽出 `web_search_requests`（可用假日志行）；④ 不破坏既有 Console preset 往返关键键。
+- **类型**: backend
+- **依赖关系**: Task 01（可选）、Task 02, Task 03, Task 04
+- **Description**:
+  - 不强制 Gradio E2E / 真实 OpenRouter。
+- **Input**: Task 02–04
+- **Output**: `pytest` 相关用例通过
+- **Files involved**:
+  - `tests/test_console_web_search_v71.py`（新建，建议）
+  - Task 02 测试文件
+- **Estimated complexity**: S（1 小时）

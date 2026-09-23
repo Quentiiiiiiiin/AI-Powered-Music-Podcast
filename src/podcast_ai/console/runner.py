@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -34,6 +36,12 @@ RunStatus = Literal["idle", "running", "success", "error"]
 _TTS_PROVIDERS = frozenset({"edge", "elevenlabs", "minimax"})
 _LANGUAGES = frozenset({"zh", "en"})
 _AGENT_MODES = frozenset({"single_agent", "multi_agent"})
+_WEB_SEARCH_ENGINES = frozenset(
+    {"auto", "native", "exa", "firecrawl", "parallel", "perplexity"}
+)
+_SECRET_RE = re.compile(
+    r"(?i)(api[_-]?key|authorization|bearer|password|secret|token)\s*[=:]\s*\S+"
+)
 
 
 @dataclass
@@ -51,6 +59,9 @@ class ConsoleParams:
     openrouter_provider: str = ""
     llm_base_url: str = ""
     web_search_enabled: bool = False
+    web_search_engine: str = "auto"
+    web_search_max_results: int = 5
+    web_search_max_uses: int | None = None
     snapshot_path: str = ""
     music_dir: str = "./music"
     tts_provider: str = "default"
@@ -65,6 +76,8 @@ class ConsoleParams:
     voice_gain_db: float = 0.0
     voice_music_overlay_music_max_db: float = 0.0
     voice_music_post_overlay_ramp_seconds: float = 0.0
+    # v7.1：等价 CLI --log-level DEBUG
+    debug: bool = False
 
     def as_form_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -91,6 +104,8 @@ class ConsoleRunResult:
     orchestration_mode: str | None = None
     plan_stage: str | None = None
     plan_revision: int | None = None
+    # v7.1：最近一次 LLM 响应中的搜索次数；None=日志未出现该字段
+    plan_web_search_requests: int | None = None
 
     @classmethod
     def running(cls, command: CommandName) -> ConsoleRunResult:
@@ -118,6 +133,9 @@ def defaults_from_settings(settings: Settings | None = None) -> ConsoleParams:
         openrouter_provider=s.llm.openrouter_provider or "",
         llm_base_url=base_url_for_interface("openrouter"),
         web_search_enabled=bool(s.llm.web_search.enabled),
+        web_search_engine=str(s.llm.web_search.engine or "auto"),
+        web_search_max_results=int(s.llm.web_search.max_results or 5),
+        web_search_max_uses=s.llm.web_search.max_uses,
         tts_provider="default",
         tts_model="",
         tts_voice_id="",
@@ -153,6 +171,39 @@ def _llm_interface(params: ConsoleParams) -> str:
     return raw
 
 
+def _web_search_engine(params: ConsoleParams) -> str:
+    raw = (params.web_search_engine or "auto").strip().lower() or "auto"
+    if raw not in _WEB_SEARCH_ENGINES:
+        raise PodcastAIError(
+            "web_search.engine 仅支持 auto/native/exa/firecrawl/parallel/perplexity "
+            f"（收到：{params.web_search_engine!r}）"
+        )
+    return raw
+
+
+def _web_search_max_results(params: ConsoleParams) -> int:
+    try:
+        n = int(params.web_search_max_results)
+    except (TypeError, ValueError) as exc:
+        raise PodcastAIError("web_search.max_results 须为 1–25 的整数。") from exc
+    if n < 1 or n > 25:
+        raise PodcastAIError(f"web_search.max_results 须为 1–25（收到：{n}）")
+    return n
+
+
+def _web_search_max_uses(value: Any) -> int | None:
+    """空 / 0 / 负数 → None（不写入限制）。"""
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PodcastAIError("web_search.max_uses 须为整数，或留空表示不限制。") from exc
+    if n <= 0:
+        return None
+    return n
+
+
 def settings_from_params(params: ConsoleParams, base: Settings | None = None) -> Settings:
     """用表单覆盖 Settings 的常用字段；密钥仍来自 .env / config。"""
     settings = base or load_settings()
@@ -161,7 +212,12 @@ def settings_from_params(params: ConsoleParams, base: Settings | None = None) ->
         "openrouter_provider": (params.openrouter_provider or "").strip(),
         "base_url": base_url_for_interface(iface),
         "web_search": settings.llm.web_search.model_copy(
-            update={"enabled": bool(params.web_search_enabled)}
+            update={
+                "enabled": bool(params.web_search_enabled),
+                "engine": _web_search_engine(params),
+                "max_results": _web_search_max_results(params),
+                "max_uses": _web_search_max_uses(params.web_search_max_uses),
+            }
         ),
     }
     if (params.llm_model or "").strip():
@@ -260,9 +316,10 @@ def _agent_mode(params: ConsoleParams) -> Literal["single_agent", "multi_agent"]
 class _BufferLogHandler(logging.Handler):
     """把本次 Run 的 logging 抓到内存，供 UI 展示；不改 pipeline。"""
 
-    def __init__(self) -> None:
+    def __init__(self, sink: list[str] | None = None) -> None:
         super().__init__()
-        self.lines: list[str] = []
+        self.lines: list[str] = sink if sink is not None else []
+        self.setLevel(logging.DEBUG)
         self.setFormatter(
             logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
         )
@@ -274,19 +331,47 @@ class _BufferLogHandler(logging.Handler):
             pass
 
 
+def _redact_secrets(text: str) -> str:
+    return _SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+
+
+def _format_run_error(exc: BaseException, *, debug: bool) -> str:
+    """DEBUG 时附带 traceback 末段；始终打码疑似密钥。"""
+    if isinstance(exc, PodcastAIError):
+        head = str(exc)
+    elif isinstance(exc, ValidationError):
+        head = f"参数校验失败：{exc}"
+    else:
+        head = f"未预期错误：{exc}"
+    if not debug:
+        return _redact_secrets(head)
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    tail = "\n".join(tb.strip().splitlines()[-16:])
+    return _redact_secrets(f"{head}\n\n{tail}")
+
+
 def _format_elapsed(elapsed_ms: int) -> str:
     if elapsed_ms < 1000:
         return f"{elapsed_ms}ms"
     return f"{elapsed_ms / 1000:.1f}s"
 
 
-def _run_command(command: CommandName, fn: Callable[[], ConsoleRunResult]) -> ConsoleRunResult:
-    handler = _BufferLogHandler()
+def _run_command(
+    command: CommandName,
+    fn: Callable[[], ConsoleRunResult],
+    *,
+    debug: bool = False,
+    log_sink: list[str] | None = None,
+) -> ConsoleRunResult:
+    handler = _BufferLogHandler(sink=log_sink)
     root = logging.getLogger()
     previous_level = root.level
     root.addHandler(handler)
-    if root.level > logging.INFO:
-        root.setLevel(logging.INFO)
+    target = logging.DEBUG if debug else logging.INFO
+    if root.level > target:
+        root.setLevel(target)
+    if debug and root.level != logging.DEBUG:
+        root.setLevel(logging.DEBUG)
     started = time.perf_counter()
     try:
         result = fn()
@@ -295,31 +380,24 @@ def _run_command(command: CommandName, fn: Callable[[], ConsoleRunResult]) -> Co
         if result.status == "success" and result.summary:
             result.summary = f"{result.summary} · {_format_elapsed(result.elapsed_ms)}"
         return result
-    except PodcastAIError as exc:
+    except (PodcastAIError, ValidationError) as exc:
+        elapsed = int((time.perf_counter() - started) * 1000)
         return ConsoleRunResult(
             status="error",
             command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=str(exc),
+            elapsed_ms=elapsed,
+            error=_format_run_error(exc, debug=debug),
             logs="\n".join(handler.lines),
-            summary=f"失败 · {_format_elapsed(int((time.perf_counter() - started) * 1000))}",
-        )
-    except ValidationError as exc:
-        return ConsoleRunResult(
-            status="error",
-            command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=f"参数校验失败：{exc}",
-            logs="\n".join(handler.lines),
-            summary="失败（校验）",
+            summary=f"失败 · {_format_elapsed(elapsed)}",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Console 调用 pipeline 时发生未预期错误")
+        elapsed = int((time.perf_counter() - started) * 1000)
         return ConsoleRunResult(
             status="error",
             command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=f"未预期错误：{exc}",
+            elapsed_ms=elapsed,
+            error=_format_run_error(exc, debug=debug),
             logs="\n".join(handler.lines),
             summary="失败",
         )
@@ -333,6 +411,7 @@ def run_plan(
     *,
     settings: Settings | None = None,
     progress_sink: list[dict[str, Any]] | None = None,
+    log_sink: list[str] | None = None,
 ) -> ConsoleRunResult:
     # 可注入外部 list，供 UI 在运行中轮询 iteration/agent（默认仍用内部 list）。
     progress_events: list[dict[str, Any]] = progress_sink if progress_sink is not None else []
@@ -357,6 +436,7 @@ def run_plan(
         result.plan_progress_events = list(merged.events)
         result.plan_stage = merged.stage
         result.plan_revision = merged.revision
+        result.plan_web_search_requests = merged.web_search_requests
         if result.orchestration_mode is None:
             result.orchestration_mode = str(
                 settings_from_params(params, base=settings).app.orchestration_mode
@@ -403,7 +483,7 @@ def run_plan(
             orchestration_mode=orch,
         )
 
-    result = _run_command("plan", _inner)
+    result = _run_command("plan", _inner, debug=bool(params.debug), log_sink=log_sink)
     return _attach_progress(result)
 
 
@@ -433,7 +513,7 @@ def run_stage2(params: ConsoleParams, *, settings: Settings | None = None) -> Co
             mix_params_path=str(mix_params_path),
         )
 
-    return _run_command("stage2", _inner)
+    return _run_command("stage2", _inner, debug=bool(params.debug))
 
 
 def run_stage3(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
@@ -449,7 +529,7 @@ def run_stage3(params: ConsoleParams, *, settings: Settings | None = None) -> Co
         )
         return _result_from_episode("stage3", result)
 
-    return _run_command("stage3", _inner)
+    return _run_command("stage3", _inner, debug=bool(params.debug))
 
 
 def run_create(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
@@ -472,7 +552,7 @@ def run_create(params: ConsoleParams, *, settings: Settings | None = None) -> Co
         )
         return _result_from_episode("create", result)
 
-    return _run_command("create", _inner)
+    return _run_command("create", _inner, debug=bool(params.debug))
 
 
 def _result_from_episode(command: CommandName, result: Any) -> ConsoleRunResult:

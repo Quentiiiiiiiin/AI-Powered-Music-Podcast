@@ -211,6 +211,31 @@ def test_run_plan_missing_topic_or_model_returns_chinese_error(tmp_path: Path) -
         mocked.assert_not_called()
 
 
+def test_web_search_params_map_into_settings(tmp_path: Path) -> None:
+    updated = settings_from_params(
+        ConsoleParams(
+            llm_model="x",
+            web_search_enabled=True,
+            web_search_engine="exa",
+            web_search_max_results=7,
+            web_search_max_uses=3,
+        ),
+        base=_base(tmp_path),
+    )
+    assert updated.llm.web_search.enabled is True
+    assert updated.llm.web_search.engine == "exa"
+    assert updated.llm.web_search.max_results == 7
+    assert updated.llm.web_search.max_uses == 3
+
+
+def test_web_search_max_uses_zero_means_unlimited(tmp_path: Path) -> None:
+    updated = settings_from_params(
+        ConsoleParams(llm_model="x", web_search_max_uses=0),
+        base=_base(tmp_path),
+    )
+    assert updated.llm.web_search.max_uses is None
+
+
 def test_web_search_toggle_maps_enabled_keeps_engine(tmp_path: Path) -> None:
     base = _base(tmp_path)
     base = base.model_copy(
@@ -223,7 +248,12 @@ def test_web_search_toggle_maps_enabled_keeps_engine(tmp_path: Path) -> None:
         }
     )
     updated = settings_from_params(
-        ConsoleParams(llm_model="x", web_search_enabled=True),
+        ConsoleParams(
+            llm_model="x",
+            web_search_enabled=True,
+            web_search_engine="native",
+            web_search_max_results=8,
+        ),
         base=base,
     )
     assert updated.llm.web_search.enabled is True
@@ -239,6 +269,9 @@ def test_preset_keys_include_v62_fields() -> None:
             tts_model="eleven_v3",
             tts_voice_id="abc",
             web_search_enabled=True,
+            web_search_engine="native",
+            web_search_max_results=5,
+            debug=True,
             voice_gain_db=3.0,
         ).as_form_dict()
     )
@@ -246,6 +279,10 @@ def test_preset_keys_include_v62_fields() -> None:
         "orchestration_mode",
         "llm_interface",
         "web_search_enabled",
+        "web_search_engine",
+        "web_search_max_results",
+        "web_search_max_uses",
+        "debug",
         "tts_model",
         "tts_voice_id",
         "per_track_normalize_enabled",

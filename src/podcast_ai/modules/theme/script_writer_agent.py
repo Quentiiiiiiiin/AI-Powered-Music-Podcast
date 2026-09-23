@@ -177,14 +177,29 @@ class ScriptWriterAgent:
 
         logger.debug("Script Writer Agent raw output (truncated): %s", raw[:1000])
 
-        data = parse_agent_json_response(
-            agent_label=AGENT_LABEL,
-            raw=raw,
-            state=state,
-            structured=structured,
-            allow_repair_fallback=not structured,
-            output_dir=Path(self._settings.app.output_dir),
-        )
+        # v7.1：解析失败仍落盘原始返回（parsed_patch=None）；写盘失败不掩盖解析错误
+        try:
+            data = parse_agent_json_response(
+                agent_label=AGENT_LABEL,
+                raw=raw,
+                state=state,
+                structured=structured,
+                allow_repair_fallback=not structured,
+                output_dir=Path(self._settings.app.output_dir),
+            )
+        except Exception:
+            if audit_sink is not None and round_iteration is not None:
+                audit_sink.write_agent_artifact(
+                    iteration=round_iteration,
+                    agent_slug=AUDIT_SLUG_SCRIPT_WRITER,
+                    mode=mode,
+                    request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                    raw_llm_text=raw,
+                    parsed_patch=None,
+                    stage=audit_stage,
+                    revision=audit_revision,
+                )
+            raise
 
         if audit_sink is not None and round_iteration is not None:
             audit_sink.write_agent_artifact(

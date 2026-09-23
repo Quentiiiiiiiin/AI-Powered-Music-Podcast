@@ -58,7 +58,7 @@ class PlanAuditSink(Protocol):
         mode: str | None,
         request_id: str,
         raw_llm_text: str,
-        parsed_patch: dict[str, Any],
+        parsed_patch: dict[str, Any] | None,
         stage: str | None = None,
         revision: int | None = None,
     ) -> None: ...
@@ -101,11 +101,12 @@ class FilePlanAuditSink:
         mode: str | None,
         request_id: str,
         raw_llm_text: str,
-        parsed_patch: dict[str, Any],
+        parsed_patch: dict[str, Any] | None,
         stage: str | None = None,
         revision: int | None = None,
     ) -> None:
         # v6.0：若传 stage，使用 stage_*_rev*_*.json；否则保持 legacy iteration 命名
+        # v7.1：parsed_patch 可为 None（JSON 解析失败仍落盘 raw_llm_text）
         if stage is not None:
             path = self.run_dir / format_audit_staged_agent_filename(
                 stage, int(revision or 0), agent_slug
