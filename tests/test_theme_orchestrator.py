@@ -15,6 +15,11 @@ from podcast_ai.modules.theme.planner_agent import PlannerAgent
 from podcast_ai.modules.theme.script_writer_agent import ScriptWriterAgent
 from podcast_ai.modules.theme.orchestrator import PlanOrchestrator
 from podcast_ai.modules.theme.state import PlanState, initialize_plan_state, merge_plan_state
+from podcast_ai.modules.theme.critic_rules import CRITIC_SCORE_DIMS
+
+
+def _critic_scores(value: int) -> dict[str, int]:
+    return {dim: value for dim in CRITIC_SCORE_DIMS}
 
 
 class _TraceAgentBase:
@@ -67,7 +72,7 @@ class _CriticStubOncePass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
+                    "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
                 },
@@ -93,18 +98,21 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
                 {
                     "critic": {
                         "pass": False,
-                        "scores": {"coherence": 5, "emotion_flow": 5, "immersion": 6},
+                        "scores": _critic_scores(5),
                         "issues": [
                             {
-                                "type": "emotion_flow",
+                                "type": "sequence_narrative",
+                                "severity": "critical",
                                 "location": "segments[0].playlist[0]",
                                 "problem": "情绪跳跃过大",
+                                "listener_impact": "断档",
                                 "suggestion": "调整第一段选曲。",
                             }
                         ],
                         "actions": [
                             {
                                 "target_agent": "Planner",
+                                "location": "plan",
                                 "instruction": "重新设计情绪曲线并调整段落时长分配。",
                             }
                         ],
@@ -118,7 +126,7 @@ class _CriticStubSecondPass(_TraceAgentBase, CriticAgent):
             {
                 "critic": {
                     "pass": True,
-                    "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
+                    "scores": _critic_scores(8),
                     "issues": [],
                     "actions": [],
                 },
@@ -137,11 +145,12 @@ class _CriticStubNeverPass(_TraceAgentBase, CriticAgent):
         state = self._append_trace(state)
         critic = {
             "pass": False,
-            "scores": {"coherence": 5, "emotion_flow": 5, "immersion": 5},
+            "scores": _critic_scores(5),
             "issues": [],
             "actions": [
                 {
                     "target_agent": "Planner",
+                    "location": "plan",
                     "instruction": "尝试改进整体结构，但始终不满足阈值（测试用）。",
                 }
             ],

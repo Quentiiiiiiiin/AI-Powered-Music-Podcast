@@ -14,6 +14,7 @@ from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
 from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_MUSIC_CURATOR, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_music_curator_agent_messages
+from podcast_ai.modules.theme.prompts_staged import build_music_curator_staged_messages
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
 logger = logging.getLogger(__name__)
@@ -21,10 +22,27 @@ logger = logging.getLogger(__name__)
 AGENT_LABEL = "Music Curator Agent"
 
 _CURATOR_SEGMENT_ALLOWED_KEYS = {"segment_id", "playlist"}
-_PLAYLIST_ALLOWED_KEYS = {"track", "artist", "bpm"}
+# v6.1 Schema_Music-Curator_v4：无 bpm（模型误写则拒绝）
+_PLAYLIST_ALLOWED_KEYS = {
+    "track",
+    "artist",
+    "selection_reason",
+    "sequence_role",
+    "planner_alignment",
+    "transition_logic",
+}
+_PLAYLIST_REQUIRED_KEYS = (
+    "track",
+    "artist",
+    "selection_reason",
+    "sequence_role",
+    "planner_alignment",
+    "transition_logic",
+)
 
 
-def _sanitize_curator_patch(data: Dict[str, Any], *, expected_segments: int) -> Dict[str, Any]:
+def sanitize_curator_patch(data: Dict[str, Any], *, expected_segments: int) -> Dict[str, Any]:
+    """校验 Curator 仅写 playlist；每条须含 v4 解释字段。"""
     if set(data.keys()) - {"segments"}:
         forbidden_top = sorted(set(data.keys()) - {"segments"})
         raise AIServiceError(f"Music Curator 越权写入顶层字段：{', '.join(forbidden_top)}。")
@@ -58,12 +76,33 @@ def _sanitize_curator_patch(data: Dict[str, Any], *, expected_segments: int) -> 
                 raise AIServiceError(
                     f"segments[{idx}].playlist[{item_idx}] 越权字段：{', '.join(item_forbidden)}。",
                 )
-            bpm = item.get("bpm")
-            if bpm is not None and not isinstance(bpm, int):
+            missing = [k for k in _PLAYLIST_REQUIRED_KEYS if k not in item]
+            if missing:
                 raise AIServiceError(
-                    f"segments[{idx}].playlist[{item_idx}].bpm 必须是整数或 null。",
+                    f"segments[{idx}].playlist[{item_idx}] 缺少字段：{', '.join(missing)}。",
                 )
-            sanitized_playlist.append({k: item[k] for k in item.keys() if k in _PLAYLIST_ALLOWED_KEYS})
+            if not isinstance(item.get("track"), str) or not isinstance(item.get("artist"), str):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].track/artist 必须是字符串。",
+                )
+            if not isinstance(item.get("selection_reason"), str):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].selection_reason 必须是字符串。",
+                )
+            if not isinstance(item.get("sequence_role"), str):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].sequence_role 必须是字符串。",
+                )
+            if not isinstance(item.get("planner_alignment"), list):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].planner_alignment 必须是数组。",
+                )
+            if not isinstance(item.get("transition_logic"), str):
+                raise AIServiceError(
+                    f"segments[{idx}].playlist[{item_idx}].transition_logic 必须是字符串。",
+                )
+            cleaned: Dict[str, Any] = {k: item[k] for k in _PLAYLIST_REQUIRED_KEYS}
+            sanitized_playlist.append(cleaned)
 
         segment_patch: Dict[str, Any] = {"playlist": sanitized_playlist}
         if "segment_id" in seg:
@@ -73,8 +112,12 @@ def _sanitize_curator_patch(data: Dict[str, Any], *, expected_segments: int) -> 
     return {"segments": sanitized_segments}
 
 
+# 兼容旧测试/导入名
+_sanitize_curator_patch = sanitize_curator_patch
+
+
 class MusicCuratorAgent:
-    """v3.0 Music Curator Agent：为各段补齐 segments[*].playlist。"""
+    """Music Curator：补齐 segments[*].playlist（含 v4 解释字段）。"""
 
     def __init__(
         self,
@@ -91,12 +134,19 @@ class MusicCuratorAgent:
         *,
         audit_sink: PlanAuditSink | None = None,
         round_iteration: int | None = None,
+        orchestration_mode: str = "legacy",
+        audit_stage: str | None = None,
+        audit_revision: int | None = None,
     ) -> PlanState:
         segments_count = len(state.get("segments", []))
         if segments_count == 0:
             raise AIServiceError("Music Curator：state.segments 为空，无法生成 playlist。")
 
-        messages = build_music_curator_agent_messages(state, mode)
+        orch = (orchestration_mode or "legacy").strip().lower()
+        if orch == "staged":
+            messages = build_music_curator_staged_messages(state, mode)
+        else:
+            messages = build_music_curator_agent_messages(state, mode)
 
         gen_kwargs: Dict[str, Any] = {"temperature": 0.4}
         structured = should_use_structured_output(self._settings.llm)
@@ -132,9 +182,11 @@ class MusicCuratorAgent:
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
                 raw_llm_text=raw,
                 parsed_patch=data,
+                stage=audit_stage,
+                revision=audit_revision,
             )
 
-        patch = _sanitize_curator_patch(data, expected_segments=segments_count)
+        patch = sanitize_curator_patch(data, expected_segments=segments_count)
         next_state = merge_plan_state(state, patch)
         next_state = merge_plan_state(next_state, {"control": {"last_updated_by": "Music Curator"}})
         return next_state

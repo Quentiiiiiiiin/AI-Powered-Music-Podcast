@@ -140,7 +140,19 @@ def test_music_curator_response_format_name_and_segment_array_bounds(
         bodies.append(json.loads(request.content))
         reply = {
             "segments": [
-                {"segment_id": "seg_01", "playlist": [{"track": "A", "artist": "X", "bpm": 90}]},
+                {
+                    "segment_id": "seg_01",
+                    "playlist": [
+                        {
+                            "track": "A",
+                            "artist": "X",
+                            "selection_reason": "fit",
+                            "sequence_role": "open",
+                            "planner_alignment": ["soft"],
+                            "transition_logic": "n/a",
+                        }
+                    ],
+                },
             ]
         }
         return httpx.Response(
@@ -198,12 +210,18 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     payload = {
         "critic": {
-            "pass": True,
-            "scores": {"coherence": 8, "emotion_flow": 8, "immersion": 8},
+            "scores": {
+                "theme_definition": 85,
+                "theme_relationship": 85,
+                "musical_concept": 85,
+                "segment_differentiation": 85,
+                "sequence_narrative": 85,
+                "curator_actionability": 85,
+                "creative_freedom": 85,
+            },
             "issues": [],
             "actions": [],
         },
-        "control": {"next_agent": "Orchestrator"},
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -223,6 +241,10 @@ def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     assert bodies[0]["response_format"]["json_schema"]["name"] == "podcast_critic_response"
     assert bodies[0]["response_format"]["json_schema"]["schema"]["properties"]["critic"] is not None
+    # v6.4：模型 schema 不含 pass/control
+    critic_schema = bodies[0]["response_format"]["json_schema"]["schema"]["properties"]["critic"]
+    assert "pass" not in critic_schema.get("required", [])
+    assert "control" not in bodies[0]["response_format"]["json_schema"]["schema"].get("required", [])
 
 
 def test_llm_client_400_hints_response_format_when_body_mentions_schema(
@@ -255,28 +277,55 @@ def test_single_agent_planner_posts_state_subset_response_format(
     bodies: list[dict[str, Any]] = []
 
     reply = {
-        "schema_version": "v3.0",
+        "schema_version": "v4.0",
         "meta": {
             "request_id": "req-single",
             "theme": "T",
             "theme_description": "desc",
             "language": "zh-CN",
             "target_duration_seconds": 3600,
-            "overall_bpm_range": [90, 120],
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
         },
-        "global_constraints": {"tone": "克制", "language_style": "第一人称", "avoid": []},
-        "plan": {"segments_design": "三段", "emotion_curve": ["平静", "抬升", "收束"]},
+        "global_constraints": {
+            "energy_strategy": "克制",
+            "sonic_world": ["chill"],
+            "avoid": [],
+        },
+        "plan": {
+            "segment_count": 1,
+            "episode_direction": "三段",
+            "segments_design": "三段",
+        },
         "segments": [
             {
                 "segment_id": "seg_01",
                 "order": 1,
                 "name": "开场",
                 "target_duration_seconds": 1200,
-                "bpm_range": [90, 104],
-                "mood": "舒缓",
-                "segment_design": "开场铺垫",
-                "playlist": [{"track": "A", "artist": "X", "bpm": 96}],
-                "script": {"segment_intro": "欢迎来到节目。", "between_tracks": [{"after_track_index": 0, "text": None}]},
+                "narrative_function": "开场铺垫",
+                "scene": "studio",
+                "sonic_direction": ["soft"],
+                "lyrical_direction": [],
+                "anchor_tracks": [],
+                "reference_material": [],
+                "sequence_direction": [],
+                "transition_to_next": "",
+                "playlist": [
+                    {
+                        "track": "A",
+                        "artist": "X",
+                        "selection_reason": "fit",
+                        "sequence_role": "open",
+                        "planner_alignment": ["soft"],
+                        "transition_logic": "n/a",
+                    }
+                ],
+                "script": {
+                    "segment_intro": "欢迎来到节目。",
+                    "between_tracks": [{"after_track_index": 0, "text": None}],
+                },
             },
         ],
     }

@@ -202,6 +202,11 @@ def create_episode(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
+            voice_normalize_to_dbfs=effective_settings.audio.voice_normalize_to_dbfs,
+            voice_gain_db=effective_settings.audio.voice_gain_db,
+            voice_music_overlay_music_max_db=effective_settings.audio.voice_music_overlay_music_max_db,
+            voice_music_post_overlay_ramp_seconds=effective_settings.audio.voice_music_post_overlay_ramp_seconds,
         )
 
         with log_timing(logger, "scan_library"):
@@ -296,6 +301,11 @@ def create_episode_stage2(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
+            voice_normalize_to_dbfs=effective_settings.audio.voice_normalize_to_dbfs,
+            voice_gain_db=effective_settings.audio.voice_gain_db,
+            voice_music_overlay_music_max_db=effective_settings.audio.voice_music_overlay_music_max_db,
+            voice_music_post_overlay_ramp_seconds=effective_settings.audio.voice_music_post_overlay_ramp_seconds,
         )
 
         with log_timing(logger, "scan_library"):
@@ -398,6 +408,11 @@ def finalize_episode_stage3(
             voice_music_crossfade_seconds=effective_settings.audio.voice_music_crossfade_seconds,
             voice_music_intro_align_enabled=effective_settings.audio.voice_music_intro_align_enabled,
             voice_music_intro_align_max_seconds=effective_settings.audio.voice_music_intro_align_max_seconds,
+            per_track_normalize_enabled=effective_settings.audio.per_track_normalize_enabled,
+            voice_normalize_to_dbfs=effective_settings.audio.voice_normalize_to_dbfs,
+            voice_gain_db=effective_settings.audio.voice_gain_db,
+            voice_music_overlay_music_max_db=effective_settings.audio.voice_music_overlay_music_max_db,
+            voice_music_post_overlay_ramp_seconds=effective_settings.audio.voice_music_post_overlay_ramp_seconds,
         )
 
         mixer = Mixer()

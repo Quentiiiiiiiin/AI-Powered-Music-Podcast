@@ -17,6 +17,7 @@ AI 驱动的音乐 Podcast 自动生成工具（MVP）。根据主题与时长�
 ### 1. 创建虚拟环境（推荐）
 
 ```bash
+cd C:\Users\yanqu\Desktop\Cursor Project ONE
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
@@ -90,10 +91,18 @@ podcast-ai plan-episode "Chill and Relax R&B from 1950s till now" 60 --agent-mod
 
 - 调用 LLM 生成节目结构与目标歌单规划
 - 输出：
-  - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态）
-  - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 state 快照，文件名与 `episode_id` 一致）
+  - `output/episodes/<episode_id>/plans/state.json`（与 `state_schema.json` 同结构的统一状态；**v6.1** 为 `schema_version: v4.0`，含 Planner/Curator 扩展字段）
+  - `output/episodes/<episode_id>/plans/<episode_id>.json`（阶段一 **snapshot**：对外字段集冻结，供阶段二消费）
 
-**v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。其中 `iteration{i}` 与编排器本轮外层层级一致；`iteration{i}_{planner|music_curator|script_writer|critic}.json` 含该步原始 LLM 文本与解析后的 patch，`iteration{i}_state.json` 为该行结束后的完整 `PlanState`。写盘失败只记日志，不影响规划成功/失败判定。可在配置中关闭 `app.multi_agent_audit_enabled`。
+**v6.1 双契约（富 state / 瘦 snapshot）：**
+- **state**：对齐 `Schema_Planner_v4` / `Schema_Music-Curator_v4`（如 `narrative_function`、`sonic_direction`、playlist 的 `selection_reason` 等）。
+- **snapshot**：仍仅含 `schema` / `meta{request_id,theme,language,target_duration_seconds}` / `segments[*]{segment_id,name,target_duration_seconds,playlists,script}`；`playlists[*]` 保留 `track`/`artist`（历史若带 `bpm` 可透传），**不泄漏** state 扩展字段；**Curator 不再产出 `bpm`**。
+- **single_agent** 与 multi_agent 共用同一 v4 state 子集契约（无 `critic`/`control`）。
+- Console 阶段一 timeline 只依赖 snapshot 子集，不因 state 扩字段崩溃。
+
+**v3.6（multi-agent）可审计落盘：** 在 `计划 output_dir` 下额外写入 `audit/multi_agent/<request_id>/`。`legacy` 下文件名为 `iteration{i}_{agent}.json` / `iteration{i}_state.json`；**v6.0 `staged`** 下为 `stage_{planner|music_curator|script_writer}_rev{r}_{agent}.json` 与对应 `_state.json`（`rev0`=首次生成，`rev1/2`=修复轮）。写盘失败只记日志。配置：`app.orchestration_mode`（默认 `staged`）与 `app.multi_agent_audit_enabled`。
+
+**v6.3（staged prompt）：** `orchestration_mode=staged` 时 Planner / Music Curator 使用 `modules/theme/guides/PROMPT_Guide_*.txt` 全文 + 闸门外壳（见 `prompts_staged.py`）；**legacy `prompts.py` 未同步**；Script Writer / Critic 本轮未改。
 
 根据歌单到各平台搜索、下载歌曲，放入指定目录（如 `./music/本期节目`）。
 
@@ -184,11 +193,17 @@ podcast-ai console --no-browser  # 不自动打开浏览器
 | ---------------------------- | ------------------- | ------------ |
 | `app.music_dir`              | 音乐目录                | `./music`    |
 | `app.output_dir`             | 输出目录                | `./output`   |
+| `app.orchestration_mode`     | **v6.0** multi_agent 编排：`staged`（默认，分阶段闸门）/ `legacy`（旧全局 Critic 回修） | `staged` |
 | `audio.crossfade_seconds`    | 曲目过渡时长（秒）           | `8.0`        |
 | `audio.voice_music_crossfade_seconds` | 串词->歌基础叠化时长下限（秒） | `3.0` |
 | `audio.voice_music_intro_align_enabled` | 是否启用串词->下一首 intro 对齐（v4.2） | `true` |
 | `audio.voice_music_intro_align_max_seconds` | 串词->歌动态叠化上限（秒，v4.2） | `3.0` |
 | `audio.loudness_target_lufs` | 母带响度目标（LUFS）        | `-14.0`      |
+| `audio.per_track_normalize_enabled` | 混音前是否对每轨/TTS 做平均电平 normalize；`false` 保留源响度 | `true` |
+| `audio.voice_gain_db` | **仅串词**额外增益（dB）；音乐不变 | `0.0` |
+| `audio.voice_normalize_to_dbfs` | **仅串词**拉到目标平均 dBFS；`null`/省略=关闭。若 `per_track_normalize_enabled=true` 则串词仍走统一 -16 | `null` |
+| `audio.voice_music_overlay_music_max_db` | **串词→歌叠化窗内**音乐相对满电平的增益上限（dB）；`0`=不限制；负值如 `-6` 减轻盖人声 | `0.0` |
+| `audio.voice_music_post_overlay_ramp_seconds` | 叠化结束后音乐从上限爬回满电平的时长（秒）；`0`=关闭；仅 `overlay_max_db<0` 时生效 | `0.0` |
 | `llm.base_url`               | LLM API 地址          | 需配置          |
 | `llm.api_key`                | LLM API Key         | 建议用环境变量      |
 | `llm.model`                  | 模型 id               | 见 `init-config` 默认 |

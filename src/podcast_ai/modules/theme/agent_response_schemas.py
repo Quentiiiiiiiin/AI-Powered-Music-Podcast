@@ -32,6 +32,40 @@ def _nullable_strict_object(inner: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_PLANNER_ANCHOR_TRACK: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "track": {"type": "string"},
+        "artist": {"type": "string"},
+        "required": {"type": "boolean"},
+    },
+    "required": ["track", "artist", "required"],
+    "additionalProperties": False,
+}
+
+_PLANNER_REFERENCE_MATERIAL: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "track": {"type": "string"},
+        "artist": {"type": "string"},
+        "purpose": {"type": "string"},
+    },
+    "required": ["track", "artist", "purpose"],
+    "additionalProperties": False,
+}
+
+_PLANNER_SEQUENCE_DIRECTION: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "phase": {"type": "string"},
+        "function": {"type": "string"},
+        "musical_direction": {"type": "string"},
+    },
+    "required": ["phase", "function", "musical_direction"],
+    "additionalProperties": False,
+}
+
+# v6.1 / Schema_Planner_v4：段落规划字段（不含 playlist/script）
 _PLANNER_SEGMENT_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -39,21 +73,28 @@ _PLANNER_SEGMENT_ITEM: dict[str, Any] = {
         "order": {"type": "integer"},
         "name": {"type": "string"},
         "target_duration_seconds": {"type": "integer"},
-        "bpm_range": {
-            "type": "array",
-            "items": {"type": "integer"},
-        },
-        "mood": {"type": "string"},
-        "segment_design": {"type": "string"},
+        "narrative_function": {"type": "string"},
+        "scene": {"type": "string"},
+        "sonic_direction": {"type": "array", "items": {"type": "string"}},
+        "lyrical_direction": {"type": "array", "items": {"type": "string"}},
+        "anchor_tracks": {"type": "array", "items": _PLANNER_ANCHOR_TRACK},
+        "reference_material": {"type": "array", "items": _PLANNER_REFERENCE_MATERIAL},
+        "sequence_direction": {"type": "array", "items": _PLANNER_SEQUENCE_DIRECTION},
+        "transition_to_next": {"type": "string"},
     },
     "required": [
         "segment_id",
         "order",
         "name",
         "target_duration_seconds",
-        "bpm_range",
-        "mood",
-        "segment_design",
+        "narrative_function",
+        "scene",
+        "sonic_direction",
+        "lyrical_direction",
+        "anchor_tracks",
+        "reference_material",
+        "sequence_direction",
+        "transition_to_next",
     ],
     "additionalProperties": False,
 }
@@ -67,8 +108,16 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "theme_description": {"type": "string"},
+                    "theme_type": {"type": "string"},
+                    "theme_subject": {"type": "string"},
+                    "theme_relationship": {"type": "string"},
                 },
-                "required": ["theme_description"],
+                "required": [
+                    "theme_description",
+                    "theme_type",
+                    "theme_subject",
+                    "theme_relationship",
+                ],
                 "additionalProperties": False,
             },
         ),
@@ -76,11 +125,11 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
             {
                 "type": "object",
                 "properties": {
-                    "tone": {"type": "string"},
-                    "language_style": {"type": "string"},
+                    "energy_strategy": {"type": "string"},
+                    "sonic_world": {"type": "array", "items": {"type": "string"}},
                     "avoid": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["tone", "language_style", "avoid"],
+                "required": ["energy_strategy", "sonic_world", "avoid"],
                 "additionalProperties": False,
             },
         ),
@@ -88,10 +137,11 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
             {
                 "type": "object",
                 "properties": {
+                    "segment_count": {"type": "integer"},
+                    "episode_direction": {"type": "string"},
                     "segments_design": {"type": "string"},
-                    "emotion_curve": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["segments_design", "emotion_curve"],
+                "required": ["segment_count", "episode_direction", "segments_design"],
                 "additionalProperties": False,
             },
         ),
@@ -110,11 +160,13 @@ _CRITIC_ISSUE_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
         "type": {"type": "string"},
+        "severity": {"type": "string", "enum": ["minor", "critical"]},
         "location": {"type": "string"},
         "problem": {"type": "string"},
+        "listener_impact": {"type": "string"},
         "suggestion": {"type": "string"},
     },
-    "required": ["type", "location", "problem", "suggestion"],
+    "required": ["type", "severity", "location", "problem", "listener_impact", "suggestion"],
     "additionalProperties": False,
 }
 
@@ -122,45 +174,104 @@ _CRITIC_ACTION_ITEM: dict[str, Any] = {
     "type": "object",
     "properties": {
         "target_agent": {"type": "string"},
+        "location": {"type": "string"},
         "instruction": {"type": "string"},
     },
-    "required": ["target_agent", "instruction"],
+    "required": ["target_agent", "location", "instruction"],
     "additionalProperties": False,
 }
 
-CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
+# v6.5：Planner Critic 各维满分 100
+_CRITIC_SCORE_PROPS: dict[str, Any] = {
+    "theme_definition": {"type": "integer", "minimum": 0, "maximum": 100},
+    "theme_relationship": {"type": "integer", "minimum": 0, "maximum": 100},
+    "musical_concept": {"type": "integer", "minimum": 0, "maximum": 100},
+    "segment_differentiation": {"type": "integer", "minimum": 0, "maximum": 100},
+    "sequence_narrative": {"type": "integer", "minimum": 0, "maximum": 100},
+    "curator_actionability": {"type": "integer", "minimum": 0, "maximum": 100},
+    "creative_freedom": {"type": "integer", "minimum": 0, "maximum": 100},
+}
+
+_CRITIC_BODY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "critic": {
+        "scores": {
             "type": "object",
-            "properties": {
-                "pass": {"type": "boolean"},
-                "scores": {
-                    "type": "object",
-                    "properties": {
-                        "coherence": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "emotion_flow": {"type": "integer", "minimum": 0, "maximum": 35},
-                        "immersion": {"type": "integer", "minimum": 0, "maximum": 30},
-                    },
-                    "required": ["coherence", "emotion_flow", "immersion"],
-                    "additionalProperties": False,
-                },
-                "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
-                "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
-            },
-            "required": ["pass", "scores", "issues", "actions"],
+            "properties": _CRITIC_SCORE_PROPS,
+            "required": list(_CRITIC_SCORE_PROPS.keys()),
             "additionalProperties": False,
         },
-        "control": {
-            "type": "object",
-            "properties": {
-                "next_agent": {"type": "string"},
-            },
-            "required": ["next_agent"],
-            "additionalProperties": False,
-        },
+        "issues": {"type": "array", "items": _CRITIC_ISSUE_ITEM},
+        "actions": {"type": "array", "items": _CRITIC_ACTION_ITEM},
     },
-    "required": ["critic", "control"],
+    "required": ["scores", "issues", "actions"],
+    "additionalProperties": False,
+}
+
+# v6.4 / v6.7：Planner Critic（无 overall_score；legacy 与 staged planner/writer 共用）
+CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"critic": _CRITIC_BODY_SCHEMA},
+    "required": ["critic"],
+    "additionalProperties": False,
+}
+
+CRITIC_STAGED_RESPONSE_SCHEMA: dict[str, Any] = CRITIC_RESPONSE_SCHEMA
+
+# v6.6 / v6.7：Curator Critic（actions 含 location，与 Planner 对齐）
+_CURATOR_CRITIC_ISSUE_ITEM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string"},
+        "severity": {"type": "string", "enum": ["minor", "major", "critical"]},
+        "location": {"type": "string"},
+        "problem": {"type": "string"},
+        "reason": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["type", "severity", "location", "problem", "reason", "suggestion"],
+    "additionalProperties": False,
+}
+
+_CURATOR_CRITIC_ACTION_ITEM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "target_agent": {"type": "string"},
+        "location": {"type": "string"},
+        "instruction": {"type": "string"},
+    },
+    "required": ["target_agent", "location", "instruction"],
+    "additionalProperties": False,
+}
+
+_CURATOR_CRITIC_SCORE_PROPS: dict[str, Any] = {
+    "planner_alignment": {"type": "integer", "minimum": 0, "maximum": 100},
+    "thematic_relevance": {"type": "integer", "minimum": 0, "maximum": 100},
+    "sequence_coherence": {"type": "integer", "minimum": 0, "maximum": 100},
+    "audience_listening_quality": {"type": "integer", "minimum": 0, "maximum": 100},
+    "track_fitness": {"type": "integer", "minimum": 0, "maximum": 100},
+}
+
+_CURATOR_CRITIC_BODY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "object",
+            "properties": _CURATOR_CRITIC_SCORE_PROPS,
+            "required": list(_CURATOR_CRITIC_SCORE_PROPS.keys()),
+            "additionalProperties": False,
+        },
+        "issues": {"type": "array", "items": _CURATOR_CRITIC_ISSUE_ITEM},
+        "actions": {"type": "array", "items": _CURATOR_CRITIC_ACTION_ITEM},
+    },
+    "required": ["scores", "issues", "actions"],
+    "additionalProperties": False,
+}
+
+CURATOR_CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"critic": _CURATOR_CRITIC_BODY_SCHEMA},
+    "required": ["critic"],
     "additionalProperties": False,
 }
 
@@ -169,10 +280,19 @@ _PLAYLIST_ITEM: dict[str, Any] = {
     "properties": {
         "track": {"type": "string"},
         "artist": {"type": "string"},
-        # 未知 BPM 时允许 null（与 Curator prompt / sanitize 一致）
-        "bpm": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "selection_reason": {"type": "string"},
+        "sequence_role": {"type": "string"},
+        "planner_alignment": {"type": "array", "items": {"type": "string"}},
+        "transition_logic": {"type": "string"},
     },
-    "required": ["track", "artist", "bpm"],
+    "required": [
+        "track",
+        "artist",
+        "selection_reason",
+        "sequence_role",
+        "planner_alignment",
+        "transition_logic",
+    ],
     "additionalProperties": False,
 }
 
@@ -204,7 +324,7 @@ _SCRIPT_OBJECT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# v3.7：single_agent 直接输出 PlanState 子集（仅五个顶层键）
+# v3.7 / v6.1：single_agent 直接输出 PlanState 子集（Planner+Curator+Writer 字段；无 critic/control）
 SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -217,12 +337,9 @@ SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
                 "theme_description": {"type": "string"},
                 "language": {"type": "string"},
                 "target_duration_seconds": {"type": "integer"},
-                "overall_bpm_range": {
-                    "anyOf": [
-                        {"type": "null"},
-                        {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
-                    ],
-                },
+                "theme_type": {"type": "string"},
+                "theme_subject": {"type": "string"},
+                "theme_relationship": {"type": "string"},
             },
             "required": [
                 "request_id",
@@ -230,27 +347,30 @@ SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
                 "theme_description",
                 "language",
                 "target_duration_seconds",
-                "overall_bpm_range",
+                "theme_type",
+                "theme_subject",
+                "theme_relationship",
             ],
             "additionalProperties": False,
         },
         "global_constraints": {
             "type": "object",
             "properties": {
-                "tone": {"type": "string"},
-                "language_style": {"type": "string"},
+                "energy_strategy": {"type": "string"},
+                "sonic_world": {"type": "array", "items": {"type": "string"}},
                 "avoid": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["tone", "language_style", "avoid"],
+            "required": ["energy_strategy", "sonic_world", "avoid"],
             "additionalProperties": False,
         },
         "plan": {
             "type": "object",
             "properties": {
+                "segment_count": {"type": "integer"},
+                "episode_direction": {"type": "string"},
                 "segments_design": {"type": "string"},
-                "emotion_curve": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["segments_design", "emotion_curve"],
+            "required": ["segment_count", "episode_direction", "segments_design"],
             "additionalProperties": False,
         },
         "segments": {
@@ -262,14 +382,14 @@ SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
                     "order": {"type": "integer"},
                     "name": {"type": "string"},
                     "target_duration_seconds": {"type": "integer"},
-                    "bpm_range": {
-                        "anyOf": [
-                            {"type": "null"},
-                            {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
-                        ],
-                    },
-                    "mood": {"type": "string"},
-                    "segment_design": {"type": "string"},
+                    "narrative_function": {"type": "string"},
+                    "scene": {"type": "string"},
+                    "sonic_direction": {"type": "array", "items": {"type": "string"}},
+                    "lyrical_direction": {"type": "array", "items": {"type": "string"}},
+                    "anchor_tracks": {"type": "array", "items": _PLANNER_ANCHOR_TRACK},
+                    "reference_material": {"type": "array", "items": _PLANNER_REFERENCE_MATERIAL},
+                    "sequence_direction": {"type": "array", "items": _PLANNER_SEQUENCE_DIRECTION},
+                    "transition_to_next": {"type": "string"},
                     "playlist": {
                         "type": "array",
                         "items": _PLAYLIST_ITEM,
@@ -281,9 +401,14 @@ SINGLE_AGENT_STATE_SUBSET_SCHEMA: dict[str, Any] = {
                     "order",
                     "name",
                     "target_duration_seconds",
-                    "bpm_range",
-                    "mood",
-                    "segment_design",
+                    "narrative_function",
+                    "scene",
+                    "sonic_direction",
+                    "lyrical_direction",
+                    "anchor_tracks",
+                    "reference_material",
+                    "sequence_direction",
+                    "transition_to_next",
                     "playlist",
                     "script",
                 ],

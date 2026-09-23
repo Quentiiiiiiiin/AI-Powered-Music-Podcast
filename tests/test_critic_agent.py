@@ -1,4 +1,4 @@
-"""v3.0：Critic Agent 契约测试。"""
+"""v6.5：Critic Agent sanitize + 系统派生 + Planner revision 护栏。"""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ import pytest
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.modules.theme.critic_agent import CriticAgent
+from podcast_ai.modules.theme.critic_rules import CRITIC_SCORE_DIMS
 from podcast_ai.modules.theme.state import initialize_plan_state
 
 
@@ -30,67 +31,146 @@ def _request() -> EpisodeRequest:
     )
 
 
-def test_v30_critic_agent_pass_false_requires_actions_and_sets_next_agent() -> None:
+def _scores(value: int) -> dict[str, int]:
+    return {dim: value for dim in CRITIC_SCORE_DIMS}
+
+
+def _model_critic(
+    *,
+    score: int,
+    issues: list | None = None,
+    actions: list | None = None,
+) -> dict[str, Any]:
+    return {
+        "scores": _scores(score),
+        "issues": issues if issues is not None else [],
+        "actions": actions if actions is not None else [],
+    }
+
+
+def test_v65_critic_fail_derives_pass_false_and_next_agent() -> None:
     state = initialize_plan_state(_request())
     payload = {
-        "critic": {
-            "pass": False,
-            "scores": {"coherence": 6, "emotion_flow": 5, "immersion": 6},
-            "issues": [
+        "critic": _model_critic(
+            score=50,
+            issues=[
                 {
-                    "type": "emotion_flow",
+                    "type": "sequence_narrative",
+                    "severity": "critical",
                     "location": "segments[0].playlist[0]",
                     "problem": "情绪跳跃过大",
-                    "suggestion": "替换为过渡更平缓的歌曲",
+                    "listener_impact": "断档",
+                    "suggestion": "换曲",
                 }
             ],
-            "actions": [
+            actions=[
                 {
                     "target_agent": "Music Curator",
-                    "instruction": "调整 playlist 的情绪曲线并减少 BPM 跳变。",
+                    "location": "segments[0].playlist[0]",
+                    "instruction": "调整 playlist 情绪过渡。",
                 }
             ],
-        },
-        "control": {"next_agent": "Music Curator"},
+        )
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
     next_state = agent.run(state)
     assert next_state["critic"]["pass"] is False
+    assert next_state["critic"]["threshold"]["theme_definition"] == 80
     assert len(next_state["critic"]["actions"]) == 1
     assert next_state["control"]["next_agent"] == "Music Curator"
 
 
-def test_v30_critic_agent_pass_false_without_actions_raises() -> None:
+def test_v65_critic_pass_true_at_81() -> None:
     state = initialize_plan_state(_request())
-    payload = {
-        "critic": {
-            "pass": False,
-            "scores": {"coherence": 6, "emotion_flow": 5, "immersion": 6},
-            "issues": [],
-            "actions": [],
-        },
-        "control": {"next_agent": "Music Curator"},
-    }
+    state["control"]["next_agent"] = "Script Writer"
+    payload = {"critic": _model_critic(score=81, issues=[], actions=[])}
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state)
+    assert next_state["critic"]["pass"] is True
+    assert next_state["control"]["next_agent"] == "Script Writer"
 
-    with pytest.raises(AIServiceError, match=r"actions.*至少"):
+
+def test_v65_critic_score_80_is_not_pass() -> None:
+    state = initialize_plan_state(_request())
+    payload = {"critic": _model_critic(score=80, issues=[], actions=[])}
+    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state)
+    assert next_state["critic"]["pass"] is False
+
+
+def test_v65_critic_rejects_model_pass() -> None:
+    state = initialize_plan_state(_request())
+    body = _model_critic(score=81)
+    body["pass"] = True
+    agent = CriticAgent(llm_client=_StubLLMClient({"critic": body}))
+    with pytest.raises(AIServiceError, match=r"禁止输出系统字段|pass"):
         agent.run(state)
 
 
-def test_v30_critic_agent_rejects_forbidden_plan_write() -> None:
+def test_v65_critic_rejects_model_control() -> None:
     state = initialize_plan_state(_request())
     payload = {
-        "plan": {"segments_design": "bad"},
-        "critic": {
-            "pass": True,
-            "scores": {"coherence": 28, "emotion_flow": 28, "immersion": 24},
-            "issues": [],
-            "actions": [],
-        },
-        "control": {"next_agent": "Orchestrator"},
+        "critic": _model_critic(score=81),
+        "control": {"next_agent": "Planner"},
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
-
     with pytest.raises(AIServiceError, match=r"越权写入顶层字段"):
         agent.run(state)
 
+
+def test_v65_staged_does_not_write_next_agent() -> None:
+    state = initialize_plan_state(_request())
+    state["control"]["next_agent"] = "Planner"
+    payload = {
+        "critic": _model_critic(
+            score=40,
+            actions=[
+                {
+                    "target_agent": "Music Curator",
+                    "location": "segments[0]",
+                    "instruction": "fix playlist",
+                }
+            ],
+        )
+    }
+    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    # script_writer 仍用 Planner Critic 契约；断言 staged 不改 next_agent
+    next_state = agent.run(state, orchestration_mode="staged", stage="script_writer")
+    assert next_state["critic"]["pass"] is False
+    assert next_state["control"]["next_agent"] == "Planner"
+
+
+def test_v68_planner_revision_allows_new_issue_wording() -> None:
+    """v6.8：revision 换 problem / 新指纹不再硬失败。"""
+    state = initialize_plan_state(_request())
+    state["critic"]["scores"] = _scores(60)
+    state["critic"]["issues"] = [
+        {
+            "type": "x",
+            "severity": "critical",
+            "location": "plan",
+            "problem": "old",
+            "listener_impact": "i",
+            "suggestion": "s",
+        }
+    ]
+    payload = {
+        "critic": _model_critic(
+            score=65,
+            issues=[
+                {
+                    "type": "x",
+                    "severity": "critical",
+                    "location": "plan",
+                    "problem": "brand new issue wording",
+                    "listener_impact": "i",
+                    "suggestion": "s",
+                }
+            ],
+            actions=[],
+        )
+    }
+    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state, mode="revision", orchestration_mode="staged", stage="planner")
+    assert next_state["critic"]["issues"][0]["problem"] == "brand new issue wording"
+    assert next_state["critic"]["pass"] is False

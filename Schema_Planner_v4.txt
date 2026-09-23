@@ -1,0 +1,130 @@
+{
+  "meta": {
+    "theme": "Night Drive at Full Focus",
+    "theme_description": "A 60-minute high-energy night-drive episode built around cinematic movement, sustained momentum, controlled tension, and nocturnal atmosphere.",
+    "target_duration_seconds": 3600,
+    "language": "en-US"
+    "theme_type": "",
+    "theme_subject": "",
+    "theme_relationship": "",
+
+  },
+
+  "global_constraints": {
+    "energy_strategy": "Maintain high energy throughout the episode, creating variation through changes in texture, rhythmic density, and dramatic character rather than large emotional rises and falls.",
+
+    "sonic_world": [
+      "cinematic electronic",
+      "dark electronic",
+      "cinematic hip-hop",
+      "night-drive pop",
+      "industrial rhythm",
+      "dramatic club music"
+    ],
+
+    "avoid": [
+      "generic festival EDM selected primarily for tempo",
+      "songs chosen only because their titles mention cars, speed, racing, or roads",
+      "generic radio-pop that breaks the sonic world",
+      "extended low-energy passages",
+      "sentimental ballads",
+      "abrupt stylistic resets",
+      "glorification of dangerous or illegal driving"
+    ]
+  },
+
+  "plan": {
+    "segment_count": 4,
+
+    "episode_direction": "The episode moves from cinematic arrival, into physical motion, then into compressed rhythmic pressure, and finally into an expansive nocturnal sprint. Energy remains consistently high while the musical texture evolves.",
+
+    "segments_design": "Each segment should have a distinct sonic identity while functioning as part of one continuous night-drive sequence."
+  },
+
+  "segments": [
+    {
+      "segment_id": "seg_01",
+      "order": 1,
+      "name": "Cinematic Ignition",
+      "target_duration_seconds": 780,
+
+      "narrative_function": "Establish the nocturnal cinematic world and transform anticipation into the first sense of physical movement.",
+
+      "scene": "Dashboard glow, city reflections, dark streets, tunnel lights, and the first movement into the night.",
+
+      "sonic_direction": [
+        "cinematic scale",
+        "deep low-end",
+        "dark synth atmosphere",
+        "controlled percussion",
+        "polished production",
+        "gradually increasing rhythmic activity"
+      ],
+
+      "lyrical_direction": [
+        "movement",
+        "ambition",
+        "control",
+        "nightlife",
+        "confidence"
+      ],
+
+      "anchor_tracks": [
+        {
+          "track": "Lose My Mind",
+          "artist": "Don Toliver",
+          "required": true
+        }
+      ],
+
+      "reference_material": [
+        {
+          "track": "Sweet Dreams (Are Made of This)",
+          "artist": "Eurythmics",
+          "purpose": "Reference for hypnotic repetition and iconic rapid-movement association."
+        }
+      ],
+
+      "sequence_direction": [
+        {
+          "phase": "cinematic_arrival",
+          "function": "Establish the episode's sonic world immediately.",
+          "musical_direction": "Spacious, cinematic, bass-heavy, and rhythmically controlled."
+        },
+        {
+          "phase": "activation",
+          "function": "Turn atmosphere into physical movement.",
+          "musical_direction": "Introduce stronger percussion, repetition, and forward rhythmic motion."
+        },
+        {
+          "phase": "lock_in",
+          "function": "Create a concentrated and continuous sense of forward momentum.",
+          "musical_direction": "Increase rhythmic density while reducing unnecessary spaciousness."
+        },
+        {
+          "phase": "handoff",
+          "function": "Prepare the transition into the acceleration chapter.",
+          "musical_direction": "End with stronger propulsion and a more active rhythmic profile."
+        }
+      ],
+
+      "transition_to_next": "Move from cinematic arrival into more physical and kinetic movement without resetting the sonic world.",
+      "playlist": [
+        {
+          "track": "Lose My Mind",
+          "artist": "Don Toliver",
+
+          "selection_reason": "Why this recording is musically and thematically appropriate.",
+
+          "sequence_role": "What this track does at this point in the sequence.",
+
+          "planner_alignment": [
+            "Specific ways this track fulfills the Planner's intended musical direction."
+          ],
+
+          "transition_logic": "Why this track connects naturally to the surrounding tracks."
+        }
+      ]
+    }
+  ]
+}

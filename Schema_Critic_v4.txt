@@ -1,0 +1,33 @@
+{
+  "critic": {
+
+    "scores": {
+      "theme_definition": 0,
+      "theme_relationship": 0,
+      "musical_concept": 0,
+      "segment_differentiation": 0,
+      "sequence_narrative": 0,
+      "curator_actionability": 0,
+      "creative_freedom": 0
+    },
+
+    "issues": [
+      {
+        "type": "",
+        "severity": "critical",
+        "location": "",
+        "problem": "",
+        "listener_impact": "",
+        "suggestion": ""
+      }
+    ],
+
+    "actions": [
+      {
+        "target_agent": "Planner",
+        "location": "",
+        "instruction": ""
+      }
+    ]
+  }
+}

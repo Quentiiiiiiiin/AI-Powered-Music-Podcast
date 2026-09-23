@@ -58,7 +58,12 @@ def _episode_request(tmp: Path) -> EpisodeRequest:
 
 def _planner_payload_min() -> dict[str, Any]:
     return {
-        "meta": {"theme_description": "x"},
+        "meta": {
+            "theme_description": "x",
+            "theme_type": "",
+            "theme_subject": "",
+            "theme_relationship": "",
+        },
         "global_constraints": None,
         "plan": None,
         "segments": None,

@@ -18,6 +18,14 @@ from podcast_ai.console.mix_params_timeline import (
     save_mix_params_as_new_file,
     timeline_source_as_mix_params,
 )
+from podcast_ai.console.option_catalogs import (
+    base_url_for_interface,
+    llm_interface_ids,
+    llm_model_choices,
+    models_for_tts,
+    provider_dropdown_choices,
+    voices_for_tts,
+)
 from podcast_ai.console.presets import list_preset_names, load_preset_by_name, save_preset
 from podcast_ai.console.run_progress import progress_from_events
 from podcast_ai.console.runner import (
@@ -28,6 +36,7 @@ from podcast_ai.console.runner import (
     run_plan,
     run_stage2,
     run_stage3,
+    settings_from_params,
 )
 from podcast_ai.console.snapshot_timeline import (
     TABLE_HEADERS,
@@ -57,18 +66,26 @@ def _params_from_form(
     duration_minutes: float | int | None,
     language: str,
     agent_mode: str,
+    orchestration_mode: str,
     output_dir: str,
+    llm_interface: str,
     llm_model: str,
     openrouter_provider: str,
     llm_base_url: str,
     snapshot_path: str,
     music_dir: str,
     tts_provider: str,
+    tts_model: str,
+    tts_voice_id: str,
     mix_params_path: str,
     crossfade_seconds: float | None,
     voice_music_crossfade_seconds: float | None,
     intro_align_enabled: bool,
     intro_align_max_seconds: float | None,
+    per_track_normalize_enabled: bool,
+    voice_gain_db: float | None,
+    voice_music_overlay_music_max_db: float | None,
+    voice_music_post_overlay_ramp_seconds: float | None,
 ) -> ConsoleParams:
     defaults = defaults_from_settings()
     return ConsoleParams(
@@ -76,13 +93,17 @@ def _params_from_form(
         duration_minutes=int(duration_minutes or defaults.duration_minutes),
         language=language or "zh",
         agent_mode=agent_mode or "multi_agent",
+        orchestration_mode=orchestration_mode or "staged",
         output_dir=output_dir or defaults.output_dir,
+        llm_interface=llm_interface or "openrouter",
         llm_model=llm_model or "",
         openrouter_provider=openrouter_provider or "",
         llm_base_url=llm_base_url or "",
         snapshot_path=snapshot_path or "",
         music_dir=music_dir or defaults.music_dir,
         tts_provider=tts_provider or "default",
+        tts_model=tts_model or "",
+        tts_voice_id=tts_voice_id or "",
         mix_params_path=mix_params_path or "",
         crossfade_seconds=float(
             crossfade_seconds if crossfade_seconds is not None else defaults.crossfade_seconds
@@ -97,6 +118,24 @@ def _params_from_form(
             intro_align_max_seconds
             if intro_align_max_seconds is not None
             else defaults.intro_align_max_seconds
+        ),
+        per_track_normalize_enabled=(
+            defaults.per_track_normalize_enabled
+            if per_track_normalize_enabled is None
+            else bool(per_track_normalize_enabled)
+        ),
+        voice_gain_db=float(
+            voice_gain_db if voice_gain_db is not None else defaults.voice_gain_db
+        ),
+        voice_music_overlay_music_max_db=float(
+            voice_music_overlay_music_max_db
+            if voice_music_overlay_music_max_db is not None
+            else defaults.voice_music_overlay_music_max_db
+        ),
+        voice_music_post_overlay_ramp_seconds=float(
+            voice_music_post_overlay_ramp_seconds
+            if voice_music_post_overlay_ramp_seconds is not None
+            else defaults.voice_music_post_overlay_ramp_seconds
         ),
     )
 
@@ -143,31 +182,58 @@ def _audio_value(result: ConsoleRunResult) -> str | None:
     return str(path) if path.is_file() else None
 
 
-_INSIGHT_IDLE = "**iteration**: `—`  \n**当前 Agent**: `—`  \n**失败原因**: `—`"
+_INSIGHT_IDLE = (
+    "**orchestration_mode**: `—`  \n"
+    "**iteration**: `—`  \n"
+    "**stage**: `—`  \n"
+    "**revision**: `—`  \n"
+    "**当前 Agent**: `—`  \n"
+    "**失败原因**: `—`"
+)
 
 
-def _insight_md(result: ConsoleRunResult, *, agent_mode: str = "") -> str:
-    """阶段一运行态：iteration / Agent / 失败原因（失败时必显示）。"""
+def _insight_md(
+    result: ConsoleRunResult,
+    *,
+    agent_mode: str = "",
+    orchestration_mode: str = "",
+) -> str:
+    """阶段一运行态：mode / iteration / stage / revision / Agent / 失败原因。"""
     if result.status == "idle":
         return _INSIGHT_IDLE
     it = result.plan_iteration
     agent = result.plan_current_agent
     mode = (agent_mode or "").strip()
-    if mode == "single_agent" and it is None:
-        it_disp = "N/A"
+    orch = (result.orchestration_mode or orchestration_mode or "").strip() or "—"
+    stage = result.plan_stage
+    revision = result.plan_revision
+    if mode == "single_agent":
+        orch_disp = f"{orch}（single_agent 强制）" if orch != "—" else "N/A"
+        it_disp = "N/A" if it is None else str(it)
         agent_disp = agent or "single_agent"
-    elif result.status == "running" and it is None and not agent:
+        stage_disp = "N/A"
+        rev_disp = "N/A"
+    elif result.status == "running" and it is None and not agent and not stage:
+        orch_disp = orch
         it_disp = "…"
         agent_disp = "…"
+        stage_disp = "…"
+        rev_disp = "…"
     else:
+        orch_disp = orch
         it_disp = "N/A" if it is None else str(it)
         agent_disp = agent or "N/A"
+        stage_disp = stage or "N/A"
+        rev_disp = "N/A" if revision is None else str(revision)
     if result.status == "error":
         fail = (result.error or "").strip() or "未知错误"
     else:
         fail = "—"
     return (
+        f"**orchestration_mode**: `{orch_disp}`  \n"
         f"**iteration**: `{it_disp}`  \n"
+        f"**stage**: `{stage_disp}`  \n"
+        f"**revision**: `{rev_disp}`  \n"
         f"**当前 Agent**: `{agent_disp}`  \n"
         f"**失败原因**: {fail}"
     )
@@ -210,8 +276,10 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
     """计划运行：先标 running，再按进度钩子刷新洞察，最后给出完整结果。"""
     sink: list[dict[str, Any]] = []
     running = ConsoleRunResult.running("plan")
+    orch = str(settings_from_params(params).app.orchestration_mode)
+    running.orchestration_mode = orch
     packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
-    insight = _insight_md(running, agent_mode=params.agent_mode)
+    insight = _insight_md(running, agent_mode=params.agent_mode, orchestration_mode=orch)
     yield (*packed, insight, insight)
 
     holder: list[ConsoleRunResult] = []
@@ -228,18 +296,23 @@ def _yield_plan(params: ConsoleParams) -> Iterator[tuple[Any, ...]]:
         hooked = progress_from_events(sink)
         running.plan_iteration = hooked.iteration
         running.plan_current_agent = hooked.current_agent
+        running.plan_stage = hooked.stage
+        running.plan_revision = hooked.revision
         if params.agent_mode == "single_agent" and not running.plan_current_agent:
             running.plan_current_agent = "single_agent"
         packed = _ui_pack(running, params.snapshot_path, params.mix_params_path)
-        insight = _insight_md(running, agent_mode=params.agent_mode)
+        insight = _insight_md(running, agent_mode=params.agent_mode, orchestration_mode=orch)
         yield (*packed, insight, insight)
 
     if not holder:
         result = ConsoleRunResult(status="error", command="plan", error="计划线程异常退出")
+        result.orchestration_mode = orch
     else:
         result = holder[0]
+        if not result.orchestration_mode:
+            result.orchestration_mode = orch
     packed = _ui_pack(result, params.snapshot_path, params.mix_params_path)
-    insight = _insight_md(result, agent_mode=params.agent_mode)
+    insight = _insight_md(result, agent_mode=params.agent_mode, orchestration_mode=orch)
     yield (*packed, insight, insight)
 
 
@@ -309,14 +382,38 @@ def build_app():
                         value="multi_agent",
                         label="agent_mode",
                     )
+                    orchestration_mode = gr.Radio(
+                        choices=["staged", "legacy"],
+                        value=defaults.orchestration_mode or "staged",
+                        label="orchestration_mode",
+                        info="仅 multi_agent 可选；single_agent 强制 legacy",
+                    )
                 output_dir = gr.Textbox(label="output_dir", value=defaults.output_dir)
-                llm_model = gr.Textbox(label="model", value=defaults.llm_model)
-                openrouter_provider = gr.Textbox(
-                    label="openrouter_provider",
-                    value=defaults.openrouter_provider,
-                    placeholder="留空 = OpenRouter 自动路由",
+                llm_interface = gr.Dropdown(
+                    label="模型接口",
+                    choices=llm_interface_ids(),
+                    value="openrouter",
+                    allow_custom_value=False,
                 )
-                llm_base_url = gr.Textbox(label="base_url", value=defaults.llm_base_url)
+                llm_base_url = gr.Textbox(
+                    label="base_url（随接口自动填充，无需手填）",
+                    value=base_url_for_interface("openrouter"),
+                    interactive=False,
+                )
+                llm_model = gr.Dropdown(
+                    label="模型（可选手输）",
+                    choices=llm_model_choices(defaults.llm_model),
+                    value=defaults.llm_model or None,
+                    allow_custom_value=True,
+                )
+                openrouter_provider = gr.Dropdown(
+                    label="供应商（可空=自动路由，可选手输）",
+                    choices=provider_dropdown_choices(
+                        defaults.llm_model, defaults.openrouter_provider
+                    ),
+                    value=defaults.openrouter_provider or "",
+                    allow_custom_value=True,
+                )
                 plan_btn = gr.Button("Run Plan", variant="primary")
                 gr.Markdown("#### 运行态洞察")
                 plan_insight_md = gr.Markdown(_INSIGHT_IDLE)
@@ -356,6 +453,21 @@ def build_app():
                     choices=["default", "edge", "elevenlabs", "minimax"],
                     value="default",
                 )
+                tts_model = gr.Dropdown(
+                    label="TTS 模型（可选手输）",
+                    choices=[],
+                    value="",
+                    allow_custom_value=True,
+                    interactive=False,
+                )
+                tts_voice_id = gr.Dropdown(
+                    label="TTS voice_id（可选手输）",
+                    choices=[],
+                    value="",
+                    allow_custom_value=True,
+                    interactive=False,
+                )
+                tts_hint = gr.Markdown("_default 沿用 config；edge 使用 `tts.voice`，无需选 model/voice。_")
                 with gr.Row():
                     crossfade_seconds = gr.Number(
                         label="crossfade_seconds（歌→歌）",
@@ -373,6 +485,27 @@ def build_app():
                     label="voice_music_intro_align_max_seconds",
                     value=defaults.intro_align_max_seconds,
                 )
+                with gr.Accordion("混音音频参数", open=False):
+                    per_track_normalize_enabled = gr.Checkbox(
+                        label="每轨音量归一化",
+                        info="是否对每首曲目/TTS 做平均电平 normalize；关闭则保留源响度",
+                        value=defaults.per_track_normalize_enabled,
+                    )
+                    voice_gain_db = gr.Number(
+                        label="串词额外增益（dB）",
+                        info="仅串词：额外固定增益，正数变大",
+                        value=defaults.voice_gain_db,
+                    )
+                    voice_music_overlay_music_max_db = gr.Number(
+                        label="叠化窗内音乐增益上限（dB）",
+                        info="串词→歌叠化窗内音乐相对满电平的上限；0=不限制",
+                        value=defaults.voice_music_overlay_music_max_db,
+                    )
+                    voice_music_post_overlay_ramp_seconds = gr.Number(
+                        label="叠化后音乐爬回满电平（秒）",
+                        info="叠化结束后从上限爬回满电平的时长；0=关闭；仅上限<0 时生效",
+                        value=defaults.voice_music_post_overlay_ramp_seconds,
+                    )
                 stage2_btn = gr.Button("Run Stage 2", variant="primary")
                 create_btn = gr.Button("One-shot Create（跳过人工改 mix_params）")
 
@@ -437,18 +570,26 @@ def build_app():
             duration_minutes,
             language,
             agent_mode,
+            orchestration_mode,
             output_dir,
+            llm_interface,
             llm_model,
             openrouter_provider,
             llm_base_url,
             snapshot_path,
             music_dir,
             tts_provider,
+            tts_model,
+            tts_voice_id,
             mix_params_path,
             crossfade_seconds,
             voice_music_crossfade_seconds,
             intro_align_enabled,
             intro_align_max_seconds,
+            per_track_normalize_enabled,
+            voice_gain_db,
+            voice_music_overlay_music_max_db,
+            voice_music_post_overlay_ramp_seconds,
         ]
         result_outputs = [
             status_md,
@@ -485,6 +626,63 @@ def build_app():
         stage2_btn.click(on_stage2, inputs=form_inputs, outputs=result_outputs)
         stage3_btn.click(on_stage3, inputs=form_inputs, outputs=result_outputs)
         create_btn.click(on_create, inputs=form_inputs, outputs=result_outputs)
+
+        def on_agent_mode_change(mode: str):
+            if (mode or "") == "single_agent":
+                return gr.update(value="legacy", interactive=False)
+            return gr.update(interactive=True)
+
+        agent_mode.change(on_agent_mode_change, inputs=[agent_mode], outputs=[orchestration_mode])
+
+        def on_llm_interface_change(iface: str):
+            try:
+                return base_url_for_interface(iface)
+            except ValueError:
+                return gr.update()
+
+        llm_interface.change(on_llm_interface_change, inputs=[llm_interface], outputs=[llm_base_url])
+
+        def on_llm_model_change(model: str, current_provider: str):
+            pairs = provider_dropdown_choices(model or "", current_provider or "")
+            allowed = {value for _, value in pairs}
+            new_val = current_provider if (current_provider or "") in allowed else ""
+            return gr.update(choices=pairs, value=new_val)
+
+        llm_model.change(
+            on_llm_model_change,
+            inputs=[llm_model, openrouter_provider],
+            outputs=[openrouter_provider],
+        )
+
+        def on_tts_provider_change(prov: str, cur_model: str, cur_voice: str):
+            key = (prov or "default").strip().lower()
+            if key in {"", "default"}:
+                return (
+                    gr.update(choices=[], value="", interactive=False),
+                    gr.update(choices=[], value="", interactive=False),
+                    "_default 沿用 config；不覆盖 tts.model / voice_id。_",
+                )
+            if key == "edge":
+                return (
+                    gr.update(choices=[], value="", interactive=False),
+                    gr.update(choices=[], value="", interactive=False),
+                    "_edge 使用 config 的 `tts.voice`，无需选择 model / voice_id。_",
+                )
+            models = models_for_tts(key, cur_model)
+            voices = voices_for_tts(key, cur_voice)
+            model_val = (cur_model or "").strip() or (models[0] if models else "")
+            voice_val = (cur_voice or "").strip() or (voices[0] if voices else "")
+            return (
+                gr.update(choices=models, value=model_val, interactive=True),
+                gr.update(choices=voices, value=voice_val, interactive=True),
+                f"已切换 `{key}`：可选预设，也可手输未列出的值。",
+            )
+
+        tts_provider.change(
+            on_tts_provider_change,
+            inputs=[tts_provider, tts_model, tts_voice_id],
+            outputs=[tts_model, tts_voice_id, tts_hint],
+        )
 
         def on_load_snapshot(path: str):
             try:
@@ -786,32 +984,73 @@ def build_app():
         def on_load(name: str, out_dir: str, *args: Any):
             params = _params_from_form(*args)
             if not (name or "").strip():
-                return [*(gr.update() for _ in form_inputs), "请先在下拉框选择快照。"]
+                return [*(gr.update() for _ in form_inputs), gr.update(), "请先在下拉框选择快照。"]
             try:
                 loaded = load_preset_by_name(out_dir or params.output_dir, name)
             except Exception as exc:  # noqa: BLE001
-                return [*(gr.update() for _ in form_inputs), f"加载失败：{exc}"]
+                return [*(gr.update() for _ in form_inputs), gr.update(), f"加载失败：{exc}"]
             merged = params.as_form_dict()
             merged.update(loaded)
+            agent = merged.get("agent_mode") or "multi_agent"
+            orch = merged.get("orchestration_mode") or "staged"
+            orch_interactive = agent != "single_agent"
+            if not orch_interactive:
+                orch = "legacy"
+            iface = merged.get("llm_interface") or "openrouter"
+            try:
+                base_url = base_url_for_interface(iface)
+            except ValueError:
+                iface = "openrouter"
+                base_url = base_url_for_interface(iface)
+            model = merged.get("llm_model") or ""
+            provider = merged.get("openrouter_provider") or ""
+            tts_prov = merged.get("tts_provider") or "default"
+            tts_m = merged.get("tts_model") or ""
+            tts_v = merged.get("tts_voice_id") or ""
+            tts_active = tts_prov in {"elevenlabs", "minimax"}
+            tts_models = models_for_tts(tts_prov, tts_m) if tts_active else []
+            tts_voices = voices_for_tts(tts_prov, tts_v) if tts_active else []
+            if tts_prov in {"", "default"}:
+                tts_msg = "_default 沿用 config；不覆盖 tts.model / voice_id。_"
+            elif tts_prov == "edge":
+                tts_msg = "_edge 使用 config 的 `tts.voice`，无需选择 model / voice_id。_"
+            else:
+                tts_msg = f"已切换 `{tts_prov}`：可选预设，也可手输未列出的值。"
             updates = [
                 merged["topic"],
                 merged["duration_minutes"],
                 merged["language"],
-                merged["agent_mode"],
+                agent,
+                gr.update(value=orch, interactive=orch_interactive),
                 merged["output_dir"],
-                merged["llm_model"],
-                merged["openrouter_provider"],
-                merged["llm_base_url"],
+                iface,
+                gr.update(value=model, choices=llm_model_choices(model)),
+                gr.update(value=provider, choices=provider_dropdown_choices(model, provider)),
+                base_url,
                 merged["snapshot_path"],
                 merged["music_dir"],
-                merged["tts_provider"],
+                tts_prov,
+                gr.update(
+                    value=tts_m if tts_active else "",
+                    choices=tts_models,
+                    interactive=tts_active,
+                ),
+                gr.update(
+                    value=tts_v if tts_active else "",
+                    choices=tts_voices,
+                    interactive=tts_active,
+                ),
                 merged["mix_params_path"],
                 merged["crossfade_seconds"],
                 merged["voice_music_crossfade_seconds"],
                 merged["intro_align_enabled"],
                 merged["intro_align_max_seconds"],
+                merged.get("per_track_normalize_enabled", True),
+                merged.get("voice_gain_db", 0.0),
+                merged.get("voice_music_overlay_music_max_db", 0.0),
+                merged.get("voice_music_post_overlay_ramp_seconds", 0.0),
             ]
-            return [*updates, f"已加载 `{name}`"]
+            return [*updates, tts_msg, f"已加载 `{name}`"]
 
         def on_refresh(out_dir: str):
             names = list_preset_names(out_dir or defaults.output_dir)
@@ -825,7 +1064,7 @@ def build_app():
         load_btn.click(
             on_load,
             inputs=[preset_pick, output_dir, *form_inputs],
-            outputs=[*form_inputs, preset_msg],
+            outputs=[*form_inputs, tts_hint, preset_msg],
         )
         refresh_btn.click(on_refresh, inputs=[output_dir], outputs=[preset_pick, preset_msg])
 

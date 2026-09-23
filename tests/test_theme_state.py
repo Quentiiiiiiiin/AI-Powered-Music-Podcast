@@ -29,27 +29,36 @@ def _request() -> EpisodeRequest:
 
 def test_v30_initialize_plan_state_defaults() -> None:
     state = initialize_plan_state(_request())
-    assert state["schema_version"] == "v3.0"
+    assert state["schema_version"] == "v4.0"
     assert state["meta"]["theme"] == "Late Night Chill"
     assert state["meta"]["language"] == "zh-CN"
     assert state["meta"]["target_duration_seconds"] == 3600
     assert state["control"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
     assert state["control"]["next_agent"] == "Planner"
     assert state["control"]["status"] == "draft"
+    assert state["control"]["failed_stage"] is None
+
+
+def test_v60_failed_stage_string_conforms_to_schema() -> None:
+    """staged 失败路径：control.failed_stage 可为 string。"""
+    state = initialize_plan_state(_request())
+    state["control"]["status"] = "stage_failed"
+    state["control"]["failed_stage"] = "music_curator"
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")
 
 
 def test_v30_merge_plan_state_is_field_level_and_non_destructive() -> None:
     original = initialize_plan_state(_request())
     patch = {
         "control": {"iteration": 1, "last_updated_by": "planner"},
-        "plan": {"emotion_curve": "warm -> peak -> close"},
+        "plan": {"episode_direction": "warm -> peak -> close"},
     }
     merged = merge_plan_state(original, patch)
 
     assert original["control"]["iteration"] == 1
     assert merged["control"]["iteration"] == 1
     assert merged["control"]["last_updated_by"] == "planner"
-    assert merged["plan"]["emotion_curve"] == "warm -> peak -> close"
+    assert merged["plan"]["episode_direction"] == "warm -> peak -> close"
 
 
 def test_v30_required_and_schema_validation() -> None:
@@ -75,23 +84,23 @@ def test_v30_assert_plan_state_valid_raises_on_invalid_state() -> None:
 
 def test_v30_validate_plan_state_schema_checks_nested_types() -> None:
     state = initialize_plan_state(_request())
-    state["meta"]["overall_bpm_range"] = "bad"
-    state["critic"]["scores"]["coherence"] = "bad"
+    state["meta"]["theme_type"] = 123  # type: ignore[assignment]
+    state["critic"]["scores"]["theme_definition"] = "bad"  # type: ignore[assignment]
     ok, errors = validate_plan_state_schema(state)
     assert ok is False
-    assert any("meta.overall_bpm_range" in e for e in errors)
-    assert any("critic.scores.coherence" in e for e in errors)
+    assert any("meta.theme_type" in e for e in errors)
+    assert any("critic.scores.theme_definition" in e for e in errors)
 
 
 def test_v30_merge_list_of_dict_merges_by_index() -> None:
     state = initialize_plan_state(_request())
     state["segments"] = [
-        {"segment_id": "seg_01", "name": "开场", "mood": "舒缓"},
-        {"segment_id": "seg_02", "name": "中段", "mood": "推进"},
+        {"segment_id": "seg_01", "name": "开场", "narrative_function": "舒缓"},
+        {"segment_id": "seg_02", "name": "中段", "narrative_function": "推进"},
     ]
-    merged = merge_plan_state(state, {"segments": [{"playlist": [{"track": "A", "artist": "X", "bpm": 100}]}, {"playlist": []}]})
+    merged = merge_plan_state(state, {"segments": [{"playlist": [{"track": "A", "artist": "X"}]}, {"playlist": []}]})
     assert merged["segments"][0]["name"] == "开场"
-    assert merged["segments"][0]["mood"] == "舒缓"
+    assert merged["segments"][0]["narrative_function"] == "舒缓"
     assert merged["segments"][0]["playlist"][0]["track"] == "A"
     assert merged["segments"][1]["name"] == "中段"
     assert merged["segments"][1]["playlist"] == []

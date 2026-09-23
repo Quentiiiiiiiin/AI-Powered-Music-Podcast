@@ -70,9 +70,16 @@ def _join_voice_to_music_fade_music_only(
     voice: AudioSegment,
     music: AudioSegment,
     vm_ms: int,
+    *,
+    music_overlay_max_db: float = 0.0,
+    post_overlay_ramp_ms: int = 0,
 ) -> AudioSegment:
     """
     串词结束后紧接音乐——仅对音乐前 vm_ms 做 fade_in 与串词尾窗重叠；串词尾部不衰减。
+
+    music_overlay_max_db < 0 时：叠化窗内音乐在淡入后整体再衰减到该上限，避免盖过人声。
+    post_overlay_ramp_ms > 0 且上限生效时：叠化结束后用短窗把音乐从上限电平交叉淡入到满电平，
+    避免瞬间跳满；0 表示叠化后直接接满电平（旧行为）。
 
     总时长 = len(voice) + len(music) - vm_ms（与对称叠化总时长公式一致）。
     """
@@ -84,7 +91,21 @@ def _join_voice_to_music_fade_music_only(
     v_pre = voice[:-vm_ms]
     v_tail = voice[-vm_ms:]
     m_head = music[:vm_ms].fade_in(vm_ms)
+    if music_overlay_max_db < 0:
+        m_head = m_head.apply_gain(float(music_overlay_max_db))
     m_rest = music[vm_ms:]
+    if (
+        music_overlay_max_db < 0
+        and post_overlay_ramp_ms > 0
+        and len(m_rest) > 0
+    ):
+        ramp_ms = min(int(post_overlay_ramp_ms), len(m_rest))
+        if ramp_ms > 0:
+            m_ramp_full = m_rest[:ramp_ms]
+            m_ramp_quiet = m_ramp_full.apply_gain(float(music_overlay_max_db))
+            # 从上限电平交叉到满电平（非从静音 fade_in）
+            m_ramp = m_ramp_quiet.fade_out(ramp_ms).overlay(m_ramp_full.fade_in(ramp_ms))
+            m_rest = m_ramp + m_rest[ramp_ms:]
     overlap = v_tail.overlay(m_head)
     return v_pre + overlap + m_rest
 
@@ -130,22 +151,45 @@ def _validate_voiceovers_against_tracks(
     return ordered
 
 
-def _load_track_segment(st: SelectedTrack) -> AudioSegment:
-    return simple_normalize(load_audio(st.track.file_path), target_dbfs=-16.0)
+def _load_track_segment(st: SelectedTrack, *, per_track_normalize: bool = True) -> AudioSegment:
+    audio = load_audio(st.track.file_path)
+    if not per_track_normalize:
+        return audio
+    return simple_normalize(audio, target_dbfs=-16.0)
 
 
-def _load_voice_segment(vo: VoiceoverSegment) -> AudioSegment:
+def _load_voice_segment(
+    vo: VoiceoverSegment,
+    *,
+    per_track_normalize: bool = True,
+    voice_normalize_to_dbfs: float | None = None,
+    voice_gain_db: float = 0.0,
+) -> AudioSegment:
     try:
-        return simple_normalize(load_audio(vo.audio_path), target_dbfs=-16.0)
+        audio = load_audio(vo.audio_path)
+        if per_track_normalize:
+            audio = simple_normalize(audio, target_dbfs=-16.0)
+        elif voice_normalize_to_dbfs is not None:
+            audio = simple_normalize(audio, target_dbfs=float(voice_normalize_to_dbfs))
+        if abs(float(voice_gain_db)) > 1e-9:
+            audio = audio.apply_gain(float(voice_gain_db))
+        return audio
     except Exception as exc:  # noqa: BLE001
         logger.warning("加载主持 %s 失败，使用空占位: %s", vo.segment_id, exc)
         return AudioSegment.silent(duration=0)
 
 
-def _music_chunk_from_tracks(tracks_chunk: list[SelectedTrack], crossfade_seconds: float) -> AudioSegment:
+def _music_chunk_from_tracks(
+    tracks_chunk: list[SelectedTrack],
+    crossfade_seconds: float,
+    *,
+    per_track_normalize: bool = True,
+) -> AudioSegment:
     if not tracks_chunk:
         return AudioSegment.silent(duration=0)
-    audios = [_load_track_segment(st) for st in tracks_chunk]
+    audios = [
+        _load_track_segment(st, per_track_normalize=per_track_normalize) for st in tracks_chunk
+    ]
     if len(audios) == 1:
         return audios[0]
     return crossfade_concat(audios, crossfade_seconds)
@@ -156,6 +200,10 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
     voiceovers: list[VoiceoverSegment],
     crossfade_seconds: float,
     eps: float,
+    *,
+    per_track_normalize: bool = True,
+    voice_normalize_to_dbfs: float | None = None,
+    voice_gain_db: float = 0.0,
 ) -> list[_TimelineBlock]:
     """
     将曲目（按 episode 时间线排序）与串词（按 insert_time 排序）合并为严格时间递增的块列表。
@@ -175,7 +223,9 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
         while track_idx < n and float(tracks_sorted[track_idx].end_time_in_episode) <= insert_t + eps:
             flush_queue.append(tracks_sorted[track_idx])
             track_idx += 1
-        music_seg = _music_chunk_from_tracks(flush_queue, crossfade_seconds)
+        music_seg = _music_chunk_from_tracks(
+            flush_queue, crossfade_seconds, per_track_normalize=per_track_normalize
+        )
         if len(music_seg) > 0:
             blocks.append(
                 _TimelineBlock(
@@ -188,14 +238,21 @@ def _build_ordered_blocks_from_tracks_and_voiceovers(
         blocks.append(
             _TimelineBlock(
                 kind="voice",
-                audio=_load_voice_segment(vo),
+                audio=_load_voice_segment(
+                    vo,
+                    per_track_normalize=per_track_normalize,
+                    voice_normalize_to_dbfs=voice_normalize_to_dbfs,
+                    voice_gain_db=voice_gain_db,
+                ),
                 next_music_first_track_path=next_music_first,
                 voice_segment_id=vo.segment_id,
             )
         )
 
     rest = tracks_sorted[track_idx:]
-    tail = _music_chunk_from_tracks(rest, crossfade_seconds)
+    tail = _music_chunk_from_tracks(
+        rest, crossfade_seconds, per_track_normalize=per_track_normalize
+    )
     if len(tail) > 0:
         blocks.append(
             _TimelineBlock(
@@ -365,7 +422,15 @@ def _concat_ordered_blocks(
                     config=config,
                     next_music_first_track_path=acc_block.next_music_first_track_path or cur_block.first_track_path,
                 )
-            acc = _join_voice_to_music_fade_music_only(acc, cur_block.audio, vm_ms)
+            acc = _join_voice_to_music_fade_music_only(
+                acc,
+                cur_block.audio,
+                vm_ms,
+                music_overlay_max_db=config.voice_music_overlay_music_max_db,
+                post_overlay_ramp_ms=int(
+                    round(float(config.voice_music_post_overlay_ramp_seconds) * 1000)
+                ),
+            )
             acc_block = _TimelineBlock(kind="music", audio=acc, first_track_path=cur_block.first_track_path)
         elif acc_block.kind == "music" and cur_block.kind == "music":
             # v4.2 不改变歌->歌语义：仍仅使用 crossfade_seconds。
@@ -502,13 +567,16 @@ class Mixer:
         无串词：全部曲目一次 `crossfade_concat`（与历史行为兼容）。
         """
         cf = config.crossfade_seconds
+        norm = config.per_track_normalize_enabled
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not selected_tracks:
             raise ValueError("selected_tracks 不能为空。")
 
         if not voiceovers:
-            track_audios = [_load_track_segment(st) for st in selected_tracks]
+            track_audios = [
+                _load_track_segment(st, per_track_normalize=norm) for st in selected_tracks
+            ]
             mix = crossfade_concat(track_audios, cf)
         else:
             blocks = _build_ordered_blocks_from_tracks_and_voiceovers(
@@ -516,6 +584,9 @@ class Mixer:
                 voiceovers,
                 crossfade_seconds=cf,
                 eps=_TIMELINE_EPS_SECONDS,
+                per_track_normalize=norm,
+                voice_normalize_to_dbfs=config.voice_normalize_to_dbfs,
+                voice_gain_db=config.voice_gain_db,
             )
             mix = _concat_ordered_blocks(
                 blocks,
@@ -563,6 +634,9 @@ class Mixer:
             voiceovers,
             crossfade_seconds=cf,
             eps=_TIMELINE_EPS_SECONDS,
+            per_track_normalize=config.per_track_normalize_enabled,
+            voice_normalize_to_dbfs=config.voice_normalize_to_dbfs,
+            voice_gain_db=config.voice_gain_db,
         )
         if not blocks:
             return []
@@ -659,9 +733,12 @@ class Mixer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if not mix_params_json.tracks:
             raise ValueError("mix_params_json.tracks 不能为空。")
+        norm = config.per_track_normalize_enabled
         if not mix_params_json.voiceovers:
             # 没有串词：直接走旧语义
-            track_audios = [_load_track_segment(st) for st in mix_params_json.tracks]
+            track_audios = [
+                _load_track_segment(st, per_track_normalize=norm) for st in mix_params_json.tracks
+            ]
             mix = crossfade_concat(track_audios, config.crossfade_seconds)
             export_audio(mix, output_path, format=output_path.suffix.lstrip(".") or "wav")
             duration_sec = len(mix) / 1000.0
@@ -677,6 +754,9 @@ class Mixer:
             mix_params_json.voiceovers,
             crossfade_seconds=config.crossfade_seconds,
             eps=_TIMELINE_EPS_SECONDS,
+            per_track_normalize=norm,
+            voice_normalize_to_dbfs=config.voice_normalize_to_dbfs,
+            voice_gain_db=config.voice_gain_db,
         )
 
         transitions_by_voice_segment_id: dict[str, MixParamsTransition] = {

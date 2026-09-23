@@ -147,12 +147,17 @@ def get_state_path(episode_root: Path) -> Path:
 def save_state_json(state: PlanState, output_dir: Path, episode_id: str) -> Path:
     """
     将 PlanState 落盘为 state.json，并返回文件路径。
+
+    v6.6：主产物去掉顶层 `critic` / `control`（过程态 / 审计仍可保留完整字段）。
+    内存中的 `state` 参数不被修改。
     """
     episode_root = get_episode_root(output_dir, episode_id)
     state_path = get_state_path(episode_root)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    # PlanState 约定为结构化 dict，可直接 JSON 化
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = dict(state)
+    payload.pop("critic", None)
+    payload.pop("control", None)
+    state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return state_path
 
 
@@ -176,12 +181,15 @@ def get_episode_state_snapshot_path(episode_root: Path, episode_id: str) -> Path
 
 def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
     """
-    v3.8 fix：将完整 PlanState 映射为对接子集文件结构。
+    v3.8 / v6.1：将完整 PlanState 映射为阶段二对接子集。
 
-    产物结构：
+    产物结构（对外冻结）：
     - schema
     - meta.{request_id, theme, language, target_duration_seconds}
     - segments[*].{segment_id, name, target_duration_seconds, playlists, script}
+
+    v6.1：state 中 Planner/Curator 扩展字段（narrative_* / selection_reason 等）不得泄漏进 snapshot；
+    playlists 条目仅保留 track / artist（若历史 state 仍带 bpm 则透传，新 Curator 不再产出 bpm）。
     """
     schema_version = state.get("schema_version")
     if not isinstance(schema_version, str) or not schema_version.strip():
@@ -205,12 +213,13 @@ def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
         for key in ("segment_id", "name", "target_duration_seconds", "playlist", "script"):
             if key not in seg:
                 raise ValueError(f"snapshot.segments[{idx}] 映射失败：state.segments[{idx}].{key} 缺失")
+        playlists = _playlist_items_for_snapshot(seg.get("playlist"), segment_index=idx)
         segments.append(
             {
                 "segment_id": seg["segment_id"],
                 "name": seg["name"],
                 "target_duration_seconds": seg["target_duration_seconds"],
-                "playlists": seg["playlist"],
+                "playlists": playlists,
                 "script": seg["script"],
             }
         )
@@ -225,6 +234,29 @@ def build_episode_snapshot_from_state(state: PlanState) -> dict[str, Any]:
         },
         "segments": segments,
     }
+
+
+def _playlist_items_for_snapshot(playlist: Any, *, segment_index: int) -> list[dict[str, Any]]:
+    """将 state playlist 剪枝为 snapshot 旧子集（track/artist[/bpm]）。"""
+    if not isinstance(playlist, list):
+        raise ValueError(
+            f"snapshot.segments[{segment_index}].playlists 映射失败：playlist 必须是 array"
+        )
+    out: list[dict[str, Any]] = []
+    for item_idx, item in enumerate(playlist):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"snapshot.segments[{segment_index}].playlists[{item_idx}] 映射失败：必须是 object"
+            )
+        if "track" not in item or "artist" not in item:
+            raise ValueError(
+                f"snapshot.segments[{segment_index}].playlists[{item_idx}] 映射失败：缺少 track/artist"
+            )
+        pruned: dict[str, Any] = {"track": item["track"], "artist": item["artist"]}
+        if "bpm" in item:
+            pruned["bpm"] = item["bpm"]
+        out.append(pruned)
+    return out
 
 
 def save_episode_state_snapshot(
@@ -276,4 +308,38 @@ def format_audit_state_filename(iteration: int) -> str:
 def format_audit_state_partial_filename(iteration: int) -> str:
     """失败时可查：``iteration{i}_state_partial.json``（内容含 error 与本轮开始前的 state 等元数据）。"""
     return f"iteration{int(iteration)}_state_partial.json"
+
+
+def format_audit_failure_snapshot_filename(iteration: int) -> str:
+    """v6.8：与 state_partial 同目录的可消费 snapshot：``iteration{i}_snapshot.json``。"""
+    return f"iteration{int(iteration)}_snapshot.json"
+
+
+def format_audit_staged_agent_filename(stage: str, revision: int, agent_slug: str) -> str:
+    """
+    v6.0 staged 审计命名：``stage_{stage}_rev{r}_{agent_slug}.json``。
+
+    - stage：planner | music_curator | script_writer
+    - revision：0=首次生成，1/2=第 1/2 次修复
+    """
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_{agent_slug}.json"
+
+
+def format_audit_staged_state_filename(stage: str, revision: int) -> str:
+    """v6.0 staged：``stage_{stage}_rev{r}_state.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_state.json"
+
+
+def format_audit_staged_state_partial_filename(stage: str, revision: int) -> str:
+    """v6.0 staged：``stage_{stage}_rev{r}_state_partial.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_state_partial.json"
+
+
+def format_audit_staged_failure_snapshot_filename(stage: str, revision: int) -> str:
+    """v6.8：与 staged partial 同目录：``stage_{stage}_rev{r}_snapshot.json``。"""
+    safe_stage = (stage or "unknown").replace("/", "_").replace("\\", "_").strip() or "unknown"
+    return f"stage_{safe_stage}_rev{int(revision)}_snapshot.json"
 

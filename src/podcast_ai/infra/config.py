@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -114,6 +114,16 @@ class AudioConfig(BaseModel):
     # v4.2：开启后对「串词->歌」按下一首 intro 估计动态决定 vm；失败回退默认 vm。
     voice_music_intro_align_enabled: bool = True
     voice_music_intro_align_max_seconds: float = 3.0
+    # 混音前是否对每首曲目/每段 TTS 做 simple_normalize（约 -16 dBFS）；false=保留源电平
+    per_track_normalize_enabled: bool = True
+    # 仅作用于串词：拉到目标平均 dBFS（None=关闭）。与 per_track_normalize 互斥时优先 per_track_normalize。
+    voice_normalize_to_dbfs: float | None = None
+    # 仅作用于串词：额外固定增益（dB），正数变大；在可选 normalize 之后应用
+    voice_gain_db: float = 0.0
+    # 串词→歌叠化窗内，音乐相对满电平的增益上限（dB）。0=不限制（旧行为）；建议 -6～-9
+    voice_music_overlay_music_max_db: float = 0.0
+    # 叠化结束后，音乐从上限电平爬回满电平的时长（秒）；0=关闭；仅当 overlay_max_db<0 时生效
+    voice_music_post_overlay_ramp_seconds: float = 0.0
 
 
 class CacheConfig(BaseModel):
@@ -126,6 +136,22 @@ class AppConfig(BaseModel):
     output_dir: str = "./output"
     # v3.6：multi-agent 路径下按轮次落盘 audit（关闭则不写 audit/，避免 I/O 影响主流程）
     multi_agent_audit_enabled: bool = Field(default=True, description="是否启用多 Agent 审计落盘")
+    # v6.0：multi_agent 编排双轨；默认 staged（闸门）；legacy 冻结保留
+    orchestration_mode: Literal["staged", "legacy"] = Field(
+        default="staged",
+        description="multi_agent 编排：staged=分阶段闸门（默认）；legacy=旧全局 Critic 回修",
+    )
+
+    @field_validator("orchestration_mode", mode="before")
+    @classmethod
+    def _normalize_orchestration_mode(cls, value: object) -> str:
+        raw = str(value or "").strip().lower()
+        if raw not in {"staged", "legacy"}:
+            raise ValueError(
+                "app.orchestration_mode 仅支持 staged / legacy "
+                f"（收到：{value!r}）"
+            )
+        return raw
 
 
 class _YamlSettingsSource(PydanticBaseSettingsSource):

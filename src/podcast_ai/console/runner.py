@@ -15,6 +15,7 @@ from podcast_ai.console.run_progress import (
     parse_plan_progress_from_logs,
     progress_from_events,
 )
+from podcast_ai.console.option_catalogs import base_url_for_interface, llm_interface_ids
 from podcast_ai.core.exceptions import PodcastAIError
 from podcast_ai.core.models import EpisodeRequest
 from podcast_ai.core.pipeline import (
@@ -43,18 +44,26 @@ class ConsoleParams:
     duration_minutes: int = 60
     language: str = "zh"
     agent_mode: str = "multi_agent"
+    orchestration_mode: str = "staged"
     output_dir: str = "./output"
+    llm_interface: str = "openrouter"
     llm_model: str = ""
     openrouter_provider: str = ""
     llm_base_url: str = ""
     snapshot_path: str = ""
     music_dir: str = "./music"
     tts_provider: str = "default"
+    tts_model: str = ""
+    tts_voice_id: str = ""
     mix_params_path: str = ""
     crossfade_seconds: float = 8.0
     voice_music_crossfade_seconds: float = 3.0
     intro_align_enabled: bool = True
     intro_align_max_seconds: float = 3.0
+    per_track_normalize_enabled: bool = True
+    voice_gain_db: float = 0.0
+    voice_music_overlay_music_max_db: float = 0.0
+    voice_music_post_overlay_ramp_seconds: float = 0.0
 
     def as_form_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +86,10 @@ class ConsoleRunResult:
     plan_iteration: int | None = None
     plan_current_agent: str | None = None
     plan_progress_events: list[dict[str, Any]] = field(default_factory=list)
+    # v6.0：编排可观测（config 只读；staged 运行时再填 stage/revision）
+    orchestration_mode: str | None = None
+    plan_stage: str | None = None
+    plan_revision: int | None = None
 
     @classmethod
     def running(cls, command: CommandName) -> ConsoleRunResult:
@@ -98,33 +111,66 @@ def defaults_from_settings(settings: Settings | None = None) -> ConsoleParams:
     return ConsoleParams(
         output_dir=s.app.output_dir,
         music_dir=s.app.music_dir,
+        orchestration_mode=str(s.app.orchestration_mode or "staged"),
+        llm_interface="openrouter",
         llm_model=s.llm.model,
         openrouter_provider=s.llm.openrouter_provider or "",
-        llm_base_url=s.llm.base_url,
+        llm_base_url=base_url_for_interface("openrouter"),
         tts_provider="default",
+        tts_model="",
+        tts_voice_id="",
         crossfade_seconds=s.audio.crossfade_seconds,
         voice_music_crossfade_seconds=s.audio.voice_music_crossfade_seconds,
         intro_align_enabled=s.audio.voice_music_intro_align_enabled,
         intro_align_max_seconds=s.audio.voice_music_intro_align_max_seconds,
+        per_track_normalize_enabled=s.audio.per_track_normalize_enabled,
+        voice_gain_db=s.audio.voice_gain_db,
+        voice_music_overlay_music_max_db=s.audio.voice_music_overlay_music_max_db,
+        voice_music_post_overlay_ramp_seconds=s.audio.voice_music_post_overlay_ramp_seconds,
     )
+
+
+def _orchestration_mode(params: ConsoleParams) -> Literal["staged", "legacy"]:
+    raw = (params.orchestration_mode or "staged").strip().lower()
+    if raw not in {"staged", "legacy"}:
+        raise PodcastAIError(
+            f"orchestration_mode 仅支持 staged / legacy（收到：{params.orchestration_mode!r}）"
+        )
+    # single_agent 强制 legacy（控件应已禁用；此处再纠正一次）
+    if _agent_mode(params) == "single_agent":
+        return "legacy"
+    return raw  # type: ignore[return-value]
+
+
+def _llm_interface(params: ConsoleParams) -> str:
+    raw = (params.llm_interface or "openrouter").strip().lower() or "openrouter"
+    if raw not in llm_interface_ids():
+        raise PodcastAIError(
+            f"暂不支持的模型接口：{raw}（本轮仅支持 openrouter）"
+        )
+    return raw
 
 
 def settings_from_params(params: ConsoleParams, base: Settings | None = None) -> Settings:
     """用表单覆盖 Settings 的常用字段；密钥仍来自 .env / config。"""
     settings = base or load_settings()
+    iface = _llm_interface(params)
     llm_update: dict[str, Any] = {
         "openrouter_provider": (params.openrouter_provider or "").strip(),
+        "base_url": base_url_for_interface(iface),
     }
     if (params.llm_model or "").strip():
         llm_update["model"] = params.llm_model.strip()
-    if (params.llm_base_url or "").strip():
-        llm_update["base_url"] = params.llm_base_url.strip()
 
-    app_update: dict[str, Any] = {}
+    app_update: dict[str, Any] = {
+        "orchestration_mode": _orchestration_mode(params),
+    }
     if (params.output_dir or "").strip():
         app_update["output_dir"] = params.output_dir.strip()
     if (params.music_dir or "").strip():
         app_update["music_dir"] = params.music_dir.strip()
+
+    tts_cfg = _patch_tts_from_params(settings, params)
 
     return settings.model_copy(
         deep=True,
@@ -137,10 +183,46 @@ def settings_from_params(params: ConsoleParams, base: Settings | None = None) ->
                     "voice_music_crossfade_seconds": float(params.voice_music_crossfade_seconds),
                     "voice_music_intro_align_enabled": bool(params.intro_align_enabled),
                     "voice_music_intro_align_max_seconds": float(params.intro_align_max_seconds),
+                    "per_track_normalize_enabled": bool(params.per_track_normalize_enabled),
+                    "voice_gain_db": float(params.voice_gain_db),
+                    "voice_music_overlay_music_max_db": float(params.voice_music_overlay_music_max_db),
+                    "voice_music_post_overlay_ramp_seconds": float(
+                        params.voice_music_post_overlay_ramp_seconds
+                    ),
                 }
             ),
+            "tts": tts_cfg,
         },
     )
+
+
+def _patch_tts_from_params(settings: Settings, params: ConsoleParams):
+    """仅在显式选择 elevenlabs/minimax 时覆盖对应 model/voice；default 不改 config。"""
+    provider = _tts_override(params)
+    tts_cfg = settings.tts
+    if provider is None:
+        return tts_cfg
+    model = (params.tts_model or "").strip()
+    voice = (params.tts_voice_id or "").strip()
+    if provider == "elevenlabs":
+        el_upd: dict[str, Any] = {}
+        if model:
+            el_upd["model"] = model
+        if voice:
+            el_upd["voice_id"] = voice
+        if el_upd:
+            return tts_cfg.model_copy(update={"elevenlabs": tts_cfg.elevenlabs.model_copy(update=el_upd)})
+        return tts_cfg
+    if provider == "minimax":
+        mm_upd: dict[str, Any] = {}
+        if model:
+            mm_upd["model"] = model
+        if voice:
+            mm_upd["voice_id"] = voice
+        if mm_upd:
+            return tts_cfg.model_copy(update={"minimax": tts_cfg.minimax.model_copy(update=mm_upd)})
+        return tts_cfg
+    return tts_cfg
 
 
 def _tts_override(params: ConsoleParams) -> Literal["edge", "elevenlabs", "minimax"] | None:
@@ -148,21 +230,25 @@ def _tts_override(params: ConsoleParams) -> Literal["edge", "elevenlabs", "minim
     if raw in ("", "default"):
         return None
     if raw not in _TTS_PROVIDERS:
-        raise PodcastAIError("tts_provider 仅支持 default / edge / elevenlabs / minimax")
+        raise PodcastAIError(
+            f"tts_provider 仅支持 default / edge / elevenlabs / minimax（收到：{params.tts_provider!r}）"
+        )
     return raw  # type: ignore[return-value]
 
 
 def _language(params: ConsoleParams) -> Literal["zh", "en"]:
     raw = (params.language or "zh").strip().lower()
     if raw not in _LANGUAGES:
-        raise PodcastAIError("language 仅支持 zh / en")
+        raise PodcastAIError(f"language 仅支持 zh / en（收到：{params.language!r}）")
     return raw  # type: ignore[return-value]
 
 
 def _agent_mode(params: ConsoleParams) -> Literal["single_agent", "multi_agent"]:
     raw = (params.agent_mode or "multi_agent").strip()
     if raw not in _AGENT_MODES:
-        raise PodcastAIError("agent_mode 仅支持 single_agent / multi_agent")
+        raise PodcastAIError(
+            f"agent_mode 仅支持 single_agent / multi_agent（收到：{params.agent_mode!r}）"
+        )
     return raw  # type: ignore[return-value]
 
 
@@ -264,13 +350,22 @@ def run_plan(
         result.plan_iteration = merged.iteration
         result.plan_current_agent = merged.current_agent
         result.plan_progress_events = list(merged.events)
+        result.plan_stage = merged.stage
+        result.plan_revision = merged.revision
+        if result.orchestration_mode is None:
+            result.orchestration_mode = str(
+                settings_from_params(params, base=settings).app.orchestration_mode
+            )
         if merged.failure_reason and not result.error:
             result.error = merged.failure_reason
         return result
 
     def _inner() -> ConsoleRunResult:
         if not (params.topic or "").strip():
-            raise PodcastAIError("主题不能为空。")
+            raise PodcastAIError("主题不能为空，请填写阶段一主题后再运行。")
+        if not (params.llm_model or "").strip():
+            raise PodcastAIError("LLM 模型不能为空，请从下拉选择或手动输入模型 ID。")
+        # 先解析 Settings：非法 orch / 接口等在此以中文错误抛出
         effective = settings_from_params(params, base=settings)
         output_dir = Path(params.output_dir.strip() or effective.app.output_dir)
         request = EpisodeRequest(
@@ -285,6 +380,7 @@ def run_plan(
             agent_mode=_agent_mode(params),
             on_progress=_on_progress,
         )
+        orch = str(effective.app.orchestration_mode)
         artifacts = {
             "state.json": str(state_path),
             "snapshot": str(snapshot_path),
@@ -294,10 +390,12 @@ def run_plan(
             command="plan",
             summary=(
                 f"阶段一完成 · Episode `{snapshot_path.stem}` · "
-                f"plan_id `{plan.plan_id}`"
+                f"plan_id `{plan.plan_id}` · agent_mode `{_agent_mode(params)}` · "
+                f"orchestration_mode `{orch}`"
             ),
             artifacts=artifacts,
             snapshot_path=str(snapshot_path),
+            orchestration_mode=orch,
         )
 
     result = _run_command("plan", _inner)
