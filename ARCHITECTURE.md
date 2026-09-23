@@ -24,7 +24,7 @@
 | CLI | Typer | `cli.py` |
 | Developer Console（v5.0） | Gradio | 本地开发者调试 UI；复用 pipeline，不引入 React |
 | 配置 | YAML + 环境变量（pydantic-settings） | `infra/config.py` |
-| LLM | OpenAI Chat Completions 兼容 HTTP | `infra/llm_client.py`，支持请求体附加 `response_format`（OpenRouter 结构化输出） |
+| LLM | OpenAI Chat Completions 兼容 HTTP | `infra/llm_client.py`：`response_format` 结构化输出；v7.0 起 OpenRouter 可附带 Server Tool `openrouter:web_search`（配置可关） |
 | TTS | 可插拔供应商 | `infra/tts_client.py`：`edge` / `elevenlabs` / `minimax` |
 | 音频 | pydub、librosa、FFmpeg | 混音与时间线在 `modules/mixing/`；intro 估计在 `intro_align.py` |
 | 元数据 | mutagen 等 | `modules/library/scanner.py` |
@@ -125,6 +125,7 @@
   - `staged`：按阶段内修订预算计数（非全局粗粒度 `max_iterations` 主控）。
   - `legacy`：外层仍由 `control.max_iterations` 限制 Critic 评估轮数（见 `initialize_plan_state`）。
 - **结构化输出**：各 Agent 在支持的 LLM 配置下通过 `response_format` + JSON Schema 约束输出；解析统一走 `agent_json_parser`（可回退 JSON 修复）。
+- **联网搜索（v7.0）**：经 OpenRouter 且配置启用时，由 `LLMClient` **统一**在请求中附带 Server Tool `openrouter:web_search`（覆盖 staged/legacy/各 Critic 及同客户端的 `single_agent`）；模型按需调用，OpenRouter 服务端执行。**禁止**弃用的 `plugins.web` / 模型 `:online` 后缀。关闭或非 OpenRouter 时不携带。不改变 Agent 字段级 I/O 与 snapshot 契约。
 - **写权限隔离**：每个 Agent 输出经 sanitize 后 `merge_plan_state` 合并；`staged` 下 Critic 的可写字段收窄为阶段内评估（`critic.*` / pass 等），**不含**调度下一创作 Agent。
 
 ### 5.2 角色与编排顺序
@@ -268,6 +269,19 @@ output/
 以下结论仍适用；细节见 PRD 迭代说明与 git 历史。
 
 - **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
+- **AD-v7.0：OpenRouter Server Tool 联网搜索接入全 Agent（迭代三十八）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**——扩展 **基础设施层 LLM 请求能力**，不改变分层、编排 FSM、Agent 写权限契约与 snapshot 对外格式
+  - **背景**：各 Agent 仅靠内置知识时效不足；PRD v7.0 要求用 OpenRouter Server Tool `openrouter:web_search` 统一赋能全 Agent，配置可关，并与结构化输出共存
+  - **最小改动方案**：
+    - 在 `infra/config.py` 增加联网搜索配置（至少 `enabled`；建议 `engine`/`max_results`/`max_uses`，默认对齐官方）
+    - 在 `infra/llm_client.py` 于 OpenRouter + 启用时向 `/chat/completions` 请求统一注入 `tools: [{ type: "openrouter:web_search", parameters: … }]`；非 OpenRouter 或关闭则不注入
+    - **禁止**实现弃用路径（`plugins: [{id:"web"}]`、模型名 `:online`）
+    - 与既有 `response_format`/json_schema **并存**；Agent / Orchestrator / sanitize **无需**为搜索改业务 I/O
+    - 日志/审计记录是否启用 web_search，并在响应含 `usage.server_tool_use.web_search_requests` 时记录用量
+  - **影响面**：
+    - 主要：`infra/llm_client.py`、`infra/config.py`、`config.example.yaml` / README；相关单测
+    - 不改：`modules/theme` 编排与字段契约、`pipeline` 三阶段、混音/TTS、`Stage2Snapshot` / `MixParamsJSON`
 - **AD-v6.0：多 Agent 分阶段闸门编排 Stage-Gated（迭代二十九）**
   - **状态**：Accepted
   - **结论**：**需要小幅架构调整（是）**——改的是阶段一 **编排状态机与 Critic 职责边界**，不改变整体分层、阶段二/三契约与 snapshot 对外 schema

@@ -209,6 +209,32 @@ podcast-ai console --no-browser  # 不自动打开浏览器
 | `llm.model`                  | 模型 id               | 见 `init-config` 默认 |
 | `llm.openrouter_provider`    | **v4.6** 经 OpenRouter 时的供应方路由：留空则请求体**不**带 `provider`（自动选路）；非空为单个 slug（实现为 `{"only":[slug]}`）或与官方一致的 JSON 对象字符串 | `""` |
 | `llm.structured_output`      | **v3.4** 是否附带 `response_format`（`null`/省略时仅当 `base_url` 为 OpenRouter 自动开启） | 省略（即 `null`） |
+| `llm.web_search.enabled`     | **v7.0** 是否向 OpenRouter 请求注入 Server Tool `openrouter:web_search`（默认关；非 OpenRouter 不注入）。详见 `OpenRouter_Web_Search_Guide.md` | `false` |
+| `llm.web_search.engine`      | **v7.0** 搜索引擎：`auto` / `native` / `exa` / `firecrawl` / `parallel` / `perplexity` | `auto` |
+| `llm.web_search.max_results` | **v7.0** 每次搜索结果条数（1–25） | `5` |
+| `llm.web_search.max_uses`    | **v7.0** 单次请求内最大搜索次数；省略/`null`=不限制 | `null` |
+
+### OpenRouter 联网搜索（v7.0）
+
+阶段一 **每一个** Agent 调用都走同一 `LLMClient`。当 `llm.base_url` 指向 OpenRouter **且** `llm.web_search.enabled=true` 时，请求会附带官方 Server Tool `openrouter:web_search`；模型按需搜索，由 OpenRouter 服务端执行。关闭或非 OpenRouter 时不注入。
+
+**config.yaml 示例：**
+
+```yaml
+llm:
+  base_url: "https://openrouter.ai/api/v1"
+  web_search:
+    enabled: true          # 默认 false（控成本）
+    engine: auto           # 与 Guide 一致：auto/native/exa/firecrawl/parallel/perplexity
+    max_results: 5         # 1–25
+    # max_uses: 3          # 可选；省略则不限制单次请求内搜索次数
+```
+
+环境变量（与现有嵌套风格一致）：`PODCAST_AI_LLM__WEB_SEARCH__ENABLED=true`。
+
+**费用**：模型每实际发起一次搜索会计入 OpenRouter 账单。日志会打印 `web_search=on|off`；若响应含 `usage.server_tool_use.web_search_requests` 会再记录次数。Developer Console 阶段一可勾选开关，只覆盖**本次 Run** 的 `enabled`（`engine` / `max_results` / `max_uses` 仍读 config）。
+
+**不要**使用已弃用的 `plugins: [{ id: "web" }]` 或模型名 `:online` 后缀。字段说明见仓库 `OpenRouter_Web_Search_Guide.md`。
 | `tts.provider`               | TTS 供应商（`edge`/`elevenlabs`/`minimax`） | `elevenlabs` |
 | `tts.elevenlabs.voice_id`    | ElevenLabs Voice ID | 需配置          |
 | `tts.minimax.voice_id`       | MiniMax Voice ID | `male-qn-qingse` |

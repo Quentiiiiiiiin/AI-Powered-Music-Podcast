@@ -35,7 +35,6 @@ A recording should be selected because it has a legitimate relationship to the e
 
 Every selected track must refer to a real, identifiable recording. 
 
-If there is no recording aligned with Planner's intention, mark the "track" as "MUSIC NOT FOUND", specify your reason under "selection_reason", and leave other field as "N/A". Do NOT makeup a fake recording.
 
 
 ---

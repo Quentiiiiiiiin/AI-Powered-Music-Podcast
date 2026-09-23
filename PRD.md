@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.8  
+**文档版本**：v7.0  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.8）
+**产品阶段**：迭代验证中（进入 v7.0）
 
 ---
 
@@ -576,6 +576,23 @@
     4. 该失败路径 snapshot 字段契约与既有成功路径 snapshot 对齐，可供阶段二或 Console 继续消费（内容完整度以 partial 所能覆盖为限）。
     5. 不因本迭代回退 v6.6/v6.7 的 Critic schema 与终态 `state` 精简约定。
 
+- **v7.0（迭代三十八：OpenRouter Server Tool 联网搜索接入全 Agent）**：
+  - **问题**：阶段一各 Agent（Planner / Music Curator / Script Writer / Critic，含 staged 各阶段 Critic）仅依赖模型内置知识，无法按需获取实时网页信息（新曲、艺人动态、风格语境等），内容时效与事实依据不足。自建搜索 tool 成本高且难维护。
+  - **方案选型**：采用 OpenRouter **Server Tools — `openrouter:web_search`**（见仓库 `OpenRouter_Web_Search_Guide.md`）。**不**使用已弃用的 `plugins: [{ id: "web" }]` 或模型 `:online` 后缀。由模型自行决定是否/何时搜索；OpenRouter 服务端执行搜索并回传结果。
+  - **变更目标**：
+    1. 在经 **OpenRouter** 的 LLM 请求中统一附带 `tools: [{ "type": "openrouter:web_search", "parameters": {…} }]`，覆盖阶段一**每一个** Agent 调用路径（含 `staged` / `legacy` / 各阶段 Critic；`single_agent` 若走同一 LLM 客户端则一并启用）。
+    2. **配置化**：在 `config.yaml`（及示例配置）提供联网搜索开关与可选参数（至少：`enabled`；建议可配 `engine`、`max_results`、`max_uses`；默认值对齐官方：`engine=auto`、`max_results=5`）。关闭时请求不携带该 tool。
+    3. **与既有能力共存**：继续满足 v3.4 `response_format` / json_schema 结构化输出；Agent 业务 I/O 契约、snapshot 对外格式、终态 `state` 精简（v6.6）不因本迭代变更。
+    4. **可观测**：日志或审计中可体现本次调用是否启用 web_search，以及（若响应含）`usage.server_tool_use.web_search_requests` 等用量信息，便于成本与调试排查。
+  - **功能归类**：**新功能**（全 Agent 联网搜索能力）。
+  - **User Story（用户视角）**：作为创作者/开发者，我希望各 Agent 在需要时能联网查证时新信息，从而写出更靠谱的策划与选曲理由；同时我能在配置里开关搜索并控制大致成本，而不必自建搜索工具。
+  - **Acceptance Criteria（验收标准）**：
+    1. OpenRouter 且配置启用时，Planner / Music Curator / Script Writer / Critic（含 staged 分阶段 Critic）的 LLM 请求均携带 `openrouter:web_search`；关闭或非 OpenRouter 时不携带。
+    2. **不**使用弃用的 web plugin / `:online`；参数与官方 Server Tool 字段一致（见 Guide）。
+    3. 开启联网后仍能产出符合各 Agent `response_format` 的结构化结果；主路径 state / snapshot 契约不破坏。
+    4. `config` 可开关并可调整关键搜索参数；修改后无需改业务代码即可生效（Console 若本轮暴露开关为加分项，非必须）。
+    5. 日志/审计至少能区分「已启用 web_search」；在 API 返回用量字段时可复查搜索次数。
+
 
 ## 1. 产品背景
 
@@ -836,8 +853,9 @@
 - **`staged`（v6.0 / v6.6 / v6.8）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；**Planner / Curator（及未来 Writer）Critic 使用各自 schema+prompt**；阶段失败仍应输出可被阶段二/Console 消费的 snapshot 并保留审计。**v6.8**：revision **不以** `issue.problem` 文本比对做「禁止新 issue」硬护栏，更不得因此中止运行。
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
 - **snapshot（v6.1 / v6.8）**：**snapshot 对外格式不变**；**v6.8** 在写出 `state_partial` 的失败路径上，须于**同目录**再写一份由 partial 派生的可消费 snapshot。
+- **联网搜索（v7.0）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。
 
-### 6.4 当前版本成功指标（v6.8）
+### 6.4 当前版本成功指标（v7.0）
 
 | 指标 | 目标 |
 |------|------|
@@ -870,6 +888,7 @@
 | **Critic Schema 一致性** | Planner Critic 无 `overall_score`；Curator Critic `actions` 含 `location`，与 Planner 对齐 |
 | **revision 护栏不误杀** | staged Critic revision 不以 `problem` 文本比对硬判新 issue，不因此中止运行 |
 | **失败路径可消费 snapshot** | 写出 `state_partial` 时同目录同步产出可被 Console/阶段二消费的 snapshot |
+| **OpenRouter 联网搜索（全 Agent）** | OpenRouter 下可配置启用 `openrouter:web_search`；各 Agent 按需联网；与结构化输出及 snapshot 契约兼容 |
 
 ---
 

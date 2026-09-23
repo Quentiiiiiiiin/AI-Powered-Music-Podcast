@@ -9,9 +9,18 @@ import httpx
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.core.logging_config import log_timing
-from podcast_ai.infra.config import LLMConfig, Settings, is_openrouter_base_url, load_settings
+from podcast_ai.infra.config import (
+    LLMConfig,
+    Settings,
+    build_openrouter_web_search_tool,
+    is_openrouter_base_url,
+    load_settings,
+    should_inject_web_search,
+)
 
 logger = logging.getLogger(__name__)
+
+_WEB_SEARCH_TOOL_TYPE = "openrouter:web_search"
 
 
 def _openrouter_provider_object_from_config(raw: str) -> dict[str, Any]:
@@ -48,6 +57,61 @@ def _summarize_provider_for_log(provider: Any) -> Any:
         else:
             out[k] = v
     return out
+
+
+def _inject_web_search_tool(payload: Dict[str, Any], cfg: LLMConfig) -> bool:
+    """
+    在 payload 中注入 `openrouter:web_search`（配置优先）。
+
+    策略：若调用方已传 `tools`，先去掉同类型项再追加配置侧 tool，避免双 web 表面；
+    绝不写入弃用的 `plugins` web 或改写 model 为 `:online`。
+    返回是否最终启用了 web_search。
+    """
+    if not should_inject_web_search(cfg):
+        return False
+    tool = build_openrouter_web_search_tool(cfg)
+    existing = payload.get("tools")
+    if existing is None:
+        payload["tools"] = [tool]
+        return True
+    if not isinstance(existing, list):
+        # 非数组：配置优先，整体替换为仅含 web_search（避免静默丢弃配置）
+        logger.warning("LLM kwargs.tools 非数组，已用配置侧 openrouter:web_search 覆盖。")
+        payload["tools"] = [tool]
+        return True
+    merged = [
+        t
+        for t in existing
+        if not (isinstance(t, dict) and t.get("type") == _WEB_SEARCH_TOOL_TYPE)
+    ]
+    merged.append(tool)
+    payload["tools"] = merged
+    return True
+
+
+def _web_search_log_flag(enabled: bool, cfg: LLMConfig) -> str:
+    if not enabled:
+        return "web_search=off"
+    ws = cfg.web_search
+    parts = [f"web_search=on", f"engine={ws.engine}", f"max_results={ws.max_results}"]
+    if ws.max_uses is not None:
+        parts.append(f"max_uses={ws.max_uses}")
+    return " ".join(parts)
+
+
+def _log_server_tool_usage(data: Any) -> None:
+    """若响应含 usage.server_tool_use.web_search_requests 则记录；缺失不报错。"""
+    if not isinstance(data, dict):
+        return
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+    stu = usage.get("server_tool_use")
+    if not isinstance(stu, dict):
+        return
+    n = stu.get("web_search_requests")
+    if isinstance(n, int):
+        logger.info("LLM usage server_tool_use.web_search_requests=%d", n)
 
 
 class LLMClient(ABC):
@@ -113,6 +177,9 @@ class OpenAICompatibleLLMClient(LLMClient):
                 except ValueError as exc:
                     raise AIServiceError(f"llm.openrouter_provider 配置无效：{exc}") from exc
 
+        # v7.0：OpenRouter + web_search.enabled → 注入 Server Tool（kwargs 之后，配置优先）
+        web_search_on = _inject_web_search_tool(payload, self._cfg)
+
         # 日志中打印脱敏后的请求信息（不包含 api_key、不展开完整 json_schema）
         safe_payload = dict(payload)
         if "response_format" in safe_payload:
@@ -128,11 +195,24 @@ class OpenAICompatibleLLMClient(LLMClient):
             }
         if "provider" in safe_payload:
             safe_payload["provider"] = _summarize_provider_for_log(safe_payload["provider"])
+        if "tools" in safe_payload:
+            tools = safe_payload["tools"]
+            if isinstance(tools, list):
+                safe_payload["tools"] = [
+                    {"type": t.get("type"), "parameters": t.get("parameters")}
+                    if isinstance(t, dict)
+                    else "<non-dict>"
+                    for t in tools
+                ]
         try:
             preview = json.dumps(safe_payload, ensure_ascii=False)[:512]
         except Exception:  # noqa: BLE001
             preview = str(safe_payload)[:512]
-        logger.debug("LLM request (sanitized): %s", preview)
+        logger.debug(
+            "LLM request (sanitized) %s: %s",
+            _web_search_log_flag(web_search_on, self._cfg),
+            preview,
+        )
 
         last_error: Optional[Exception] = None
         for attempt in range(1, max(self._cfg.max_retries, 1) + 1):
@@ -150,14 +230,28 @@ class OpenAICompatibleLLMClient(LLMClient):
                             hint = "（可能与 response_format/结构化输出不被当前网关或模型支持有关）"
                         elif "provider" in low or "routing" in low:
                             hint = "（可能与 OpenRouter provider 路由与 model 不兼容或 slug 非法有关；请核对 llm.openrouter_provider 与官方文档）"
+                        elif "web_search" in low or "server tool" in low or "tools" in low:
+                            hint = "（可能与 openrouter:web_search / tools 不被当前模型支持有关；可设 llm.web_search.enabled=false）"
                     raise AIServiceError(f"LLM 请求失败（HTTP {resp.status_code}）：{body_preview}{hint}")
 
                 data = resp.json()
+                _log_server_tool_usage(data)
                 # OpenAI Chat 兼容字段：choices[0].message.content
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except Exception as exc:  # noqa: BLE001
-                    raise AIServiceError("LLM 响应格式不符合预期。") from exc
+                    usage_hint = ""
+                    if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+                        usage_hint = f" usage={data.get('usage')!r}"
+                    raise AIServiceError(
+                        f"LLM 响应缺少 choices[0].message.content（HTTP {resp.status_code}）。{usage_hint}"
+                    ) from exc
+
+                if content is None:
+                    raise AIServiceError(
+                        f"LLM 响应 content 为空（HTTP {resp.status_code}；"
+                        f"web_search={'on' if web_search_on else 'off'}）。"
+                    )
 
                 logger.debug("LLM response length=%d chars", len(content))
                 return content
@@ -182,4 +276,3 @@ def get_default_llm_client(settings: Settings | None = None) -> LLMClient:
     if cfg.provider == "openai_compatible":
         return OpenAICompatibleLLMClient(cfg)
     raise AIServiceError(f"暂不支持的 LLM provider：{cfg.provider}")
-

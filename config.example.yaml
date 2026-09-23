@@ -46,6 +46,12 @@ llm:
   # openrouter_provider: ""
   # v3.4：省略或 null = 仅当 base_url 为 OpenRouter 时附带 response_format；true/false 可强制开关
   # structured_output: false
+  # v7.0：OpenRouter Server Tool 联网搜索（默认关闭控成本；仅 base_url 为 OpenRouter 时注入）
+  # web_search:
+  #   enabled: false
+  #   engine: auto          # auto/native/exa/firecrawl/parallel/perplexity
+  #   max_results: 5        # 1–25
+  #   # max_uses: 3         # 可选；省略则不限制单次请求搜索次数
 
 tts:
   # v1.4 默认 elevenlabs；可改为 edge_tts 使用 Edge TTS

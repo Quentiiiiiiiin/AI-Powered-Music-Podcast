@@ -72,6 +72,7 @@ def _params_from_form(
     llm_model: str,
     openrouter_provider: str,
     llm_base_url: str,
+    web_search_enabled: bool | None,
     snapshot_path: str,
     music_dir: str,
     tts_provider: str,
@@ -99,6 +100,11 @@ def _params_from_form(
         llm_model=llm_model or "",
         openrouter_provider=openrouter_provider or "",
         llm_base_url=llm_base_url or "",
+        web_search_enabled=(
+            defaults.web_search_enabled
+            if web_search_enabled is None
+            else bool(web_search_enabled)
+        ),
         snapshot_path=snapshot_path or "",
         music_dir=music_dir or defaults.music_dir,
         tts_provider=tts_provider or "default",
@@ -414,6 +420,17 @@ def build_app():
                     value=defaults.openrouter_provider or "",
                     allow_custom_value=True,
                 )
+                web_search_enabled = gr.Checkbox(
+                    label="联网搜索（OpenRouter web_search）",
+                    info="本次 Run 覆盖 llm.web_search.enabled；仅 OpenRouter 时注入。会产生搜索费用。",
+                    value=defaults.web_search_enabled,
+                )
+                _ws = load_settings().llm.web_search
+                _ws_uses = "不限制" if _ws.max_uses is None else str(_ws.max_uses)
+                gr.Markdown(
+                    f"_engine=`{_ws.engine}` · max_results=`{_ws.max_results}` · "
+                    f"max_uses=`{_ws_uses}`（只读，改 `config.yaml`）_"
+                )
                 plan_btn = gr.Button("Run Plan", variant="primary")
                 gr.Markdown("#### 运行态洞察")
                 plan_insight_md = gr.Markdown(_INSIGHT_IDLE)
@@ -576,6 +593,7 @@ def build_app():
             llm_model,
             openrouter_provider,
             llm_base_url,
+            web_search_enabled,
             snapshot_path,
             music_dir,
             tts_provider,
@@ -1027,6 +1045,7 @@ def build_app():
                 gr.update(value=model, choices=llm_model_choices(model)),
                 gr.update(value=provider, choices=provider_dropdown_choices(model, provider)),
                 base_url,
+                merged.get("web_search_enabled", False),
                 merged["snapshot_path"],
                 merged["music_dir"],
                 tts_prov,

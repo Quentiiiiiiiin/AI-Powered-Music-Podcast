@@ -22,6 +22,7 @@ PRESET_KEYS: tuple[str, ...] = (
     "llm_model",
     "openrouter_provider",
     "llm_base_url",
+    "web_search_enabled",
     "snapshot_path",
     "music_dir",
     "tts_provider",

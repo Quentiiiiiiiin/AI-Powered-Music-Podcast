@@ -27,6 +27,7 @@ from podcast_ai.infra.config import (
     MiniMaxConfig,
     Settings,
     TTSConfig,
+    WebSearchConfig,
 )
 
 
@@ -210,6 +211,26 @@ def test_run_plan_missing_topic_or_model_returns_chinese_error(tmp_path: Path) -
         mocked.assert_not_called()
 
 
+def test_web_search_toggle_maps_enabled_keeps_engine(tmp_path: Path) -> None:
+    base = _base(tmp_path)
+    base = base.model_copy(
+        update={
+            "llm": base.llm.model_copy(
+                update={
+                    "web_search": WebSearchConfig(enabled=False, engine="native", max_results=8),
+                }
+            )
+        }
+    )
+    updated = settings_from_params(
+        ConsoleParams(llm_model="x", web_search_enabled=True),
+        base=base,
+    )
+    assert updated.llm.web_search.enabled is True
+    assert updated.llm.web_search.engine == "native"
+    assert updated.llm.web_search.max_results == 8
+
+
 def test_preset_keys_include_v62_fields() -> None:
     payload = build_snapshot(
         ConsoleParams(
@@ -217,12 +238,14 @@ def test_preset_keys_include_v62_fields() -> None:
             llm_interface="openrouter",
             tts_model="eleven_v3",
             tts_voice_id="abc",
+            web_search_enabled=True,
             voice_gain_db=3.0,
         ).as_form_dict()
     )
     for key in (
         "orchestration_mode",
         "llm_interface",
+        "web_search_enabled",
         "tts_model",
         "tts_voice_id",
         "per_track_normalize_enabled",

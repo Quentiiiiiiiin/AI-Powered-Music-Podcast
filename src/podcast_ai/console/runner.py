@@ -50,6 +50,7 @@ class ConsoleParams:
     llm_model: str = ""
     openrouter_provider: str = ""
     llm_base_url: str = ""
+    web_search_enabled: bool = False
     snapshot_path: str = ""
     music_dir: str = "./music"
     tts_provider: str = "default"
@@ -116,6 +117,7 @@ def defaults_from_settings(settings: Settings | None = None) -> ConsoleParams:
         llm_model=s.llm.model,
         openrouter_provider=s.llm.openrouter_provider or "",
         llm_base_url=base_url_for_interface("openrouter"),
+        web_search_enabled=bool(s.llm.web_search.enabled),
         tts_provider="default",
         tts_model="",
         tts_voice_id="",
@@ -158,6 +160,9 @@ def settings_from_params(params: ConsoleParams, base: Settings | None = None) ->
     llm_update: dict[str, Any] = {
         "openrouter_provider": (params.openrouter_provider or "").strip(),
         "base_url": base_url_for_interface(iface),
+        "web_search": settings.llm.web_search.model_copy(
+            update={"enabled": bool(params.web_search_enabled)}
+        ),
     }
     if (params.llm_model or "").strip():
         llm_update["model"] = params.llm_model.strip()
