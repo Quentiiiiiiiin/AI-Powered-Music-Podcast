@@ -1,0 +1,29 @@
+{
+  "critic": {
+    "scores": {
+      "planner_alignment": 0,
+      "thematic_relevance": 0,
+      "sequence_coherence": 0,
+      "audience_listening_quality": 0,
+      "track_fitness": 0,
+
+    },
+    "issues": [
+      {
+        "type": "planner_alignment",
+        "severity": "major",
+        "location": "segments[0].playlist[2]",
+        "problem": "Clear description of the observed problem.",
+        "reason": "Explain why the problem matters to the listener or prevents the playlist from realizing the Planner's intent.",
+        "suggestion": "Describe the direction in which the problem should be corrected."
+      }
+    ],
+    "actions": [
+      {
+        "target_agent": "Music Curator",
+        "location": "",
+        "instruction": "A clear, specific, executable instruction describing what to change, where to change it, why the change is necessary, and what the revised selection must accomplish."
+      }
+    ]
+  }
+}

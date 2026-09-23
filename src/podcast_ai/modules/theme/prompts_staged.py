@@ -132,7 +132,7 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
             "REVISION focus: keep untouched segment playlists identical to state; "
             "Planner fields are read-only."
             if m == "revision"
-            else "Use Planner sonic_direction / sequence_direction / anchor_tracks when filling planner_alignment."
+            else "Generate playlist"
         ),
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -277,9 +277,8 @@ def _build_curator_critic_staged_messages(
         - issues: type, severity (minor|major|critical), location, problem, reason, suggestion.
         - actions: target_agent, location, instruction (location required).
         - Output ONLY {{"critic": {{scores, issues, actions}}}}.
-        FORBIDDEN: overall_score, critic.pass, critic.threshold, control, next_agent,
+        FORBIDDEN: 
         rewriting plan/playlist/script yourself.
-        System derives critic.pass (threshold default 80; only severity=minor counts as minor).
 
         === CURATOR CRITIC THINKING GUIDE (verbatim from {_GUIDE_CURATOR_CRITIC}) ===
         """

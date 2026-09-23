@@ -1,0 +1,23 @@
+{
+  "segments": [
+    {
+      "segment_id": "seg_01",
+      "playlist": [
+        {
+          "track": "Lose My Mind",
+          "artist": "Don Toliver",
+
+          "selection_reason": "Why this recording is musically and thematically appropriate.",
+
+          "sequence_role": "What this track does at this point in the sequence.",
+
+          "planner_alignment": [
+            "Specific ways this track fulfills the Planner's intended musical direction."
+          ],
+
+          "transition_logic": "Why this track connects naturally to the surrounding tracks."
+        }
+      ]
+    }
+  ]
+}
