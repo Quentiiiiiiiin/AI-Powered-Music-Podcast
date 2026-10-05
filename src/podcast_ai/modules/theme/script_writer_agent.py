@@ -80,11 +80,9 @@ def _sanitize_script_writer_patch(
             )
 
         segment_intro = script.get("segment_intro")
-        if not isinstance(segment_intro, str):
-            raise AIServiceError(f"segments[{idx}].script.segment_intro 必须是字符串。")
-        if not segment_intro.strip():
-            raise AIServiceError(f"segments[{idx}].script.segment_intro 为空或缺失。")
-        if not _text_matches_language(segment_intro, language):
+        if segment_intro is not None and not isinstance(segment_intro, str):
+            raise AIServiceError(f"segments[{idx}].script.segment_intro 必须是字符串或 null。")
+        if isinstance(segment_intro, str) and not _text_matches_language(segment_intro, language):
             raise AIServiceError("segments[*].script.segment_intro 语言不一致。")
 
         between_tracks = script.get("between_tracks")

@@ -314,7 +314,12 @@ _BETWEEN_TRACK_ITEM: dict[str, Any] = {
 _SCRIPT_OBJECT: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "segment_intro": {"type": "string"},
+        "segment_intro": {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ],
+        },
         "between_tracks": {
             "type": "array",
             "items": _BETWEEN_TRACK_ITEM,

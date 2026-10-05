@@ -20,7 +20,7 @@ _GUIDE_PLANNER = "PROMPT_Guide_Planner.txt"
 _GUIDE_MUSIC_CURATOR = "PROMPT_Guide_Music-Curator.txt"
 _GUIDE_PLANNER_CRITIC = "PROMPT_Guide_Planner_Critic.txt"
 _GUIDE_CURATOR_CRITIC = "PROMPT_Guide_Curator_Critic.txt"
-
+_GUIDE_SCRIPT_WRITER = "PROMPT_Guide_Script-Writer.txt"
 
 def _state_json(state: dict[str, Any]) -> str:
     return json.dumps(state, ensure_ascii=False, indent=2)
@@ -93,16 +93,55 @@ def build_planner_staged_messages(state: dict[str, Any], mode: str) -> list[dict
         """
     ).strip()
     system = f"{envelope}\n\n{guide}"
-    user = _user_plan_state_message(
-        state,
-        mode=m,
-        extra=(
-            "REVISION focus: follow critic.issues / actions targeting Planner; "
-            "copy untouched Planner fields verbatim when possible."
-            if m == "revision"
-            else ""
-        ),
-    )
+
+    cleaned_state = dedent(
+        f"""
+        THEME: {state.get("meta", {}).get("theme", "")}
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        TARGET DURATION: {state.get("meta", {}).get("target_duration_seconds", "")}
+        THEME TYPE: {state.get("meta", {}).get("theme_type", "")}
+        THEME SUBJECT: {state.get("meta", {}).get("theme_subject", "")}
+        THEME RELATIONSHIP: {state.get("meta", {}).get("theme_relationship", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        PLAN: {state.get("plan")}
+        SEGMENTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "narrative_function": s.get("narrative_function"),
+            "scene": s.get("scene"),
+            "sonic_direction": s.get("sonic_direction"),
+            "lyrical_direction": s.get("lyrical_direction"),
+            "anchor_tracks": s.get("anchor_tracks"),
+            "reference_material": s.get("reference_material"),
+            "sequence_direction": s.get("sequence_direction"),
+            "transition_to_next": s.get("transition_to_next"),
+          }
+          for s in state.get("segments", [])
+        ]}
+        """
+    ).strip()
+
+    planner_issues = [
+        i for i in state.get("critic", {}).get("issues", [])
+    ]
+    planner_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+    ]
+
+    user = dedent(
+        f"""
+        MODE: {m}
+        {cleaned_state}
+        PLANNER ISSUES: {planner_issues}
+        PLANNER ACTIONS: {planner_actions}
+        """
+    ).strip()
+
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -125,40 +164,73 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
         """
     ).strip()
     system = f"{envelope}\n\n{guide}"
-    user = _user_plan_state_message(
-        state,
-        mode=m,
-        extra=(
-            "REVISION focus: keep untouched segment playlists identical to state; "
-            "Planner fields are read-only."
-            if m == "revision"
-            else "Generate playlist"
-        ),
-    )
+
+    cleaned_state = dedent(
+        f"""
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        TARGET DURATION: {state.get("meta", {}).get("target_duration_seconds", "")}
+        THEME TYPE: {state.get("meta", {}).get("theme_type", "")}
+        THEME SUBJECT: {state.get("meta", {}).get("theme_subject", "")}
+        THEME RELATIONSHIP: {state.get("meta", {}).get("theme_relationship", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        PLAN: {state.get("plan")}
+        SEGMENTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "narrative_function": s.get("narrative_function"),
+            "scene": s.get("scene"),
+            "sonic_direction": s.get("sonic_direction"),
+            "lyrical_direction": s.get("lyrical_direction"),
+            "anchor_tracks": s.get("anchor_tracks"),
+            "reference_material": s.get("reference_material"),
+            "sequence_direction": s.get("sequence_direction"),
+            "transition_to_next": s.get("transition_to_next"),
+            "playlist": s.get("playlist"),
+          }
+          for s in state.get("segments", [])
+        ]}
+        """
+    ).strip()
+
+    curator_issues = [
+        i for i in state.get("critic", {}).get("issues", [])
+    ]
+    curator_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+    ]
+
+    user = dedent(
+        f"""
+        MODE: {m}
+        {cleaned_state}
+        CURATOR ISSUES: {curator_issues}
+        CURATOR ACTIONS: {curator_actions}
+        """
+    ).strip()
+
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> list[dict[str, str]]:
     """Script Writer 闸门：只写 script；结构与 playlist 已锁定。（v6.3 未纳入 Guide）"""
     m = _normalize_mode(mode)
-    revision_hint = (
-        "REVISION：根据 critic.issues / actions 修复 script；不要改 playlist 或段落骨架。"
-        if m == "revision"
-        else "GENERATION：为每个 segment 填写 script。"
-    )
-    system = dedent(
+    guide = _load_guide(_GUIDE_SCRIPT_WRITER)
+    envelope = dedent(
         f"""
-        You are the Script Writer Agent in Stage-Gated mode (v6.0 staged).
+        === STAGE-GATED ORCHESTRATION ENVELOPE (v6.3 staged) ===
         Current gate: SCRIPT WRITER. Planner structure and Curator playlist are LOCKED.
 
-        {revision_hint}
+        {_mode_envelope(m, revision_focus="Fix script only; do not change playlist or segment structure.")}
 
-        Write ONLY segments[*].script (segment_intro + between_tracks).
-        Prefer narrative_function / scene from Planner when writing host voice.
-        FORBIDDEN: playlist, segment structure fields, critic.*, control.next_agent.
-        Output a single JSON object matching the Script Writer response schema.
+        === SCRIPT WRITER THINKING GUIDE (verbatim from {_GUIDE_SCRIPT_WRITER}) ===
         """
     ).strip()
+    system = f"{envelope}\n\n{guide}".strip()
     user = _user_plan_state_message(state, mode=m)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

@@ -522,12 +522,29 @@ def run_stage3(params: ConsoleParams, *, settings: Settings | None = None) -> Co
         if not mix_raw:
             raise PodcastAIError("请填写 MixParamsJSON 路径（`*_mix_params.json`）。")
         mix_path = Path(mix_raw)
+        effective = settings_from_params(params, base=settings)
+        # 便于核对 Console 表单是否把 voice_gain_db 下发到本次 Stage 3
+        logger.info(
+            "stage3 audio overrides from Console: voice_gain_db=%s (params) → %s (effective); "
+            "per_track_normalize=%s; overlay_max_db=%s; post_overlay_ramp=%s",
+            params.voice_gain_db,
+            effective.audio.voice_gain_db,
+            effective.audio.per_track_normalize_enabled,
+            effective.audio.voice_music_overlay_music_max_db,
+            effective.audio.voice_music_post_overlay_ramp_seconds,
+        )
         result = finalize_episode_stage3(
             mix_params_json_path=mix_path,
-            settings=settings_from_params(params, base=settings),
+            settings=effective,
             topic=(params.topic or "").strip() or None,
         )
-        return _result_from_episode("stage3", result)
+        out = _result_from_episode("stage3", result)
+        out.summary = (
+            f"{out.summary} · voice_gain_db={effective.audio.voice_gain_db:g}"
+            if out.summary
+            else f"voice_gain_db={effective.audio.voice_gain_db:g}"
+        )
+        return out
 
     return _run_command("stage3", _inner, debug=bool(params.debug))
 

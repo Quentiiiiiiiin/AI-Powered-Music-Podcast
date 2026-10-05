@@ -272,6 +272,9 @@ class MiniMaxTTSClient(TTSClient):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {mm.api_key}",
         }
+
+        voice_speed = 1
+        
         # v4.1 约束：voice_setting/audio_setting 固定默认值；后续再配置化
         payload: dict[str, Any] = {
             "model": mm.model,
@@ -279,7 +282,7 @@ class MiniMaxTTSClient(TTSClient):
             "stream": False,
             "voice_setting": {
                 "voice_id": voice_id,
-                "speed": 1,
+                "speed": voice_speed,
                 "vol": 1,
                 "pitch": 0,
                 # "emotion": "happy",

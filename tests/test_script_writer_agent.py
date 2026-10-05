@@ -81,3 +81,21 @@ def test_v30_script_writer_rejects_language_mismatch() -> None:
     with pytest.raises(AIServiceError, match=r"语言不一致"):
         agent.run(state)
 
+
+def test_script_writer_allows_null_segment_intro() -> None:
+    state = initialize_plan_state(_request("zh"))
+    payload = {
+        "segments": [
+            {
+                "script": {
+                    "segment_intro": None,
+                    "between_tracks": [{"after_track_index": 0, "text": None}],
+                }
+            }
+        ]
+    }
+    agent = ScriptWriterAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state)
+
+    assert next_state["segments"][0]["script"]["segment_intro"] is None
+

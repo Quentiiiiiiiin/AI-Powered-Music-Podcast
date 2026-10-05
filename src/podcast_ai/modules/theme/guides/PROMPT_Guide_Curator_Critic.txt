@@ -576,6 +576,7 @@ Examples:
 - slightly repetitive sonic texture
 - a transition that could be smoother
 - one track with a somewhat weaker thematic connection
+- time duration related issues
 
 ### major
 

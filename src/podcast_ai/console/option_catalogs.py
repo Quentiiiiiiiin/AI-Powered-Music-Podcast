@@ -32,6 +32,7 @@ TTS_VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     "minimax": (
         "Chinese (Mandarin)_Crisp_Girl",
         "English_Sharp_Commentator",
+        "English_captivating_female1"
     ),
     "edge": (),
 }
