@@ -125,6 +125,9 @@
   - `staged`：按阶段内修订预算计数（非全局粗粒度 `max_iterations` 主控）。
   - `legacy`：外层仍由 `control.max_iterations` 限制 Critic 评估轮数（见 `initialize_plan_state`）。
 - **结构化输出**：各 Agent 在支持的 LLM 配置下通过 `response_format` + JSON Schema 约束输出；解析统一走 `agent_json_parser`（可回退 JSON 修复）。
+- **两层重试（勿混用）**：
+  - **HTTP**：`llm.max_retries`，仅在 `infra/llm_client.py` 覆盖传输/网关失败。
+  - **输出校验（v7.2）**：独立配置（建议字段 `llm.output_max_retries`，默认额外 2 次、合计最多 3 次 generate；`0` 关闭）。包在各 Agent `run()`（及走同一 generate→parse→sanitize 的 `single_agent` 路径）内：解析或 sanitize 失败时用**同一** messages / `response_format` / tools 再 generate；**不**回灌错误进 prompt、**不**改编排 FSM、**不**放宽 sanitize。耗尽仍抛 `AIServiceError`。每次失败 raw 仍按审计落盘。
 - **联网搜索（v7.0）**：经 OpenRouter 且配置启用时，由 `LLMClient` **统一**在请求中附带 Server Tool `openrouter:web_search`（覆盖 staged/legacy/各 Critic 及同客户端的 `single_agent`）；模型按需调用，OpenRouter 服务端执行。**禁止**弃用的 `plugins.web` / 模型 `:online` 后缀。关闭或非 OpenRouter 时不携带。不改变 Agent 字段级 I/O 与 snapshot 契约。
 - **写权限隔离**：每个 Agent 输出经 sanitize 后 `merge_plan_state` 合并；`staged` 下 Critic 的可写字段收窄为阶段内评估（`critic.*` / pass 等），**不含**调度下一创作 Agent。
 
@@ -269,6 +272,20 @@ output/
 以下结论仍适用；细节见 PRD 迭代说明与 git 历史。
 
 - **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
+- **AD-v7.2：Agent 输出校验重试，与 HTTP retry 分离（迭代四十）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**——在 Agent 调用环路上增加**第二层重试**，不改变分层、FSM、字段契约与 HTTP retry 语义
+  - **背景**：`llm.max_retries` 只覆盖 HTTP 失败；已返回文本但 JSON/sanitize 不合格会整期中止。偶发格式失败再抽同一请求通常可通过。
+  - **最小改动方案**：
+    - 配置新增独立计数（建议 `llm.output_max_retries`，默认 2，`0`=关闭）；**禁止**复用 `llm.max_retries`
+    - 循环位置：各 Agent `run()`（及同路径的 `ThemePlanner` single_agent），包住 generate → parse → sanitize；成功即 merge
+    - 可用薄封装避免四 Agent 复制循环，但仍属 `modules/theme` 内部，不引入新服务层
+    - 同一 messages/`response_format`/tools；不改 temperature；错误不进下一轮 prompt
+    - 不改编排、不把校验失败当 Critic revision、不放宽 sanitize、不做本轮 Console/CLI 新控件、不作用于 TTS/混音
+    - 每次失败尝试的 raw 仍写入审计（`parsed_patch=None`）；日志区分尝试序号与 parse vs sanitize
+  - **影响面**：
+    - 主要：`modules/theme/*_agent.py`、可选 `llm_planner.py` 单 Agent 路径、`infra/config.py`、审计写入点、相关测试
+    - 不改：`orchestrator` FSM、Agent 写权限表、`llm_client` HTTP 重试、snapshot / MixParams 契约
 - **AD-v7.0：OpenRouter Server Tool 联网搜索接入全 Agent（迭代三十八）**
   - **状态**：Accepted
   - **结论**：**需要小幅架构调整（是）**——扩展 **基础设施层 LLM 请求能力**，不改变分层、编排 FSM、Agent 写权限契约与 snapshot 对外格式

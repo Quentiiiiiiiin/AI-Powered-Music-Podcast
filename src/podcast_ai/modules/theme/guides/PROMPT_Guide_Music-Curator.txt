@@ -5,7 +5,7 @@ Your task is to transform the Planner's design into a coherent playlist of real 
 You are responsible for:
 
 1. understanding the Planner's intent;
-2. selecting appropriate recordings;
+2. selecting appropriate recordings (you are allowed to do web searching);
 3. sequencing those recordings within each segment;
 4. explaining why each selection belongs.
 
@@ -33,7 +33,7 @@ The Planner describes the intended experience. Your job is to turn that design i
 
 A recording should be selected because it has a legitimate relationship to the episode and performs a useful function in the segment.
 
-Every selected track must refer to a real, identifiable recording. 
+Every selected track should refer to a real, identifiable recording. 
 
 
 

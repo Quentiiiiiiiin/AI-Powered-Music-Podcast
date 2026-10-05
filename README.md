@@ -213,6 +213,8 @@ podcast-ai console --no-browser  # 不自动打开浏览器
 | `llm.web_search.engine`      | **v7.0** 搜索引擎：`auto` / `native` / `exa` / `firecrawl` / `parallel` / `perplexity` | `auto` |
 | `llm.web_search.max_results` | **v7.0** 每次搜索结果条数（1–25） | `5` |
 | `llm.web_search.max_uses`    | **v7.0** 单次请求内最大搜索次数；省略/`null`=不限制 | `null` |
+| `llm.max_retries`            | **HTTP** 传输/网关失败重试（仅 `llm_client`） | `2` |
+| `llm.output_max_retries`     | **v7.2** Agent JSON/sanitize 失败后的额外 generate 次数（不含首次；与 `max_retries` **分计**；`0`=关闭） | `2` |
 
 ### OpenRouter 联网搜索（v7.0）
 

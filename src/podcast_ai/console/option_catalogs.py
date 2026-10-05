@@ -13,12 +13,14 @@ LLM_INTERFACES: dict[str, str] = {
 LLM_MODELS: tuple[str, ...] = (
     "deepseek/deepseek-v3.2",
     "openai/gpt-5.6-luna",
+    "openai/gpt-6-luna",
     "deepseek/deepseek-v4-pro",
 )
 
 # 模型 → OpenRouter provider slug 候选；空列表 = 仅「自动路由」
 LLM_PROVIDERS_BY_MODEL: dict[str, tuple[str, ...]] = {
     "openai/gpt-5.6-luna": ("azure/eu",),
+    "openai/gpt-6-luna": ("azure/eu",),
 }
 
 TTS_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {

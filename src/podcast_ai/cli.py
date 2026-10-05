@@ -158,6 +158,8 @@ llm:
   model: "openai/gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v7.2：JSON/sanitize 失败后的额外 generate 次数（不含首次；与 max_retries 分计；0=关闭）
+  output_max_retries: 2
   # v4.6：OpenRouter 供应方路由。留空=请求体不携带 provider（由 OpenRouter 自动选路）。
   # 非空：填单个 slug（实现为 {"only":[slug]}）或 JSON 对象字符串（与官方 provider 字段一致）。
   openrouter_provider: "azure/swedencentral"
@@ -199,6 +201,8 @@ PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 # PODCAST_AI_LLM__WEB_SEARCH__ENABLED=false
 # PODCAST_AI_LLM__WEB_SEARCH__ENGINE=auto
 # PODCAST_AI_LLM__WEB_SEARCH__MAX_RESULTS=5
+# v7.2：输出校验额外 generate 次数（与 PODCAST_AI_LLM__MAX_RETRIES 分计）
+# PODCAST_AI_LLM__OUTPUT_MAX_RETRIES=2
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here

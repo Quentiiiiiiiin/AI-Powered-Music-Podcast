@@ -12,6 +12,7 @@ from podcast_ai.modules.theme.agent_response_schemas import (
 )
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.agent_output_retry import run_generate_parse_sanitize
 from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_MUSIC_CURATOR, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_music_curator_agent_messages
 from podcast_ai.modules.theme.prompts_staged import build_music_curator_staged_messages
@@ -156,18 +157,17 @@ class MusicCuratorAgent:
                 build_music_curator_response_schema(segments_count),
             )
 
-        try:
-            raw = self._llm.generate(messages, **gen_kwargs)
-        except AIServiceError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise AIServiceError(f"调用 Music Curator Agent 失败：{exc!r}") from exc
+        def _generate() -> str:
+            try:
+                return self._llm.generate(messages, **gen_kwargs)
+            except AIServiceError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise AIServiceError(f"调用 Music Curator Agent 失败：{exc!r}") from exc
 
-        logger.debug("Music Curator Agent raw output (truncated): %s", raw[:1000])
-
-        # v7.1：解析失败仍落盘原始返回（parsed_patch=None）；写盘失败不掩盖解析错误
-        try:
-            data = parse_agent_json_response(
+        def _parse(raw: str) -> Dict[str, Any]:
+            logger.debug("Music Curator Agent raw output (truncated): %s", raw[:1000])
+            return parse_agent_json_response(
                 agent_label=AGENT_LABEL,
                 raw=raw,
                 state=state,
@@ -175,19 +175,32 @@ class MusicCuratorAgent:
                 allow_repair_fallback=not structured,
                 output_dir=Path(self._settings.app.output_dir),
             )
-        except Exception:
-            if audit_sink is not None and round_iteration is not None:
-                audit_sink.write_agent_artifact(
-                    iteration=round_iteration,
-                    agent_slug=AUDIT_SLUG_MUSIC_CURATOR,
-                    mode=mode,
-                    request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
-                    raw_llm_text=raw,
-                    parsed_patch=None,
-                    stage=audit_stage,
-                    revision=audit_revision,
-                )
-            raise
+
+        def _sanitize(data: Dict[str, Any]) -> Dict[str, Any]:
+            return sanitize_curator_patch(data, expected_segments=segments_count)
+
+        def _on_fail(raw: str, stage: str, exc: BaseException) -> None:  # noqa: ARG001
+            if audit_sink is None or round_iteration is None:
+                return
+            audit_sink.write_agent_artifact(
+                iteration=round_iteration,
+                agent_slug=AUDIT_SLUG_MUSIC_CURATOR,
+                mode=mode,
+                request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                raw_llm_text=raw,
+                parsed_patch=None,
+                stage=audit_stage,
+                revision=audit_revision,
+            )
+
+        result = run_generate_parse_sanitize(
+            agent_label=AGENT_LABEL,
+            extra_retries=self._settings.llm.output_max_retries,
+            generate=_generate,
+            parse=_parse,
+            sanitize=_sanitize,
+            on_attempt_failed=_on_fail,
+        )
 
         if audit_sink is not None and round_iteration is not None:
             audit_sink.write_agent_artifact(
@@ -195,13 +208,12 @@ class MusicCuratorAgent:
                 agent_slug=AUDIT_SLUG_MUSIC_CURATOR,
                 mode=mode,
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
-                raw_llm_text=raw,
-                parsed_patch=data,
+                raw_llm_text=result.raw,
+                parsed_patch=result.parsed,
                 stage=audit_stage,
                 revision=audit_revision,
             )
 
-        patch = sanitize_curator_patch(data, expected_segments=segments_count)
-        next_state = merge_plan_state(state, patch)
+        next_state = merge_plan_state(state, result.sanitized)
         next_state = merge_plan_state(next_state, {"control": {"last_updated_by": "Music Curator"}})
         return next_state

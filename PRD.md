@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v7.1  
+**文档版本**：v7.2  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v7.1）
+**产品阶段**：迭代验证中（进入 v7.2）
 
 ---
 
@@ -613,6 +613,20 @@
     4. Console 可设置 `engine`（上述 6 项下拉）、`max_results`（默认 5）、`max_uses`（默认不限制），并实际作用于 OpenRouter `openrouter:web_search` 请求参数。
     5. 不破坏 v7.0 联网搜索主路径、结构化输出及既有 snapshot / 终态 state 契约。
 
+- **v7.2（迭代四十：Agent 输出校验重试，与 HTTP retry 分离）**：
+  - **问题**：阶段一各 Agent 在拿到模型原文后依次做 JSON 解析与 sanitize；任一步失败即抛错、编排中止后续 Agent，并将 `control.status` 标为 `error`。现有 `llm.max_retries` 只覆盖网络等 HTTP 调用异常，不覆盖「已返回文本但 JSON/字段不合格」。模型与 `response_format` 变严后，此类偶发格式失败增多；同一请求人工再跑多数能过。
+  - **变更目标**：在**不改变**编排 FSM、Agent 字段契约、sanitize/`response_format` 严格度的前提下，于各 Agent `run()` 内包住「generate → JSON 解析 → sanitize」：解析或 sanitize 失败时，用**同一套** messages / `response_format` / tools **再 generate 有限次**（不把错误拼进下一轮 prompt、不改 temperature）。配置与 HTTP retry **分开、分开计数**；建议默认额外 **2** 次（合计最多 3 次 generate）；`0` 关闭，行为与现网一致。任一次成功即 merge；次数用尽仍抛 `AIServiceError` 并中止后续 Agent。
+  - **非目标**：错误回灌 prompt；Orchestrator 整轮重跑；放宽校验；把校验失败当成 Critic revision；用 `llm.max_retries` 兼做输出校验重试；本轮不做 Console/CLI 新控件（先走 config）；不作用于 TTS/混音。
+  - **可观测**：每次失败的 raw 仍按现有审计落盘（解析失败 `parsed_patch=None`）；日志区分第几次输出尝试、失败阶段（parse vs sanitize）、最终成功或耗尽。
+  - **功能归类**：**优化**（降低偶发格式失败导致的整期中断）。
+  - **User Story（用户视角）**：作为跑阶段一规划的开发者，我希望 Agent 偶发 JSON/字段不合格时系统能自动再抽几次同样请求，而不是整期立刻失败；网络重试与格式重试互不影响，关掉新开关应和现在一样。
+  - **Acceptance Criteria（验收标准）**：
+    1. `output_max_retries=0`（字段名以实现为准）时行为与当前线上一致。
+    2. 第一次非法 JSON 或 sanitize 失败、后续一次合格：Agent 成功，state 采用合格那次结果。
+    3. 连续失败直到用尽：抛错，编排 `control.status=error`，不进入下一 Agent。
+    4. `llm.max_retries` 与输出校验重试**互不影响计数**；成功路径不增加额外 generate。
+    5. 失败尝试的原文仍写入审计；不改变 Orchestrator FSM、sanitize 规则与 Agent 输出契约。
+
 
 ## 1. 产品背景
 
@@ -874,9 +888,10 @@
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
 - **snapshot（v6.1 / v6.8）**：**snapshot 对外格式不变**；**v6.8** 在写出 `state_partial` 的失败路径上，须于**同目录**再写一份由 partial 派生的可消费 snapshot。
 - **联网搜索（v7.0 / v7.1）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。**v7.1**：Console 可配 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）；运行态洞察展示 `web_search_requests`。
-- **审计完整性（v7.1）**：Agent 输出解析失败时，仍须落盘该次**原始返回**，不得因解析失败而跳过审计写入。
+- **审计完整性（v7.1 / v7.2）**：Agent 输出解析失败时，仍须落盘该次**原始返回**，不得因解析失败而跳过审计写入；**v7.2** 输出校验重试的每一次失败尝试同样落盘。
+- **输出校验重试（v7.2）**：JSON 解析 / sanitize 失败时，在 Agent 层用相同 messages 再 generate（默认额外 2 次，可配 0 关闭）；与 `llm.max_retries` 分开计数；**不**放宽契约、**不**错误回灌 prompt、**不**改编排 FSM。
 
-### 6.4 当前版本成功指标（v7.1）
+### 6.4 当前版本成功指标（v7.2）
 
 | 指标 | 目标 |
 |------|------|
@@ -913,6 +928,7 @@
 | **Console DEBUG 全量日志** | Console 可观测与 CLI `--log-level DEBUG` 对等的全量日志；失败时有更详细报错 |
 | **解析失败审计原文** | Agent JSON/结构化解析失败时审计仍保存该次原始返回 |
 | **Console 联网搜索调试** | 运行态洞察展示 `web_search_requests`；可配 engine / max_results / max_uses（默认 auto / 5 / 不限制） |
+| **Agent 输出校验重试** | 解析/sanitize 失败可按独立配置再 generate；与 HTTP retry 分计；0 即关闭；契约与 FSM 不变 |
 
 ---
 

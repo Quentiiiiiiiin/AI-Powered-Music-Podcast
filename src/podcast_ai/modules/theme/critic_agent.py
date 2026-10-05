@@ -14,6 +14,7 @@ from podcast_ai.modules.theme.agent_response_schemas import (
     build_openrouter_response_format,
 )
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.agent_output_retry import run_generate_parse_sanitize
 from podcast_ai.modules.theme.critic_rules import (
     CURATOR_CRITIC_SCORE_DIMS,
     CURATOR_CRITIC_SEVERITIES,
@@ -126,18 +127,17 @@ class CriticAgent:
                 schema,
             )
 
-        try:
-            raw = self._llm.generate(messages, **gen_kwargs)
-        except AIServiceError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise AIServiceError(f"调用 Critic Agent 失败：{exc!r}") from exc
+        def _generate() -> str:
+            try:
+                return self._llm.generate(messages, **gen_kwargs)
+            except AIServiceError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise AIServiceError(f"调用 Critic Agent 失败：{exc!r}") from exc
 
-        logger.debug("Critic Agent raw output (truncated): %s", raw[:1000])
-
-        # v7.1：解析失败仍落盘原始返回（parsed_patch=None）；写盘失败不掩盖解析错误
-        try:
-            data = parse_agent_json_response(
+        def _parse(raw: str) -> Dict[str, Any]:
+            logger.debug("Critic Agent raw output (truncated): %s", raw[:1000])
+            return parse_agent_json_response(
                 agent_label=AGENT_LABEL,
                 raw=raw,
                 state=state,
@@ -145,19 +145,39 @@ class CriticAgent:
                 allow_repair_fallback=not structured,
                 output_dir=Path(self._settings.app.output_dir),
             )
-        except Exception:
-            if audit_sink is not None and round_iteration is not None:
-                audit_sink.write_agent_artifact(
-                    iteration=round_iteration,
-                    agent_slug=AUDIT_SLUG_CRITIC,
-                    mode=mode,
-                    request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
-                    raw_llm_text=raw,
-                    parsed_patch=None,
-                    stage=audit_stage,
-                    revision=audit_revision,
-                )
-            raise
+
+        def _sanitize(data: Dict[str, Any]) -> Dict[str, Any]:
+            return _sanitize_critic_model_payload(
+                data,
+                staged=(orch == "staged"),
+                score_dims=profile["score_dims"],
+                severities=profile["severities"],
+                issue_keys=profile["issue_keys"],
+                action_keys=profile["action_keys"],
+            )
+
+        def _on_fail(raw: str, stage_name: str, exc: BaseException) -> None:  # noqa: ARG001
+            if audit_sink is None or round_iteration is None:
+                return
+            audit_sink.write_agent_artifact(
+                iteration=round_iteration,
+                agent_slug=AUDIT_SLUG_CRITIC,
+                mode=mode,
+                request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
+                raw_llm_text=raw,
+                parsed_patch=None,
+                stage=audit_stage,
+                revision=audit_revision,
+            )
+
+        result = run_generate_parse_sanitize(
+            agent_label=AGENT_LABEL,
+            extra_retries=self._settings.llm.output_max_retries,
+            generate=_generate,
+            parse=_parse,
+            sanitize=_sanitize,
+            on_attempt_failed=_on_fail,
+        )
 
         if audit_sink is not None and round_iteration is not None:
             audit_sink.write_agent_artifact(
@@ -165,20 +185,13 @@ class CriticAgent:
                 agent_slug=AUDIT_SLUG_CRITIC,
                 mode=mode,
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
-                raw_llm_text=raw,
-                parsed_patch=data,
+                raw_llm_text=result.raw,
+                parsed_patch=result.parsed,
                 stage=audit_stage,
                 revision=audit_revision,
             )
 
-        model_body = _sanitize_critic_model_payload(
-            data,
-            staged=(orch == "staged"),
-            score_dims=profile["score_dims"],
-            severities=profile["severities"],
-            issue_keys=profile["issue_keys"],
-            action_keys=profile["action_keys"],
-        )
+        model_body = result.sanitized
 
         # v6.8：不再对 revision「新 issue / 分数不降」做系统硬护栏（prompt 软引导仍保留）
         passed, thr = derive_critic_pass(

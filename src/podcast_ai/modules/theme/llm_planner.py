@@ -12,6 +12,7 @@ from podcast_ai.core.models import EpisodePlan, EpisodeRequest, EpisodeSegment, 
 from podcast_ai.infra.config import Settings, load_settings, should_use_structured_output
 from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
 from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.agent_output_retry import run_generate_parse_sanitize
 from podcast_ai.modules.theme.agent_response_schemas import (
     SINGLE_AGENT_STATE_SUBSET_SCHEMA,
     build_openrouter_response_format,
@@ -270,26 +271,41 @@ class ThemePlanner:
                 SINGLE_AGENT_STATE_SUBSET_SCHEMA,
             )
 
-        try:
-            raw = self._llm.generate(messages, **gen_kwargs)
-        except AIServiceError as exc:
-            raise AIServiceError(f"single_agent 规划调用失败（request_id={request_id}）：{exc}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AIServiceError(f"single_agent 调用 LLM 失败（request_id={request_id}）：{exc!r}") from exc
+        def _generate() -> str:
+            try:
+                return self._llm.generate(messages, **gen_kwargs)
+            except AIServiceError as exc:
+                raise AIServiceError(f"single_agent 规划调用失败（request_id={request_id}）：{exc}") from exc
+            except Exception as exc:  # noqa: BLE001
+                raise AIServiceError(f"single_agent 调用 LLM 失败（request_id={request_id}）：{exc!r}") from exc
 
-        data = parse_agent_json_response(
+        def _parse(raw: str) -> Dict[str, Any]:
+            return parse_agent_json_response(
+                agent_label="Theme Planner(single_agent)",
+                raw=raw,
+                state=seed_state,
+                structured=structured,
+                allow_repair_fallback=not structured,
+                output_dir=Path(self._settings.app.output_dir),
+            )
+
+        def _sanitize(data: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                validate_state_subset_for_single_agent(data)
+            except AIServiceError as exc:
+                raise AIServiceError(
+                    f"single_agent state 子集校验失败（request_id={request_id}）：{exc}"
+                ) from exc
+            return data
+
+        result = run_generate_parse_sanitize(
             agent_label="Theme Planner(single_agent)",
-            raw=raw,
-            state=seed_state,
-            structured=structured,
-            allow_repair_fallback=not structured,
-            output_dir=Path(self._settings.app.output_dir),
+            extra_retries=self._settings.llm.output_max_retries,
+            generate=_generate,
+            parse=_parse,
+            sanitize=_sanitize,
         )
-        try:
-            validate_state_subset_for_single_agent(data)
-        except AIServiceError as exc:
-            raise AIServiceError(f"single_agent state 子集校验失败（request_id={request_id}）：{exc}") from exc
-        return data
+        return result.sanitized
 
 
 def _episode_plan_from_state(state: PlanState) -> EpisodePlan:

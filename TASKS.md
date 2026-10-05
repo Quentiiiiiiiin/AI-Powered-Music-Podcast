@@ -1,110 +1,90 @@
-﻿## 版本 v7.1（迭代三十九：Console 调试可观测性增强 + 联网搜索控件）
+﻿## 版本 v7.2（迭代四十：Agent 输出校验重试，与 HTTP retry 分离）
 
-基于 PRD **v7.1**：补齐 Console 与 CLI `--log-level DEBUG` 对等的排查能力；修复 Agent **解析失败时审计无原文**的缺口；在运行态洞察展示 `web_search_requests`；Console 暴露 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）。
+基于 PRD **v7.2** 与 ARCHITECTURE **AD-v7.2**：在各 Agent `run()`（及同路径 `single_agent`）内，对「generate → JSON 解析 → sanitize」增加**第二层重试**。解析或 sanitize 失败时，用**同一套** messages / `response_format` / tools 再 generate（不回灌错误、不改 temperature）。
 
-**硬约束**：
-- 不破坏 v7.0 联网搜索主路径、结构化输出、snapshot / 终态 `state` 契约。
-- Console 仍只装配 Settings / pipeline，不复制 Agent 业务逻辑。
-- 避免过度设计：DEBUG 用现有 logging；用量优先复用日志/轻量回传，不另造监控子系统。
+**两层重试勿混用**：
+- **HTTP**：现有 `llm.max_retries`，仅 `infra/llm_client.py` 覆盖传输/网关失败。
+- **输出校验**：独立配置 `llm.output_max_retries`（建议名），默认额外 **2** 次（合计最多 3 次 generate）；**`0` 关闭**，行为与现网一致。
 
----
-
-### Task 01 - Console DEBUG 全量日志 + 详细报错
-- **Task name**: v7.1 - Console DEBUG log level
-- **目标**: Console 提供 DEBUG（或等价）控件；开启后 plan / stage2 / stage3 / create 等 Run 可在日志区看到 DEBUG 级全量日志；失败时错误展示比默认更详细（含异常链/关键上下文，以实现简洁为准）。
-- **类型**: frontend
-- **依赖关系**: 无
-- **Description**:
-  - 现状：`runner._run_command` 将 root logger 提到 INFO 并缓冲 handler 行。
-  - 扩展：`ConsoleParams` 增加 `log_level`/`debug`；Run 期间 `root.setLevel(DEBUG)`（结束后恢复）；日志框展示缓冲全文。
-  - 错误路径：DEBUG 下 `error`/`summary` 可附 `repr(exc)` 或 `traceback` 末段（注意勿泄露 api_key）。
-  - 覆盖所有经 `_run_command` 的入口；Preset 可纳入该字段（可选）。
-- **Input**: 现有 `console/runner.py`、`app.py`
-- **Output**: 与 CLI DEBUG 相当的 Console 日志可观测性
-- **Files involved**:
-  - `src/podcast_ai/console/runner.py`
-  - `src/podcast_ai/console/app.py`
-  - `src/podcast_ai/console/presets.py`（可选）
-- **Estimated complexity**: S–M（1–2 小时）
+**硬约束 / 非目标**：
+- 不改编排 FSM、不放宽 sanitize/`response_format`、不把校验失败当 Critic revision。
+- **禁止**用 `llm.max_retries` 兼做输出校验重试。
+- 本轮不做 Console/CLI 新控件；不作用于 TTS/混音。
+- HTTP 失败不计入输出校验次数；成功路径不增加额外 generate。
 
 ---
 
-### Task 02 - 解析失败仍落盘 Agent 原始返回
-- **Task name**: v7.1 - audit raw on parse failure
-- **目标**: 任一 Agent（Planner / Curator / Writer / Critic，含 staged）在 JSON/结构化解析失败时，审计目录仍写出该次 **原始返回**（与既有 `write_agent_artifact` 约定对齐）；不得仅有错误摘要而无原文。
+### Task 01 - 配置：`llm.output_max_retries` 与 HTTP retry 分计
+- **Task name**: v7.2 - Settings output_max_retries
+- **目标**: 在 `LLMConfig` / `config.example.yaml` / init-config 增加独立字段（建议 `llm.output_max_retries`）；默认 **2**；`0` 合法且表示关闭；非法值（负数、非 int）明确报错；环境变量可覆盖。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 现状：多数 Agent 在 `parse_agent_json_response` **成功后**才 `write_agent_artifact`；解析抛错则跳过。
-  - 改法（选简单一种并统一四 Agent）：
-    1. `try/except`：失败时仍调用 audit，`parsed_patch=None` 或带 `parse_error`；或
-    2. 在 `parse_agent_json_response` 接受可选 `on_raw`/`audit` 回调——**优先方案 1**，少改公共解析器签名。
-  - `parsed_patch` 缺失时文件名/内容仍可复查 `raw_llm_text`；写盘失败不掩盖原解析错误。
-  - 单测：mock 非法 raw + FilePlanAuditSink 临时目录，断言文件存在且含原文片段。
-- **Input**: 各 `*_agent.py`、`plan_audit.write_agent_artifact`
-- **Output**: 解析失败可对照审计原文
+  - 语义：额外 generate 次数（不含首次）。默认 2 → 最多 3 次 generate。
+  - README 一两句标明与 `llm.max_retries` 的区别（网络 vs 输出校验）。
+  - 本轮不暴露 Console/CLI 开关。
+- **Input**: PRD/AD-v7.2、现有 `LLMConfig.max_retries`
+- **Output**: 可配、默认同 PRD、与 HTTP retry 字段分离
+- **Files involved**:
+  - `src/podcast_ai/infra/config.py`
+  - `config.example.yaml`
+  - `src/podcast_ai/cli.py`（init-config 模板，若有）
+  - `README.md`
+- **Estimated complexity**: S（≤1 小时）
+
+---
+
+### Task 02 - 薄封装：generate → parse → sanitize 循环（避免四 Agent 复制）
+- **Task name**: v7.2 - output validation retry helper
+- **目标**: 在 `modules/theme` 内提供极小 helper：按 `output_max_retries` 循环同一 generate kwargs；parse 或 sanitize 失败则再试；成功返回 parsed+sanitized；耗尽抛最后一次 `AIServiceError`。
+- **类型**: backend
+- **依赖关系**: Task 01
+- **Description**:
+  - 建议新文件 `agent_output_retry.py`（或等价），**不**引入新服务层、不改编排。
+  - 回调签名保持简单：`generate()` / `parse(raw)` / `sanitize(data)`；失败阶段记为 `parse` 或 `sanitize`。
+  - HTTP/`AIServiceError` 来自 `generate`：**直接上抛**，不消耗输出校验次数（与 HTTP retry 分计）。
+  - 日志：尝试序号（1-based）、失败阶段、最终成功或耗尽。
+  - 每次失败尝试通过可选 `on_attempt_failed(raw, stage, exc)` 落盘审计（`parsed_patch=None`）；成功尝试仍按现有约定写审计。
+- **Input**: Task 01 配置、现有 parse/sanitize
+- **Output**: 可被四 Agent + single_agent 复用的循环
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/agent_output_retry.py`（新建，建议）
+- **Estimated complexity**: M（1.5–2 小时）
+
+---
+
+### Task 03 - 四 Agent + single_agent 接线
+- **Task name**: v7.2 - wire retry into Agent.run
+- **目标**: Planner / Music Curator / Script Writer / Critic 的 `run()` 用 helper 包住 generate→parse→sanitize；`llm_planner` 的 `single_agent` 若走同一环路则一并接入。`output_max_retries=0` 时与现网一致（一次失败即抛）。
+- **类型**: backend
+- **依赖关系**: Task 02
+- **Description**:
+  - 保持 messages / `response_format` / tools / temperature 在重试间不变。
+  - 成功即既有 `merge_plan_state`；耗尽仍 `AIServiceError`，Orchestrator 现有 error 路径不变（`control.status=error`、不进入下一 Agent）。
+  - sanitize 失败也要审计 raw（与 parse 失败对称）。
+  - **不改** orchestrator FSM、sanitize 规则、schema。
+- **Input**: Task 02 helper、现有各 `*_agent.py`、v7.1 解析失败审计
+- **Output**: 全 Agent（含 staged/legacy Critic、single_agent）具备输出校验重试
 - **Files involved**:
   - `src/podcast_ai/modules/theme/planner_agent.py`
   - `src/podcast_ai/modules/theme/music_curator_agent.py`
   - `src/podcast_ai/modules/theme/script_writer_agent.py`
   - `src/podcast_ai/modules/theme/critic_agent.py`
-  - `src/podcast_ai/modules/theme/plan_audit.py`（若需允许 parsed 为空）
-  - `tests/test_audit_parse_failure_v71.py`（新建）
+  - `src/podcast_ai/modules/theme/llm_planner.py`（single_agent 路径，若适用）
 - **Estimated complexity**: M（2 小时）
 
 ---
 
-### Task 03 - 运行态洞察展示 `web_search_requests`
-- **Task name**: v7.1 - insight web_search_requests
-- **目标**: 阶段一运行态洞察展示当前/最近一次 Agent 相关的 `web_search_requests`；有用量显示次数，未启用或无字段时显示明确占位（如 `0` / `N/A` / `—`），不静默空白。
-- **类型**: frontend
-- **依赖关系**: 无（可与 Task 04 并行；若需更准的「当前 Agent」次数，可轻触 llm_client 日志格式）
-- **Description**:
-  - v7.0 已有日志：`LLM usage server_tool_use.web_search_requests=%d`。
-  - 优先：在 `run_progress.py` 从缓冲日志解析最近次数 → 写入 `ConsoleRunResult` → `_insight_md` 展示。
-  - 可选增强：`LLMClient` 记录 `last_web_search_requests` 并在 DEBUG/INFO 用固定前缀日志，便于解析（仍不改 Agent I/O）。
-  - 流式 progress yield 时尽量更新该字段（有则更新，无则占位）。
-- **Input**: 现有 insight / run_progress / llm 用量日志
-- **Output**: 洞察区可见搜索次数或占位
-- **Files involved**:
-  - `src/podcast_ai/console/run_progress.py`
-  - `src/podcast_ai/console/runner.py`
-  - `src/podcast_ai/console/app.py`
-  - （可选）`src/podcast_ai/infra/llm_client.py`
-- **Estimated complexity**: S–M（1–2 小时）
-
----
-
-### Task 04 - Console 联网搜索参数：engine / max_results / max_uses
-- **Task name**: v7.1 - Console web_search params
-- **目标**: 在已有「联网搜索开关」旁增加：`engine` 下拉（`auto`/`native`/`exa`/`firecrawl`/`parallel`/`perplexity`）、`max_results`（默认 5）、`max_uses`（默认不限制，空/0/null 表示不写入限制）；经 `settings_from_params` 写入 `llm.web_search`，实际作用于 OpenRouter tool parameters。
-- **类型**: frontend
-- **依赖关系**: 无（依赖 v7.0 已有 `WebSearchConfig`）
-- **Description**:
-  - 扩展 `ConsoleParams` / `defaults_from_settings` / `settings_from_params`（今日仅覆盖 `enabled`）。
-  - `max_uses` UI：Number 可空，或 Checkbox「限制次数」+ Number；映射为 `None` vs int。
-  - 纳入 `PRESET_KEYS`；中文 info 简短说明费用与默认值。
-  - 非 OpenRouter 时控件可仍可编辑，但实际不注入（与 v7.0 行为一致，可用 Markdown 提示）。
-- **Input**: `WebSearchConfig`、现有 `web_search_enabled` 控件
-- **Output**: Console 改参无需改 YAML 即可影响本次 Run
-- **Files involved**:
-  - `src/podcast_ai/console/app.py`
-  - `src/podcast_ai/console/runner.py`
-  - `src/podcast_ai/console/presets.py`
-- **Estimated complexity**: S（1–1.5 小时）
-
----
-
-### Task 05 - 轻量回归
-- **Task name**: v7.1 - smoke tests
-- **目标**: ① `settings_from_params` 正确合并 web_search 三参数；② 解析失败审计测（Task 02）通过；③ 日志解析能抽出 `web_search_requests`（可用假日志行）；④ 不破坏既有 Console preset 往返关键键。
+### Task 04 - 单测：关闭、成功补抽、耗尽、与 HTTP retry 分计
+- **Task name**: v7.2 - output retry unit tests
+- **目标**: mock LLM，不调真实 API。锁定：① `output_max_retries=0` 一次 parse/sanitize 失败即抛、只 generate 1 次；② 首次非法、第二次合格 → 成功且 state 用合格结果、generate=2；③ 连续失败用尽 → 抛错、generate=1+N；④ `generate` 抛 HTTP/`AIServiceError` 不额外循环输出校验；⑤ 失败尝试均触发审计 raw。
 - **类型**: backend
-- **依赖关系**: Task 01（可选）、Task 02, Task 03, Task 04
+- **依赖关系**: Task 02, Task 03
 - **Description**:
-  - 不强制 Gradio E2E / 真实 OpenRouter。
-- **Input**: Task 02–04
-- **Output**: `pytest` 相关用例通过
+  - 优先测 helper；再选 1 个 Agent（如 Planner）做接线冒烟即可。
+  - 不强制改 orchestrator 测试（FSM 未变）。
+- **Input**: Task 02–03
+- **Output**: `pytest` 通过
 - **Files involved**:
-  - `tests/test_console_web_search_v71.py`（新建，建议）
-  - Task 02 测试文件
-- **Estimated complexity**: S（1 小时）
+  - `tests/test_agent_output_retry_v72.py`（新建）
+- **Estimated complexity**: M（1.5–2 小时）

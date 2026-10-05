@@ -61,7 +61,13 @@ class LLMConfig(BaseModel):
     base_url: str = "https://openrouter.ai/api/v1"
     model: str = "minimax/minimax-m2.5"
     timeout_seconds: int = 60
+    # HTTP 传输/网关失败重试（仅 llm_client；与 output_max_retries 分计）
     max_retries: int = 2
+    # v7.2：JSON 解析 / sanitize 失败后的额外 generate 次数（不含首次；默认 2 → 最多 3 次；0=关闭）
+    output_max_retries: int = Field(
+        default=2,
+        description="Agent 输出校验额外 generate 次数；0=关闭；与 max_retries（HTTP）分计",
+    )
     # v3.4：None = 仅当 base_url 指向 openrouter.ai 时在请求体附加 response_format；True/False 强制开关
     structured_output: bool | None = Field(
         default=None,
@@ -72,6 +78,13 @@ class LLMConfig(BaseModel):
     openrouter_provider: str = ""
     # v7.0：Server Tool 联网搜索（OpenRouter only；默认关闭）
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+
+    @field_validator("output_max_retries")
+    @classmethod
+    def _check_output_max_retries(cls, value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"llm.output_max_retries 须为 >=0 的整数（收到：{value!r}）")
+        return value
 
 
 def is_openrouter_base_url(url: str) -> bool:
