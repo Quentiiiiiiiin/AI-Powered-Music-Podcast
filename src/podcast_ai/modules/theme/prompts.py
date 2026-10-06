@@ -431,134 +431,97 @@ def build_music_curator_agent_messages(state: dict, mode: str) -> list[dict[str,
 
 def build_script_writer_agent_messages(state: dict, mode: str) -> list[dict[str, str]]:
     """
-    构造 v3.0 Script Writer Agent 的消息。
+    构造 v7.3 Script Writer Agent 的消息（legacy 轨）。
 
-    Script Writer 只允许输出：
-    - segments[*].script.segment_intro
-    - segments[*].script.between_tracks
+    模型只输出定长 script_before；系统再映射回 segments[*].script。
     """
+    from podcast_ai.modules.theme.script_flat_mapper import (
+        build_flat_tracks,
+        build_writer_planning_brief,
+        flatten_script_before_from_state,
+        format_flat_playlist_lines,
+        translate_locations_for_prompt,
+    )
+
     m = (mode or "").strip().lower()
+    flat = build_flat_tracks(state.get("segments") or [])
+    n = len(flat)
     system = dedent(
-        """
-        You are the host of Luma Hits, a music podcast.
-        Your name is Nova, a passionate, friendly, energetic and emotional host.
-        Your responsibility is to write host scripts based on the meta.theme_description and the segments.narrative_function / scene. 
+        f"""
+        You are the host of Luma Hits (Nova / the Nova Show).
+        Write host cues for the WHOLE episode as a flat track list — not chapter announcements.
 
-        WRITE SCOPE:
-        - segments[*].script.segment_intro
-        - segments[*].script.between_tracks
+        WRITE SCOPE (only):
+        - script_before: array length MUST be N={n}
+        - script_before[i] = cue spoken BEFORE episode track i (0-based); string or null
+        - No cue after the last track (no post-final slot). Closing remarks go in script_before[N-1] if needed.
 
-        STYLE RULES:
-        - First-person narration
-        - Immersive, restrained, emotional
-        - Avoid preaching or over-commercial tone
+        FORBIDDEN:
+        - playlist / track / artist edits
+        - segments[].script / segment_intro / between_tracks (system maps those)
+        - plan / critic / control
 
-        GENERAL RULES:
-        - Write in the language given by state.meta.language.
-        - No ASCII " inside any JSON string. Use 「」 instead.
+        STYLE:
+        - First-person, immersive, restrained; about every 3–5 tracks as fits listening flow
+        - Language = state.meta.language
+        - No ASCII " inside JSON strings; use 「」 instead
 
         MODES:
-        [GENERATION MODE]
-        - Write full script for all segments
-
-        [REVISION MODE]
-        - ONLY modify script parts mentioned in actions.
-        - Keep all other script parts unchanged.
-
-        OUTPUT EXAMPLE FORMAT:
-        {
-          "segments": [
-            {
-              "script": {
-                "segment_intro": "这里写 segment 开场串词",
-                "between_tracks": [
-                  {"after_track_index": 0, "text": null},
-                  {"after_track_index": 1, "text": "这里写段内过渡串词"}
-                ]
-              }
-            }
-          ]
-        }
-
+        [GENERATION] Fill a full-length script_before (nulls allowed).
+        [REVISION] Output a FULL script_before of length N again; change only action-targeted
+        episode_track_index slots; keep all other cues identical to PREVIOUS script_before.
         """
     ).strip()
 
-    # 只取 script writer actions
     writer_actions = [
         a for a in state.get("critic", {}).get("actions", [])
         if a.get("target_agent") == "Script Writer"
     ]
-
-    curator_actions = [
-        a for a in state.get("critic", {}).get("actions", [])
-        if a.get("target_agent") == "Music Curator"
-    ]
+    writer_actions_view = translate_locations_for_prompt(writer_actions, flat)
 
     if m == "generation":
         task = dedent(
             """
             TASK:
-            - You should see the playlist as a whole, and write the script at where it fits naturally. You don't need to write the script between every two tracks.
+            - Place cues where the whole-episode listening flow needs companionship.
+            - Greet / intro Nova + Luma Hits somewhere natural; closing before the last track.
             """
         ).strip()
     else:
         task = dedent(
             """
             TASK:
-            - Apply what writer_actions requires; preserve tone and structure for everything else.
-            - For curator_actions that require to modify tracks, you need to modify the between_tracks accordingly.
-
-            VERBATIM RULE (hard requirement):
-            - For any segment that writer_actions does NOT target, copy segments[i].script from the current state
-              **exactly** (verbatim segment_intro and between_tracks; same strings and nulls).
+            - Apply WRITER ACTIONS (see episode_track_index_hint when present).
+            - VERBATIM: for indices NOT named by actions, copy PREVIOUS script_before[i] exactly
+              (same string or null).
             """
         ).strip()
 
-    general_rules = dedent(
-        """
-        GENERAL RULES:
-        - Mention host name Nova and show name Luma Hits before the last track's narration where it fits.
-        - Write in the language given by state.meta.language.
-        - You can add extra information related to album, artist, or story for either previous or next track, making it more informative and immersive.
-        """
-    ).strip()
+    previous = flatten_script_before_from_state(state) if m == "revision" else []
+    brief = build_writer_planning_brief(state)
+    playlist_block = format_flat_playlist_lines(flat) or "(empty)"
 
     user = dedent(
         f"""
         MODE: {mode}
+        N (total tracks): {n}
 
         {task}
 
-        {general_rules}
+        WRITER ACTIONS (locations may include episode_track_index_hint):
+        {writer_actions_view}
 
-        WRITER ACTIONS:
-        {writer_actions}
+        PLANNING BRIEF:
+        {brief}
 
-        CURATOR ACTIONS:
-        {curator_actions}
+        FLAT PLAYLIST (episode_track_index):
+        {playlist_block}
 
-        THEME: {state.get("meta", {}).get("theme", "")}
-        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
-        LANGUAGE: {state.get("meta", {}).get("language", "")}
-        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
-        CURRENT PLAYLISTS:
-        {[
-          {
-            "segment_id": s.get("segment_id"),
-            "playlist": s.get("playlist")
-          }
-          for s in state.get("segments", [])
-        ]}
+        PREVIOUS script_before (revision baseline; empty on generation):
+        {previous}
 
-        CURRENT SCRIPT:
-        {[
-          {
-            "segment_id": s.get("segment_id"),
-            "script": s.get("script")
-          }
-          for s in state.get("segments", [])
-        ]}
-
+        OUTPUT EXAMPLE:
+        {{"script_before": ["开场……", null, null, "中间……", "最后一首前收束……"]}}
         """
     ).strip()
 

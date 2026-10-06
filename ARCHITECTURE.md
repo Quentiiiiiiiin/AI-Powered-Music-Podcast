@@ -137,7 +137,7 @@
 
 1. **Planner** — `planner_agent.py`：结构 / 约束 / segments 设计（不含 playlist/script）。
 2. **Music Curator** — `music_curator_agent.py`：仅写 `playlist`。
-3. **Script Writer** — `script_writer_agent.py`：仅写 `script`。
+3. **Script Writer** — `script_writer_agent.py`（v7.3）：模型侧输出定长 `script_before[]`（整期扁平插点）；**系统 mapper** 按下标回填既有 `segments[*].script.segment_intro` / `between_tracks` 后再 merge。持久化 / snapshot / TTS 契约不变。
 4. **Critic** — `critic_agent.py`：阶段内评分与 pass；`staged` 下不负责路由。
 
 **`staged` 闸门流程（明确）**：
@@ -272,6 +272,19 @@ output/
 以下结论仍适用；细节见 PRD 迭代说明与 git 历史。
 
 - **AD-v3.0**：阶段一引入多 Agent + `PlanState`，仍在单体仓库内以子模块实现，不引入独立服务。
+- **AD-v7.3：Script Writer 整期扁平串词契约 + 系统回填（迭代四十一）**
+  - **状态**：Accepted
+  - **结论**：**需要小幅架构调整（是）**——仅在 Script Writer **Agent I/O 边界**增加扁平契约与系统 mapper；不改分层、编排 FSM、持久化 `script` schema、阶段二/三契约
+  - **背景**：按段填写 `segment_intro`/`between_tracks` 易变成「章节报幕」，整期插点难统一；直接改 `state_schema`/snapshot/TTS 属破坏性变更。方案见 `ScriptWriter_FlatCue_Adapter.md`
+  - **最小改动方案**：
+    - Agent 输入：策划要点 + 带 `episode_track_index` 的扁平歌单（各段 playlist 顺序拼接）
+    - Agent 输出 / structured output：仅定长 `script_before[]`（长度 = 总曲目 `N`，元素 `string|null`）；sanitize 拒越权键与长度不符
+    - **系统 mapper**（落盘前）：按下标写回 `segment_intro` / `between_tracks`（锚点用下标，不用曲名）；映射失败与 sanitize 失败同等处理，**禁止**半套 script 写入
+    - revision：仍输出整份定长 `script_before`；不双格式并存；未点名处保持上一轮文案
+    - staged / legacy prompt 与 Guide 口径对齐；审计保留「原始扁平输出 + 映射后 script」
+  - **影响面**：
+    - 主要：`script_writer_agent.py`（schema/sanitize/run）、prompts（staged/legacy）、可选独立 `script_flat_mapper.py`、相关测试
+    - 不改：`state_schema` 持久化 `script` 形态、`Stage2Snapshot`、TTS 插点、Console 时间线、Planner/Curator、Orchestrator FSM
 - **AD-v7.2：Agent 输出校验重试，与 HTTP retry 分离（迭代四十）**
   - **状态**：Accepted
   - **结论**：**需要小幅架构调整（是）**——在 Agent 调用环路上增加**第二层重试**，不改变分层、FSM、字段契约与 HTTP retry 语义

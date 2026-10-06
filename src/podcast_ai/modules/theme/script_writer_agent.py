@@ -1,32 +1,37 @@
+"""v7.3 Script Writer：模型输出定长 script_before；系统 mapper 回填既有 script schema。"""
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.infra.config import Settings, load_settings, should_use_structured_output
+from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
+from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
+from podcast_ai.modules.theme.agent_output_retry import run_generate_parse_sanitize
 from podcast_ai.modules.theme.agent_response_schemas import (
     build_openrouter_response_format,
     build_script_writer_response_schema,
 )
-from podcast_ai.infra.llm_client import LLMClient, get_default_llm_client
-from podcast_ai.modules.theme.agent_json_parser import parse_agent_json_response
-from podcast_ai.modules.theme.agent_output_retry import run_generate_parse_sanitize
 from podcast_ai.modules.theme.plan_audit import AUDIT_SLUG_SCRIPT_WRITER, PlanAuditSink
 from podcast_ai.modules.theme.prompts import build_script_writer_agent_messages
 from podcast_ai.modules.theme.prompts_staged import build_script_writer_staged_messages
+from podcast_ai.modules.theme.script_flat_mapper import (
+    apply_revision_preserve,
+    build_flat_tracks,
+    flatten_script_before_from_state,
+    map_script_before_to_segments_patch,
+    normalize_cue_text,
+    parse_action_episode_indices,
+    total_track_count,
+)
 from podcast_ai.modules.theme.state import PlanState, merge_plan_state
 
 logger = logging.getLogger(__name__)
 
 AGENT_LABEL = "Script Writer Agent"
-
-_SCRIPT_WRITER_SEGMENT_ALLOWED_KEYS = {"segment_id", "script"}
-_SCRIPT_ALLOWED_KEYS = {"segment_intro", "between_tracks"}
-_BETWEEN_TRACK_ALLOWED_KEYS = {"after_track_index", "text"}
 
 _ZH_RE = re.compile(r"[\u4e00-\u9fff]")
 _EN_RE = re.compile(r"[A-Za-z]")
@@ -45,92 +50,41 @@ def _text_matches_language(text: str, language: str) -> bool:
     return True
 
 
-def _sanitize_script_writer_patch(
+def sanitize_script_before_patch(
     data: Dict[str, Any],
     *,
-    expected_segments: int,
+    expected_tracks: int,
     language: str,
 ) -> Dict[str, Any]:
-    if set(data.keys()) - {"segments"}:
-        forbidden_top = sorted(set(data.keys()) - {"segments"})
-        raise AIServiceError(f"Script Writer 越权写入顶层字段：{', '.join(forbidden_top)}。")
+    """
+    v7.3：仅接受顶层 ``script_before``；空串规范为 null。
+    **不**写 segments[*].script（交给 mapper）。
+    """
+    if set(data.keys()) - {"script_before"}:
+        forbidden = sorted(set(data.keys()) - {"script_before"})
+        raise AIServiceError(f"Script Writer 越权写入顶层字段：{', '.join(forbidden)}。")
 
-    segments = data.get("segments")
-    if not isinstance(segments, list):
-        raise AIServiceError("Script Writer 输出中 segments 必须是数组。")
-    if len(segments) != expected_segments:
+    raw_list = data.get("script_before")
+    if not isinstance(raw_list, list):
+        raise AIServiceError("Script Writer 输出中 script_before 必须是数组。")
+    if len(raw_list) != expected_tracks:
         raise AIServiceError(
-            f"Script Writer 输出 segments 长度不匹配：expected {expected_segments}, got {len(segments)}。",
+            f"script_before 长度必须 = N={expected_tracks}（收到 {len(raw_list)}）。",
         )
 
-    sanitized_segments: List[Dict[str, Any]] = []
-    for idx, seg in enumerate(segments):
-        if not isinstance(seg, dict):
-            raise AIServiceError(f"segments[{idx}] 必须是对象。")
-        forbidden_seg = [k for k in seg.keys() if k not in _SCRIPT_WRITER_SEGMENT_ALLOWED_KEYS]
-        if forbidden_seg:
-            raise AIServiceError(f"Script Writer 越权写入 segments[{idx}] 字段：{', '.join(forbidden_seg)}。")
-
-        script = seg.get("script")
-        if not isinstance(script, dict):
-            raise AIServiceError(f"segments[{idx}].script 必须是对象。")
-        forbidden_script = [k for k in script.keys() if k not in _SCRIPT_ALLOWED_KEYS]
-        if forbidden_script:
-            raise AIServiceError(
-                f"Script Writer 越权写入 segments[{idx}].script 字段：{', '.join(forbidden_script)}。",
-            )
-
-        segment_intro = script.get("segment_intro")
-        if segment_intro is not None and not isinstance(segment_intro, str):
-            raise AIServiceError(f"segments[{idx}].script.segment_intro 必须是字符串或 null。")
-        if isinstance(segment_intro, str) and not _text_matches_language(segment_intro, language):
-            raise AIServiceError("segments[*].script.segment_intro 语言不一致。")
-
-        between_tracks = script.get("between_tracks")
-        if not isinstance(between_tracks, list):
-            raise AIServiceError(f"segments[{idx}].script.between_tracks 必须是数组。")
-
-        sanitized_between_tracks: List[Dict[str, Any]] = []
-        for bt_idx, bt in enumerate(between_tracks):
-            if not isinstance(bt, dict):
-                raise AIServiceError(f"segments[{idx}].script.between_tracks[{bt_idx}] 必须是对象。")
-            forbidden_bt = [k for k in bt.keys() if k not in _BETWEEN_TRACK_ALLOWED_KEYS]
-            if forbidden_bt:
-                raise AIServiceError(
-                    f"Script Writer 越权写入 segments[{idx}].script.between_tracks[{bt_idx}] 字段：{', '.join(forbidden_bt)}。",
-                )
-
-            after_track_index = bt.get("after_track_index")
-            if not isinstance(after_track_index, int):
-                raise AIServiceError(
-                    f"segments[{idx}].script.between_tracks[{bt_idx}].after_track_index 必须是整数。",
-                )
-
-            text = bt.get("text")
-            if text is not None and not isinstance(text, str):
-                raise AIServiceError(
-                    f"segments[{idx}].script.between_tracks[{bt_idx}].text 必须是字符串或 null。",
-                )
-            if isinstance(text, str):
-                if not _text_matches_language(text, language):
-                    raise AIServiceError("segments[*].script.between_tracks[*].text 语言不一致。")
-
-            sanitized_between_tracks.append(
-                {"after_track_index": after_track_index, "text": text},
-            )
-
-        segment_patch: Dict[str, Any] = {
-            "script": {"segment_intro": segment_intro, "between_tracks": sanitized_between_tracks},
-        }
-        if "segment_id" in seg:
-            segment_patch["segment_id"] = seg["segment_id"]
-        sanitized_segments.append(segment_patch)
-
-    return {"segments": sanitized_segments}
+    cues: List[str | None] = []
+    for idx, item in enumerate(raw_list):
+        if item is not None and not isinstance(item, str):
+            raise AIServiceError(f"script_before[{idx}] 必须是 string 或 null。")
+        text = normalize_cue_text(item)
+        if isinstance(text, str) and not _text_matches_language(text, language):
+            raise AIServiceError(f"script_before[{idx}] 语言不一致。")
+        cues.append(text)
+    return {"script_before": cues}
 
 
 class ScriptWriterAgent:
-    """v3.0 Script Writer Agent：为各段补齐 segments[*].script。"""
+    """v7.3 Script Writer：扁平 script_before → 系统映射 segments[*].script。"""
 
     def __init__(
         self,
@@ -151,7 +105,10 @@ class ScriptWriterAgent:
         audit_stage: str | None = None,
         audit_revision: int | None = None,
     ) -> PlanState:
-        segments_count = len(state.get("segments", []))
+        segments = state.get("segments") or []
+        track_count = total_track_count(segments)
+        if track_count < 1:
+            raise AIServiceError("Script Writer：整期 playlist 总曲目 N=0，无法写串词。")
 
         orch = (orchestration_mode or "legacy").strip().lower()
         if orch == "staged":
@@ -164,10 +121,23 @@ class ScriptWriterAgent:
         if structured:
             gen_kwargs["response_format"] = build_openrouter_response_format(
                 "podcast_script_writer_response",
-                build_script_writer_response_schema(segments_count),
+                build_script_writer_response_schema(track_count),
             )
 
         language = str(state.get("meta", {}).get("language") or "")
+        mode_norm = (mode or "").strip().lower()
+        flat_tracks = build_flat_tracks(segments)
+        previous_cues = flatten_script_before_from_state(state)
+        writer_actions = [
+            a
+            for a in (state.get("critic") or {}).get("actions", [])
+            if isinstance(a, dict) and a.get("target_agent") == "Script Writer"
+        ]
+        mutable_idxs = parse_action_episode_indices(writer_actions, flat_tracks)
+
+        # 成功路径审计用：扁平 sanitize 结果 + 映射后 patch
+        last_flat: Dict[str, Any] | None = None
+        last_mapped: Dict[str, Any] | None = None
 
         def _generate() -> str:
             try:
@@ -188,12 +158,22 @@ class ScriptWriterAgent:
                 output_dir=Path(self._settings.app.output_dir),
             )
 
-        def _sanitize(data: Dict[str, Any]) -> Dict[str, Any]:
-            return _sanitize_script_writer_patch(
+        def _sanitize_and_map(data: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal last_flat, last_mapped
+            flat_patch = sanitize_script_before_patch(
                 data,
-                expected_segments=segments_count,
+                expected_tracks=track_count,
                 language=language,
             )
+            cues: List[str | None] = list(flat_patch["script_before"])
+            # revision：未点名下标与上一轮落盘一致
+            if mode_norm == "revision" and len(previous_cues) == track_count:
+                cues = apply_revision_preserve(cues, previous_cues, mutable_idxs)
+                flat_patch = {"script_before": cues}
+            mapped = map_script_before_to_segments_patch(cues, segments)
+            last_flat = flat_patch
+            last_mapped = mapped
+            return mapped
 
         def _on_fail(raw: str, stage: str, exc: BaseException) -> None:  # noqa: ARG001
             if audit_sink is None or round_iteration is None:
@@ -214,7 +194,7 @@ class ScriptWriterAgent:
             extra_retries=self._settings.llm.output_max_retries,
             generate=_generate,
             parse=_parse,
-            sanitize=_sanitize,
+            sanitize=_sanitize_and_map,
             on_attempt_failed=_on_fail,
         )
 
@@ -225,9 +205,10 @@ class ScriptWriterAgent:
                 mode=mode,
                 request_id=str((state.get("meta") or {}).get("request_id") or "unknown"),
                 raw_llm_text=result.raw,
-                parsed_patch=result.parsed,
+                parsed_patch=last_flat if last_flat is not None else result.parsed,
                 stage=audit_stage,
                 revision=audit_revision,
+                mapped_patch=last_mapped if last_mapped is not None else result.sanitized,
             )
 
         next_state = merge_plan_state(state, result.sanitized)

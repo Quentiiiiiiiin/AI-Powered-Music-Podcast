@@ -217,21 +217,65 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
 
 
 def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> list[dict[str, str]]:
-    """Script Writer 闸门：只写 script；结构与 playlist 已锁定。（v6.3 未纳入 Guide）"""
+    """Script Writer 闸门：扁平 script_before；结构与 playlist 已锁定。"""
+    from podcast_ai.modules.theme.script_flat_mapper import (
+        build_flat_tracks,
+        build_writer_planning_brief,
+        flatten_script_before_from_state,
+        format_flat_playlist_lines,
+        translate_locations_for_prompt,
+    )
+
     m = _normalize_mode(mode)
     guide = _load_guide(_GUIDE_SCRIPT_WRITER)
+    flat = build_flat_tracks(state.get("segments") or [])
+    n = len(flat)
     envelope = dedent(
         f"""
-        === STAGE-GATED ORCHESTRATION ENVELOPE (v6.3 staged) ===
+        === STAGE-GATED ORCHESTRATION ENVELOPE (v7.3 staged) ===
         Current gate: SCRIPT WRITER. Planner structure and Curator playlist are LOCKED.
 
-        {_mode_envelope(m, revision_focus="Fix script only; do not change playlist or segment structure.")}
+        {_mode_envelope(m, revision_focus="Fix cues via full-length script_before only; do not change playlist or segment structure.")}
+
+        OUTPUT CONTRACT:
+        - Top-level JSON key: script_before only (length N={n}).
+        - script_before[i] = cue before episode track i; string|null.
+        - System maps to segments[*].script; do NOT emit segment_intro/between_tracks.
 
         === SCRIPT WRITER THINKING GUIDE (verbatim from {_GUIDE_SCRIPT_WRITER}) ===
         """
     ).strip()
     system = f"{envelope}\n\n{guide}".strip()
-    user = _user_plan_state_message(state, mode=m)
+
+    writer_actions = [
+        a
+        for a in (state.get("critic") or {}).get("actions", [])
+        if isinstance(a, dict) and a.get("target_agent") == "Script Writer"
+    ]
+    actions_view = translate_locations_for_prompt(writer_actions, flat)
+    previous = flatten_script_before_from_state(state) if m == "revision" else []
+    brief = build_writer_planning_brief(state)
+    playlist_block = format_flat_playlist_lines(flat) or "(empty)"
+
+    # v7.3：不倾倒整份 PlanState；输入 = 策划要点 + 扁平歌单
+    user = dedent(
+        f"""
+        MODE: {m}
+        N (total tracks): {n}
+
+        WRITER ACTIONS (may include episode_track_index_hint):
+        {json.dumps(actions_view, ensure_ascii=False)}
+
+        PLANNING BRIEF:
+        {brief}
+
+        FLAT PLAYLIST:
+        {playlist_block}
+
+        PREVIOUS script_before (revision baseline):
+        {json.dumps(previous, ensure_ascii=False)}
+        """
+    ).strip()
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 

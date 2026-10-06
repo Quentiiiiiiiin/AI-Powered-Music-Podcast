@@ -453,27 +453,25 @@ def build_music_curator_response_schema(segment_count: int) -> dict[str, Any]:
     }
 
 
-def build_script_writer_response_schema(segment_count: int) -> dict[str, Any]:
-    if segment_count < 0:
-        raise ValueError("segment_count 必须 >= 0")
-    segment_item: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "script": _SCRIPT_OBJECT,
-        },
-        "required": ["script"],
-        "additionalProperties": False,
-    }
+def build_script_writer_response_schema(track_count: int) -> dict[str, Any]:
+    """v7.3：顶层仅定长 ``script_before``（长度 = 整期总曲目 N）。"""
+    if track_count < 1:
+        raise ValueError("track_count 必须 >= 1")
     return {
         "type": "object",
         "properties": {
-            "segments": {
+            "script_before": {
                 "type": "array",
-                "items": segment_item,
-                "minItems": segment_count,
-                "maxItems": segment_count,
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"},
+                    ],
+                },
+                "minItems": track_count,
+                "maxItems": track_count,
             },
         },
-        "required": ["segments"],
+        "required": ["script_before"],
         "additionalProperties": False,
     }

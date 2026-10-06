@@ -76,8 +76,17 @@ def _state_with_one_segment(tmp: Path) -> dict[str, Any]:
             "reference_material": [],
             "sequence_direction": [],
             "transition_to_next": "",
-            "playlist": [],
-            "script": "",
+            "playlist": [
+                {
+                    "track": "T1",
+                    "artist": "A1",
+                    "selection_reason": "x",
+                    "sequence_role": "main",
+                    "planner_alignment": [],
+                    "transition_logic": "",
+                }
+            ],
+            "script": {"segment_intro": None, "between_tracks": []},
         }
     ]
     return state

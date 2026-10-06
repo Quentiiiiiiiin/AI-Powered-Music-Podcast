@@ -61,6 +61,7 @@ class PlanAuditSink(Protocol):
         parsed_patch: dict[str, Any] | None,
         stage: str | None = None,
         revision: int | None = None,
+        mapped_patch: dict[str, Any] | None = None,
     ) -> None: ...
 
     def write_state_snapshot(
@@ -104,9 +105,11 @@ class FilePlanAuditSink:
         parsed_patch: dict[str, Any] | None,
         stage: str | None = None,
         revision: int | None = None,
+        mapped_patch: dict[str, Any] | None = None,
     ) -> None:
         # v6.0：若传 stage，使用 stage_*_rev*_*.json；否则保持 legacy iteration 命名
         # v7.1：parsed_patch 可为 None（JSON 解析失败仍落盘 raw_llm_text）
+        # v7.3：Writer 可附 mapped_patch（扁平 → segments[*].script）
         if stage is not None:
             path = self.run_dir / format_audit_staged_agent_filename(
                 stage, int(revision or 0), agent_slug
@@ -123,6 +126,8 @@ class FilePlanAuditSink:
             "parsed_patch": parsed_patch,
             "ts_utc": ts,
         }
+        if mapped_patch is not None:
+            payload["mapped_patch"] = mapped_patch
         if stage is not None:
             payload["stage"] = stage
             payload["revision"] = int(revision or 0)

@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v7.2  
+**文档版本**：v7.3  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v7.2）
+**产品阶段**：迭代验证中（进入 v7.3）
 
 ---
 
@@ -627,6 +627,23 @@
     4. `llm.max_retries` 与输出校验重试**互不影响计数**；成功路径不增加额外 generate。
     5. 失败尝试的原文仍写入审计；不改变 Orchestrator FSM、sanitize 规则与 Agent 输出契约。
 
+- **v7.3（迭代四十一：Script Writer 整期扁平串词契约 + 系统回填）**：
+  - **问题**：Writer 按段填写 `segment_intro` / `between_tracks`，字段名易被理解成「介绍本段」，与电台「陪伴听歌、不必报幕章节」不符，整期插点节奏也难统一。直接改 `state_schema` / snapshot / TTS 属破坏性变更，本期不做。
+  - **方案**（详见根目录 `ScriptWriter_FlatCue_Adapter.md`）：
+    1. **Agent 输入**：策划要点 + **带编号的扁平歌单**（整期一首接一首，`episode_track_index`）。
+    2. **Agent 输出**：定长 `script_before[]`（长度 = 总曲目数 `N`；元素为 `string | null`；插在第 i 首之前；不设「最后一首之后」槽；禁止写 playlist/曲名）。
+    3. **系统 mapper**：按下标写回各段 `segment_intro` / `between_tracks`（锚点用下标，不用曲名回填）；映射失败与 sanitize 失败同等处理，**不**写入半套 script。
+    4. **下游不变**：`state_schema` 持久化 `script` 形态、阶段二 snapshot、TTS、Console 时间线契约不变；staged / legacy prompt 与 Guide 口径对齐。
+    5. **Revision**：仍输出整份定长 `script_before`；未点名处保持原文；不双格式并存。
+  - **功能归类**：**优化**（整期插点、少报幕）+ **新功能**（Agent 扁平契约与系统回填层）。
+  - **User Story（用户视角）**：作为听众/创作者，我希望主持串词按整期听感自然穿插，而不是按章节报幕；作为开发者，我希望阶段二/三与 snapshot 不用跟着改 schema。
+  - **Acceptance Criteria（验收标准）**：
+    1. Writer 的 structured output 仅为定长 `script_before`（长度 = `N`）；sanitize 拒绝越权键与长度不符；落盘前由系统映射为既有 `segments[*].script`。
+    2. 持久化 `script` / snapshot / 阶段二 TTS 插点语义与现网一致；Planner/Curator 契约不变。
+    3. 跨段与 `N=1` 映射正确；最后一首前可有文案；无「曲后」槽要求；全 `null` 合法（无 TTS，除非另有业务底线）。
+    4. revision 只改 action 点名处时，其它 cues 与上一轮落盘一致（允许 `null`/空白规范化）。
+    5. 审计可复查 Agent 原始扁平输出与映射后的 `segments.script`；编排 FSM 不动。
+
 
 ## 1. 产品背景
 
@@ -869,13 +886,13 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 / v6.4 增补）
+### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 / v6.4 / v7.3 增补）
 
 | Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
 |------|------|------|------|
 | **Planner（v6.1）** | `meta`、`global_constraints`、历史 `critic.issues` | 按 **Schema_Planner_v4** 负责的 `meta` / `global_constraints` / `plan` / `segments[*]` 规划字段（含主题拆解、能量/声景、段落叙事与声响方向、锚定/参考、序列方向等；以实现字段清单为准） | `segments[*].script`、`critic.*`、`control.*`；playlist 细项解释字段归属 Curator（若 Planner 样例含 playlist 占位，以实现边界为准） |
 | **Music Curator（v6.1）** | `meta`、`global_constraints`、`plan`、`segments[*]` 规划字段、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序）及 **Schema_Music-Curator_v4** 解释字段（如 `selection_reason` / `sequence_role` / `planner_alignment` / `transition_logic`） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
-| **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
+| **Script Writer（v7.3）** | 策划要点 + **扁平歌单**（`episode_track_index`）；语言/主题/约束/段落意图；revision 时含上一版扁平串词与 `critic.actions` | **模型侧**仅 `script_before[]`（长度 = 总曲目 `N`，元素 `string\|null`）；**系统 mapper** 写回 `segments[*].script.segment_intro` / `between_tracks` | 模型不得写/改 `playlist`、曲名/艺人、`plan`、`critic.*`、`control.*` |
 | **Critic（v6.4 / v6.6 / v6.7）** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | **`staged` 按阶段 schema**：Planner Critic **无 `overall_score`**，含多维 `scores` / `issues` / `actions`（含 `location`）；**Curator Critic** 用 Schema_Curator_Critic_v4，**`actions` 含 `location`**；均**不含 pass** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**不得输出** `pass` / `threshold` / `control`（由系统派生） |
 | **Orchestrator（流程控制）** | 全量 `state` | 过程态 `control`；**派生写入** `critic.pass`；**`legacy` 下按规则写入 `control.next_agent`**；**`staged` 下按阶段选择 Critic 变体并推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
 
@@ -890,8 +907,9 @@
 - **联网搜索（v7.0 / v7.1）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。**v7.1**：Console 可配 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）；运行态洞察展示 `web_search_requests`。
 - **审计完整性（v7.1 / v7.2）**：Agent 输出解析失败时，仍须落盘该次**原始返回**，不得因解析失败而跳过审计写入；**v7.2** 输出校验重试的每一次失败尝试同样落盘。
 - **输出校验重试（v7.2）**：JSON 解析 / sanitize 失败时，在 Agent 层用相同 messages 再 generate（默认额外 2 次，可配 0 关闭）；与 `llm.max_retries` 分开计数；**不**放宽契约、**不**错误回灌 prompt、**不**改编排 FSM。
+- **Script Writer 扁平串词（v7.3）**：Agent 输出定长 `script_before`；系统按 `episode_track_index` 映射回既有 `script` schema；**不改** snapshot / 阶段二/三消费契约。细节见 `ScriptWriter_FlatCue_Adapter.md`。
 
-### 6.4 当前版本成功指标（v7.2）
+### 6.4 当前版本成功指标（v7.3）
 
 | 指标 | 目标 |
 |------|------|
@@ -929,6 +947,7 @@
 | **解析失败审计原文** | Agent JSON/结构化解析失败时审计仍保存该次原始返回 |
 | **Console 联网搜索调试** | 运行态洞察展示 `web_search_requests`；可配 engine / max_results / max_uses（默认 auto / 5 / 不限制） |
 | **Agent 输出校验重试** | 解析/sanitize 失败可按独立配置再 generate；与 HTTP retry 分计；0 即关闭；契约与 FSM 不变 |
+| **Script Writer 扁平串词** | Agent 输出定长 `script_before`；系统映射回既有 script；snapshot/阶段二契约不变 |
 
 ---
 
