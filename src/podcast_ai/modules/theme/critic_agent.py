@@ -199,6 +199,9 @@ class CriticAgent:
             score_dims=profile["score_dims"],
             allowed_severities=profile["severities"],
         )
+        # Writer Critic 暂无专用 Guide：staged 下不参与闸门，避免无意义 revision / stage_failed
+        if orch == "staged" and (stage or "").strip().lower() == "script_writer":
+            passed = True
         critic_out: Dict[str, Any] = {
             **model_body,
             "pass": passed,

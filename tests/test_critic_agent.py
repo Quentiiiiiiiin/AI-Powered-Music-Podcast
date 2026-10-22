@@ -134,10 +134,49 @@ def test_v65_staged_does_not_write_next_agent() -> None:
         )
     }
     agent = CriticAgent(llm_client=_StubLLMClient(payload))
-    # script_writer 仍用 Planner Critic 契约；断言 staged 不改 next_agent
+    # script_writer 暂无专用 Guide：staged 强制 pass，且不改 next_agent
     next_state = agent.run(state, orchestration_mode="staged", stage="script_writer")
-    assert next_state["critic"]["pass"] is False
+    assert next_state["critic"]["pass"] is True
+    assert next_state["critic"]["scores"]["theme_definition"] == 40
     assert next_state["control"]["next_agent"] == "Planner"
+
+
+def test_staged_script_writer_critic_always_passes_even_with_major_issues() -> None:
+    state = initialize_plan_state(_request())
+    payload = {
+        "critic": _model_critic(
+            score=10,
+            issues=[
+                {
+                    "type": "sequence_narrative",
+                    "severity": "critical",
+                    "location": "script_before[0]",
+                    "problem": "placeholder critic",
+                    "listener_impact": "n/a",
+                    "suggestion": "ignore",
+                }
+            ],
+            actions=[
+                {
+                    "target_agent": "Script Writer",
+                    "location": "script_before[0]",
+                    "instruction": "rewrite",
+                }
+            ],
+        )
+    }
+    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state, orchestration_mode="staged", stage="script_writer")
+    assert next_state["critic"]["pass"] is True
+    assert next_state["critic"]["issues"]
+
+
+def test_staged_planner_critic_still_can_fail() -> None:
+    state = initialize_plan_state(_request())
+    payload = {"critic": _model_critic(score=40)}
+    agent = CriticAgent(llm_client=_StubLLMClient(payload))
+    next_state = agent.run(state, orchestration_mode="staged", stage="planner")
+    assert next_state["critic"]["pass"] is False
 
 
 def test_v68_planner_revision_allows_new_issue_wording() -> None:
