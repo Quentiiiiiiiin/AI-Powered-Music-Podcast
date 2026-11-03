@@ -88,12 +88,18 @@ def episode_to_local(flat: Sequence[FlatTrack], episode_track_index: int) -> Fla
 
 
 def format_flat_playlist_lines(flat: Sequence[FlatTrack]) -> str:
-    """Adapter §4 展示格式：`[i] Artist – Track (seg_id)`。"""
+    """Adapter §4 展示格式：`[i] Artist – Track (seg_id)`，附带 curator note（供串词取材）。"""
     lines: list[str] = []
     for t in flat:
         artist = t.artist or "?"
         track = t.track or "?"
         lines.append(f"[{t.episode_track_index}] {artist} – {track}   ({t.segment_id})")
+        reason = (t.selection_reason or "").strip()
+        if reason:
+            # 控制单条体积，避免整期 prompt 膨胀；保留榜单/故事等可核事实线索
+            if len(reason) > 320:
+                reason = reason[:317].rstrip() + "..."
+            lines.append(f"    note: {reason}")
     return "\n".join(lines)
 
 

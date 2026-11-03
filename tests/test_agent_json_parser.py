@@ -95,6 +95,39 @@ def test_parse_agent_json_response_non_structured_repair_fallback_used(tmp_path:
     assert calls, "expected repair fallback to be invoked"
 
 
+def test_parse_agent_json_response_structured_extracts_json_from_web_search_narration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """web_search 后模型常在 content 夹带叙述；structured 路径应抽取 JSON，而非走激进 repair。"""
+    state = initialize_plan_state(_request(tmp_path))
+    calls: list[str] = []
+
+    def _repair_should_not_be_called(raw: str) -> str:  # noqa: ARG001
+        calls.append("called")
+        raise AssertionError("repair_and_standardize_json must not be called in structured=True path")
+
+    monkeypatch.setattr(parser_mod, "repair_and_standardize_json", _repair_should_not_be_called)
+
+    raw = (
+        "我需要先搜索一下关键信息。必须确保 script_before[21] 非空。\n\n"
+        "```json\n"
+        '{"script_before": ["欢迎来到 Luma Hits", null, "我们下次见"]}\n'
+        "```\n\n"
+        "检查完毕，以上符合要求。"
+    )
+    out = parse_agent_json_response(
+        agent_label="Script Writer Agent",
+        raw=raw,
+        state=state,
+        structured=True,
+        allow_repair_fallback=False,
+        output_dir=tmp_path,
+    )
+    assert out == {"script_before": ["欢迎来到 Luma Hits", None, "我们下次见"]}
+    assert not calls
+
+
 def test_parse_agent_json_response_prefers_raw_before_standardize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state = initialize_plan_state(_request(tmp_path))
     calls: list[str] = []

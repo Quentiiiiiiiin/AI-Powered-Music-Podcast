@@ -214,6 +214,34 @@ def test_logs_web_search_requests_from_usage(
     assert any("web_search_requests=2" in r.message for r in caplog.records)
 
 
+def test_logs_web_search_requests_from_usage_details_azure_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Azure / gpt-5.6 等供应方把计数放在 server_tool_use_details。"""
+    bodies: list[dict[str, Any]] = []
+    _install_capture(
+        monkeypatch,
+        bodies,
+        response_json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"server_tool_use_details": {"web_search_requests": 3}},
+            "provider": "Azure",
+        },
+    )
+    cfg = LLMConfig(
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        model="openai/gpt-5.6-luna",
+        max_retries=1,
+        openrouter_provider="azure/eu",
+        web_search=WebSearchConfig(enabled=True),
+    )
+    with caplog.at_level("INFO"):
+        OpenAICompatibleLLMClient(cfg).generate([{"role": "user", "content": "hi"}])
+    assert any("web_search_requests=3" in r.message for r in caplog.records)
+
+
 def test_missing_content_raises_readable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     bodies: list[dict[str, Any]] = []
     _install_capture(

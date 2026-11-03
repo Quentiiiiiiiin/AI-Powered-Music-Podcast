@@ -533,6 +533,20 @@ Avoid relying on mood adjectives alone.
 
 ---
 
+### `global_constraints.avoid`
+
+List what the Music Curator must not select for this episode.
+`avoid` is an array of strings. Use it for exclusion constraints, not for song recommendations.
+
+Prioritize entries in this order:
+1. User-explicit bans (highest priority; must always be preserved)
+
+2. Theme-derived hard boundaries stated by the user
+
+3. Planner-proposed soft exclusions
+
+---
+
 ### `segment_design`
 
 This is the most important field for the Music Curator.

@@ -100,16 +100,24 @@ def _web_search_log_flag(enabled: bool, cfg: LLMConfig) -> str:
 
 
 def _log_server_tool_usage(data: Any) -> None:
-    """若响应含 usage.server_tool_use.web_search_requests 则记录；缺失不报错。"""
+    """记录 usage 中的 web_search_requests（兼容多种 OpenRouter 字段形态）。
+
+    常见路径：
+    - ``usage.server_tool_use.web_search_requests``（部分供应方）
+    - ``usage.server_tool_use_details.web_search_requests``（如 Azure / gpt-5.6）
+    缺失不报错。
+    """
     if not isinstance(data, dict):
         return
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return
-    stu = usage.get("server_tool_use")
-    if not isinstance(stu, dict):
-        return
-    n = stu.get("web_search_requests")
+    n: Any = None
+    for key in ("server_tool_use", "server_tool_use_details"):
+        block = usage.get(key)
+        if isinstance(block, dict) and isinstance(block.get("web_search_requests"), int):
+            n = block["web_search_requests"]
+            break
     if isinstance(n, int):
         logger.info("LLM usage server_tool_use.web_search_requests=%d", n)
 

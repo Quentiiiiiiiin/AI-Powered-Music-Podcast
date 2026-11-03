@@ -158,7 +158,7 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
         === STAGE-GATED ORCHESTRATION ENVELOPE (v6.3 staged) ===
         Current gate: MUSIC CURATOR. Planner output is LOCKED — do not change structure fields.
 
-        {_mode_envelope(m, revision_focus="Change only playlist items referenced by critic.actions.")}
+        {_mode_envelope(m, revision_focus="Change only playlist items referenced by critic.actions. Keep anything else unchanged.")}
 
         === MUSIC CURATOR THINKING GUIDE (verbatim from {_GUIDE_MUSIC_CURATOR}) ===
         """
@@ -240,6 +240,10 @@ def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> lis
         OUTPUT CONTRACT:
         - Top-level JSON key: script_before only (length N={n}).
         - script_before[i] = cue before episode track i; string|null.
+        - HARD: script_before[{n - 1}] MUST be a non-null closing cue (goodbye before last track).
+        - HARD: sparse cues only — for N={n}, absolute max non-null ≈ {7 if n <= 24 else 9}; prefer 5–7.
+        - FINAL ASSISTANT CONTENT must be ONLY the JSON object (no search narration, no checklist,
+          no markdown fences). Web search is a server tool — use results silently in the cues.
         - System maps to segments[*].script; do NOT emit segment_intro/between_tracks.
 
         === SCRIPT WRITER THINKING GUIDE (verbatim from {_GUIDE_SCRIPT_WRITER}) ===

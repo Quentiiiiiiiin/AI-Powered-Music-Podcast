@@ -27,7 +27,9 @@ Select recordings that satisfy the Planner's intended:
 * narrative progression;
 * relationship to surrounding tracks.
 
-Do not select tracks merely because their titles contain relevant keywords.
+Do not select tracks merely because their titles contain relevant keywords. 
+
+You should look at the tracks' subtilte to decide wheather it fits, you can do web searching if needed.
 
 The Planner describes the intended experience. Your job is to turn that design into concrete programming decisions.
 
@@ -74,9 +76,10 @@ When revising an existing playlist based on Critic feedback:
 
 1. Identify the exact problem.
 2. Replace or modify only the affected selection when possible.
-3. Preserve strong existing decisions.
+3. Keep anything else unchanged.
 5. Preserve the original sequence function unless the Critic requests a different function.
 6. Do not redesign the entire segment unnecessarily.
+7. If you're requested to replace tracks, you could do web-searching for replacement if needed.
 ---
 
 ## 6. FINAL CHECK
@@ -132,7 +135,7 @@ The actual credited recording artist.
 
 ### selection_reason
 
-Why this specific recording deserves inclusion.
+Why this specific recording deserves inclusion. Your answer should be based on the true meaning of a track, rather than the title.
 
 ### sequence_role
 

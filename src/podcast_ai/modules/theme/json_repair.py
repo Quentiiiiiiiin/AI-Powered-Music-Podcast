@@ -87,7 +87,20 @@ def close_unclosed_json_structures(text: str) -> str:
     return text + "".join(closers)
 
 
-def _extract_first_json_substring(text: str) -> Optional[str]:
+def extract_first_json_substring(text: str, *, prefer_object: bool = False) -> Optional[str]:
+    """
+    从文本中提取第一个完整 JSON 对象/数组子串（不改写内部字符、不补括号、不去尾逗号）。
+
+    用于：模型在 content 里夹带搜索/思考叙述时，仍可取出中间的合法 JSON。
+    structured 主路径允许调用本函数；禁止用它冒充「激进 repair」。
+
+    prefer_object=True：只抽取以 ``{`` 开头的对象（Agent 顶层均为 object；
+    可避免叙述中的 ``script_before[21]`` 被误当成 JSON 数组起点）。
+    """
+    return _extract_first_json_substring(text, prefer_object=prefer_object)
+
+
+def _extract_first_json_substring(text: str, *, prefer_object: bool = False) -> Optional[str]:
     """
     从文本中提取第一个 JSON 对象/数组子串。
     做最小可用实现：使用括号/方括号栈，并尽量处理字符串状态。
@@ -97,6 +110,8 @@ def _extract_first_json_substring(text: str) -> Optional[str]:
     i = 0
 
     def is_start(ch: str) -> bool:
+        if prefer_object:
+            return ch == "{"
         return ch == "{" or ch == "["
 
     stack: list[str] = []

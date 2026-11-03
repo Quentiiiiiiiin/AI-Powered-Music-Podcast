@@ -135,3 +135,14 @@ def test_v31_validate_state_conforms_to_schema_allows_between_tracks_text_string
     state = initialize_plan_state(_request())
     state["segments"][0]["script"]["between_tracks"][0]["text"] = "下一首歌稍微推高情绪。"
     validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+
+def test_v73_validate_state_conforms_to_schema_allows_null_segment_intro() -> None:
+    """v7.3：扁平串词空槽映射后 segment_intro 可为 null，落盘校验须通过。"""
+    state = initialize_plan_state(_request())
+    state["segments"][0]["script"]["segment_intro"] = None
+    state["segments"][0]["script"]["between_tracks"][0]["text"] = None
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+    state["segments"][0]["script"]["segment_intro"] = "段首可选串词。"
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")

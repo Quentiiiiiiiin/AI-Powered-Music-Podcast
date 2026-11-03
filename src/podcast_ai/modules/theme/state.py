@@ -385,6 +385,7 @@ def validate_state_conforms_to_schema(
     严格校验：state.json 的字段层级与类型要与 state_schema.json 同构。
 
     允许的兼容点：
+    - `segments[*].script.segment_intro`：允许为 null（v7.3 扁平串词空槽）
     - `segments[*].script.between_tracks[*].text`：允许为 null（模板即为 null）
     - `control.failed_stage`：允许为 null 或 string（staged 失败阶段标记）
     - 单 agent 模式：`critic` / `control` 允许为 null（不涉及字段）
@@ -397,14 +398,15 @@ def validate_state_conforms_to_schema(
     # 1) 该字段是“允许为 null”，但模板用 null 作为示例（并不表示实际只能是 null）
     # 2) 该字段本身必须严格为 null
     #
-    # v3.1 目前我们主要需要处理 (1)：between_tracks[*].text 允许 string 或 null（交给 agent 决定）。
+    # v3.1 / v7.3：between_tracks[*].text、segment_intro 允许 string 或 null。
     nullable_paths: set[Tuple[str, ...]] = {
-        # between_tracks[*].text：允许为 null（模板示例），且允许出现真实 string
+        ("segments", "*", "script", "segment_intro"),
         ("segments", "*", "script", "between_tracks", "*", "text"),
         ("control", "failed_stage"),
     }
     # 对 “expected 为 null” 且允许出现非 null 值的字段，按路径给出允许类型
     nullable_expected_none_allows: dict[Tuple[str, ...], tuple[type, ...]] = {
+        ("segments", "*", "script", "segment_intro"): (str,),
         ("segments", "*", "script", "between_tracks", "*", "text"): (str,),
         ("control", "failed_stage"): (str,),
     }
