@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v7.3  
+**文档版本**：v7.4  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v7.3）
+**产品阶段**：迭代验证中（进入 v7.4）
 
 ---
 
@@ -644,6 +644,23 @@
     4. revision 只改 action 点名处时，其它 cues 与上一轮落盘一致（允许 `null`/空白规范化）。
     5. 审计可复查 Agent 原始扁平输出与映射后的 `segments.script`；编排 FSM 不动。
 
+- **v7.4（迭代四十二：`estimate_track_intro_seconds` 改为结构边界估计）**：
+  - **问题**：v4.4 的 R1/R2（首个稳定 RMS 抬升 + 过滤后的首个 onset）在真实曲目上常把「音乐起声」误判为「前奏结束」，`intro_seconds` 系统性偏早（相对人工标注的 `vm_seconds` 平均绝对误差约 9s 量级），导致串词→歌动态叠化候选时长偏短。
+  - **变更目标**：仅优化 `intro_align.py` 中 `estimate_track_intro_seconds` 的**内部判定逻辑**，在**不改变**上游接口与返回结构（仍为 `intro_seconds / confidence / reason`）的前提下，使估计结果更接近人工可接受的前奏结束点（以阶段二/三调试样本中的 `vm_seconds` 为对齐参考；允许个别样本偏差较大）。
+  - **核心思路（明确）**：
+    1. 仍先估计起声点 `t0`（能量抬升），但**不以 `t0` 作为 intro 结束**。
+    2. 在 `[t0+δ, max_intro_seconds]` 内用多尺度 mid/rms/high 能量跳变 + mel 谱差分 / onset novelty，搜索「前奏 → 主段」的**结构边界峰**。
+    3. 在足够强的 novelty 峰中，结合轻度时间先验与「勿过晚」惩罚选峰，并就近吸附到 onset；失败路径仍返回 `intro_seconds=None` + 可区分 `reason`。
+    4. 仅本地启发式计算（librosa 特征），不引入外部 API / 开源前奏标注服务。
+  - **功能归类**：**优化**（intro 估计精度与听感对齐）。
+  - **User Story（用户视角）**：作为听众/创作者，我希望系统估计的前奏结束点更接近我手动调好的叠化时机，从而减少阶段三对 `vm_seconds` 的大幅手改。
+  - **Acceptance Criteria（验收标准）**：
+    1. `estimate_track_intro_seconds` 对外契约不变：输入仍为曲目路径 + `max_intro_seconds`，返回仍为 `intro_seconds` / `confidence` / `reason`；mixer / 阶段二调用方无需改接口。
+    2. 相对 v4.4 基线，在人工编辑过的 transitions 抽样集（以 `vm_seconds` 为参考）上，平均绝对误差与「误差 ≤2s」占比均有可度量改善（实现侧记录基线对比即可）。
+    3. 估计失败或过小时仍稳定回退（`intro_seconds=None` + 明确 `reason`），不得导致混音崩溃或静默写出不可解释参数。
+    4. 不改变 `voice_music_intro_align_max_seconds` 等配置语义，也不改变串词时长限幅（v4.3）与阶段三人工覆盖能力（v4.5 / v5.3）。
+    5. 相关单测覆盖契约与「结构抬升晚于起声」类合成样例；既有 mixer 对 intro 估计的 monkeypatch 路径不被破坏。
+
 
 ## 1. 产品背景
 
@@ -909,7 +926,7 @@
 - **输出校验重试（v7.2）**：JSON 解析 / sanitize 失败时，在 Agent 层用相同 messages 再 generate（默认额外 2 次，可配 0 关闭）；与 `llm.max_retries` 分开计数；**不**放宽契约、**不**错误回灌 prompt、**不**改编排 FSM。
 - **Script Writer 扁平串词（v7.3）**：Agent 输出定长 `script_before`；系统按 `episode_track_index` 映射回既有 `script` schema；**不改** snapshot / 阶段二/三消费契约。细节见 `ScriptWriter_FlatCue_Adapter.md`。
 
-### 6.4 当前版本成功指标（v7.3）
+### 6.4 当前版本成功指标（v7.4）
 
 | 指标 | 目标 |
 |------|------|
@@ -926,6 +943,7 @@
 | **串词→歌 intro 对齐** | 在可用分析路径下，长串词尾部有合理的 intro 垫底、收尾与主歌衔接更自然；失败时稳定回退 |
 | **串词→歌重叠合法性** | 任意边界均满足 `crossfade <= 串词时长`，避免出现 crossfade 大于串词时长导致的异常混音 |
 | **intro 估计稳定性** | `estimate_track_intro_seconds` 在噪声/装饰音场景下误触发率下降，`confidence/reason` 可用于后续策略分流 |
+| **intro 结构边界对齐（v7.4）** | 相对人工 `vm_seconds` 参考集，平均绝对误差与 ≤2s 占比优于 v4.4「起声即 intro」基线；接口契约不变 |
 | **阶段三可编辑混音参数** | 用户可在最终导出前基于阶段二输出 JSON 微调 crossfade 参数，并通过阶段三获得最终 `wav/mp3` |
 | **OpenRouter 可配置 provider** | 在 `config.yaml` 中可配置 `provider`（可留空走自动路由）与 `model`，便于调试且请求层行为一致 |
 | **Developer Console 可用** | 本机 Gradio 控制台可改参、Run、结构化查看 Pipeline 各阶段状态与产物；CLI 仍可用 |
