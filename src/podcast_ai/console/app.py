@@ -33,6 +33,7 @@ from podcast_ai.console.runner import (
     ConsoleRunResult,
     defaults_from_settings,
     run_create,
+    run_ncm_decode,
     run_plan,
     run_stage2,
     run_stage3,
@@ -78,6 +79,8 @@ def _params_from_form(
     web_search_max_uses: float | int | None,
     snapshot_path: str,
     music_dir: str,
+    ncm_source_dir: str,
+    ncm_output_dir: str,
     tts_provider: str,
     tts_model: str,
     tts_voice_id: str,
@@ -122,6 +125,8 @@ def _params_from_form(
         ),
         snapshot_path=snapshot_path or "",
         music_dir=music_dir or defaults.music_dir,
+        ncm_source_dir=ncm_source_dir or defaults.ncm_source_dir,
+        ncm_output_dir=ncm_output_dir or defaults.ncm_output_dir,
         tts_provider=tts_provider or "default",
         tts_model=tts_model or "",
         tts_voice_id=tts_voice_id or "",
@@ -177,6 +182,7 @@ def _status_md(result: ConsoleRunResult) -> str:
         "stage2": "Music 映射 · TTS · Audio Processing（mix_params）",
         "stage3": "Audio Processing · Final Output",
         "create": "Music 映射 · TTS · Audio Processing · Final Output",
+        "ncm_decode": "NCM 解码（ncmdump → flac/mp3）",
     }.get(str(result.command), "")
     involved_line = f"\n涉及：{involved}" if involved else ""
     return f"### Pipeline Status\n{badge} `{result.command}`{elapsed}{involved_line}"
@@ -508,6 +514,25 @@ def build_app():
                     timeline_state = gr.State({"doc": None, "source": ""})
 
             with gr.Tab("阶段二 · 准备与中间产物"):
+                with gr.Accordion("NCM 解码（网易云下载 → flac/mp3）", open=True):
+                    gr.Markdown(
+                        "网易云下载完成后，指定 **原版 .ncm 目录** 与 **解码输出目录**，"
+                        "点击下方按钮由内嵌 `ncmdump` 批量转码。"
+                        "解码成功后会**清空原版目录内全部文件**；"
+                        "并自动把下方 `music_dir` 同步为解码输出目录，再运行 Stage 2。"
+                        "注意：输出目录不可与原版目录相同，也不可位于原版目录内部。"
+                    )
+                    ncm_source_dir = gr.Textbox(
+                        label="网易云原版音乐目录（.ncm）",
+                        placeholder=r"C:\CloudMusic\VipSongsDownload",
+                        value=defaults.ncm_source_dir,
+                    )
+                    ncm_output_dir = gr.Textbox(
+                        label="解码后文件夹地址",
+                        placeholder=r"C:\Users\yanqu\Desktop\Cursor Project ONE\Episode_Plan_Music",
+                        value=defaults.ncm_output_dir,
+                    )
+                    ncm_decode_btn = gr.Button("运行 NCM 解码", variant="secondary")
                 snapshot_path = gr.Textbox(
                     label="snapshot 路径",
                     placeholder="output/episodes/ep_xxx/plans/ep_xxx.json",
@@ -647,6 +672,8 @@ def build_app():
             web_search_max_uses,
             snapshot_path,
             music_dir,
+            ncm_source_dir,
+            ncm_output_dir,
             tts_provider,
             tts_model,
             tts_voice_id,
@@ -692,10 +719,32 @@ def build_app():
             params = _params_from_form(*args)
             yield from _yield_run("create", params, run_create)
 
+        def on_ncm_decode(*args: Any):
+            params = _params_from_form(*args)
+            running = ConsoleRunResult.running("ncm_decode")
+            yield (*_ui_pack(running, params.snapshot_path, params.mix_params_path), gr.update())
+            result = run_ncm_decode(params)
+            # 成功后把 music_dir 同步为解码输出目录，便于紧接着跑 Stage 2
+            music_update = gr.update()
+            if result.status == "success":
+                out = (result.artifacts or {}).get("ncm_output_dir") or (
+                    params.ncm_output_dir or params.music_dir
+                )
+                music_update = gr.update(value=str(out))
+            yield (
+                *_ui_pack(result, params.snapshot_path, params.mix_params_path),
+                music_update,
+            )
+
         plan_btn.click(on_plan, inputs=form_inputs, outputs=plan_outputs)
         stage2_btn.click(on_stage2, inputs=form_inputs, outputs=result_outputs)
         stage3_btn.click(on_stage3, inputs=form_inputs, outputs=result_outputs)
         create_btn.click(on_create, inputs=form_inputs, outputs=result_outputs)
+        ncm_decode_btn.click(
+            on_ncm_decode,
+            inputs=form_inputs,
+            outputs=[*result_outputs, music_dir],
+        )
 
         def on_agent_mode_change(mode: str):
             if (mode or "") == "single_agent":
@@ -1103,6 +1152,8 @@ def build_app():
                 merged.get("web_search_max_uses"),
                 merged["snapshot_path"],
                 merged["music_dir"],
+                merged.get("ncm_source_dir") or defaults.ncm_source_dir,
+                merged.get("ncm_output_dir") or defaults.ncm_output_dir,
                 tts_prov,
                 gr.update(
                     value=tts_m if tts_active else "",

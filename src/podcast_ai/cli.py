@@ -306,6 +306,48 @@ def create_episode_cli(
     typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")
 
 
+@app.command("decode-ncm")
+def decode_ncm_cli(
+    source_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="网易云下载后的原版 .ncm 目录（默认不递归子文件夹）。",
+    ),
+    output_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="解码后的输出目录（flac/mp3）。",
+    ),
+    recursive: bool = typer.Option(
+        False,
+        "--recursive",
+        "-r",
+        help="递归处理子文件夹中的 .ncm。",
+    ),
+) -> None:
+    """将网易云 .ncm 批量解码为 mp3/flac（调用仓库内 tools/ncmdump）。"""
+    from podcast_ai.infra.ncmdump import decode_ncm_directory
+
+    try:
+        result = decode_ncm_directory(
+            source_dir,
+            output_dir,
+            recursive=recursive,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] NCM 解码失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("NCM 解码完成：")
+    typer.echo(f"- 源目录：{result.source_dir}")
+    typer.echo(f"- 输出目录：{result.output_dir}")
+    typer.echo(f"- .ncm 数量：{result.ncm_count}")
+    typer.echo(f"- 已清空原版目录文件：{result.cleared_source_files}")
+    typer.echo(f"- ncmdump：{result.binary}")
+    if result.stdout:
+        typer.echo(result.stdout)
+
+
 @app.command("create-episode-stage2")
 def create_episode_stage2_cli(
     snapshot_path: Path = typer.Argument(

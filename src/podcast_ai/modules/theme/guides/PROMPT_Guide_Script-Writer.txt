@@ -32,6 +32,9 @@ Final assistant content = exactly one JSON object (no markdown fence, no prose w
 
 {"script_before": [ /* length MUST equal N */ ]}
 
+CRITICAL — nesting: the ONLY top-level key is `script_before`. Never flatten cues
+into `segment_intro`, `between_tracks`, `segments`, `script`, or free-form prose keys.
+
 - `script_before[i]` = cue spoken BEFORE episode track i (0-based); `string` or `null`.
 - Prefer explicit `null` when silent. Empty string → treated as null.
 - NO cue after the final track. Closing / goodbye MUST live in `script_before[N-1]`.

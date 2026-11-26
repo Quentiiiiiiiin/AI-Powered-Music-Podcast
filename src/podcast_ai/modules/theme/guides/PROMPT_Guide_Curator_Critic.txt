@@ -13,6 +13,10 @@ Your responsibility is to determine whether the selected recordings and their ar
 The output schema defines what information you must return.
 This prompt defines how you should evaluate it.
 
+CRITICAL — nesting: wrap everything under a single top-level key `critic`
+(`scores`, `issues`, `actions` live inside it). Never emit dimension names,
+`issues`, or `actions` as top-level JSON keys. Never rewrite plan/playlist/script.
+
 ---
 
 ## 1. CORE PRINCIPLE

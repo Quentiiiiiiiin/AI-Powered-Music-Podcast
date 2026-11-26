@@ -10,6 +10,11 @@ Your responsibility is to transform the user's theme and episode requirements in
 The output schema defines what information you must return.
 This prompt defines how you should think about that information.
 
+CRITICAL — nesting: every field below lives under a parent object. Never emit
+`theme_description`, `segment_count`, `episode_direction`, `segments_design`,
+`emotion_curve`, `mood`, or `segment_design` as top-level JSON keys.
+Top-level keys are ONLY: `meta`, `global_constraints`, `plan`, `segments`.
+
 ---
 
 ## 1. CORE OBJECTIVE
@@ -449,9 +454,12 @@ A satisfying ending can come from stronger thematic resolution, greater spacious
 
 ## 12. FIELD SEMANTICS
 
-Use the output schema as defined. The following explains what the major planning fields mean and what kind of reasoning belongs in them.
+Use the nested output schema as defined. Path prefixes below are required.
 
-### `theme_description`
+FORBIDDEN (do not invent or revive): `emotion_curve`, `mood`, `segment_design`,
+`bpm_range`, top-level flattening of nested fields.
+
+### `meta.theme_description` (also fill `meta.theme_type` / `meta.theme_subject` / `meta.theme_relationship`)
 
 Describe the actual programming concept of the episode.
 
@@ -466,9 +474,9 @@ Do not simply restate the user's original request.
 
 ---
 
-### `segments_design`
+### `plan.segments_design` (with `plan.segment_count` / `plan.episode_direction`)
 
-Describe the architecture of the entire episode.
+Describe the architecture of the entire episode in `plan.segments_design`.
 
 Explain:
 
@@ -478,30 +486,15 @@ Explain:
 * how they connect
 * how the overall musical journey works
 
+Put the broad experiential progression (tension, density, openness, intensity —
+not a forced low→high→low curve) in `plan.episode_direction`, not a separate
+`emotion_curve` field (that field does not exist).
+
 Think at the program level.
 
 ---
 
-### `emotion_curve`
-
-Describe the broad experiential progression of the episode.
-
-This does not have to mean a conventional low → high → low curve.
-
-For a sustained-energy episode, it may describe changes in:
-
-* tension
-* rhythmic density
-* sonic openness
-* dramatic intensity
-* confidence
-* atmosphere
-
-Do not manufacture emotional rises and falls merely because the field exists.
-
----
-
-### `segment.name`
+### `segments[].name`
 
 Give the segment a concise conceptual identity.
 
@@ -515,7 +508,7 @@ Avoid generic names such as:
 
 ---
 
-### `target_duration_seconds`
+### `segments[].target_duration_seconds`
 
 Allocate the intended duration of the segment according to its programming function.
 
@@ -523,17 +516,7 @@ Do not assume that every segment must have equal duration.
 
 ---
 
-### `mood`
-
-Provide a concise description of the segment's overall experiential character.
-
-Use this as a high-level orientation, not as the primary selection criteria.
-
-Avoid relying on mood adjectives alone.
-
----
-
-### `global_constraints.avoid`
+### `global_constraints.avoid` (with `energy_strategy` / `sonic_world`)
 
 List what the Music Curator must not select for this episode.
 `avoid` is an array of strings. Use it for exclusion constraints, not for song recommendations.
@@ -547,19 +530,19 @@ Prioritize entries in this order:
 
 ---
 
-### `segment_design`
+### `segments[].narrative_function` / `scene` / `sonic_direction` / `lyrical_direction`
 
-This is the most important field for the Music Curator.
+These fields (not a legacy `segment_design` or `mood` key) are the most important
+direction for the Music Curator.
 
 Describe:
 
-* the purpose of the segment
-* its musical identity
+* the purpose of the segment (`narrative_function`)
+* its musical / scenic identity (`scene`, `sonic_direction`)
 * what types of recordings should be considered
-* what should change internally
-* what should remain consistent
-* relevant thematic or lyrical considerations
-* how the segment connects to adjacent segments
+* what should change internally vs remain consistent
+* relevant thematic or lyrical considerations (`lyrical_direction`)
+* how the segment connects to adjacent segments (`transition_to_next`)
 
 Write this as actionable creative direction for another music professional.
 
@@ -567,7 +550,7 @@ Do not write a list of song titles.
 
 ---
 
-### `sequence_direction`
+### `segments[].sequence_direction`
 
 Describe the internal evolution of the segment.
 

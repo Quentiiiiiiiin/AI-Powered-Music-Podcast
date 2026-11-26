@@ -28,6 +28,8 @@ PRESET_KEYS: tuple[str, ...] = (
     "web_search_max_uses",
     "snapshot_path",
     "music_dir",
+    "ncm_source_dir",
+    "ncm_output_dir",
     "tts_provider",
     "tts_model",
     "tts_voice_id",

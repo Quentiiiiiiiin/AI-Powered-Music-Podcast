@@ -49,10 +49,23 @@ def test_planner_staged_includes_guide_and_mode_envelope() -> None:
     assert "MODE: REVISION" in sys_rev
     assert "Current gate: PLANNER only" in sys_gen
     assert "Do not invent playlist" in sys_gen or "playlist" in sys_gen.lower()
-    assert "Current PlanState JSON" in gen[1]["content"]
+    assert "OUTPUT SHAPE" in sys_gen
+    assert '"meta"' in sys_gen and '"plan"' in sys_gen and '"segments"' in sys_gen
+    assert "FORBIDDEN as top-level keys" in sys_gen
+    assert "emotion_curve" in sys_gen
     assert "Night Drive" in gen[1]["content"]
     # 显著长于旧短 prompt（防误用摘要）
     assert len(sys_gen) > 3000
+
+
+def test_planner_guide_forbids_obsolete_flat_fields() -> None:
+    guide = _load_guide(_GUIDE_PLANNER)
+    assert "emotion_curve" in guide  # mentioned as forbidden / removed
+    assert "### `emotion_curve`" not in guide
+    assert "meta.theme_description" in guide
+    assert "plan.segments_design" in guide
+    assert "### `mood`" not in guide
+    assert "### `segment_design`" not in guide
 
 
 def test_curator_staged_includes_guide_and_mode_envelope() -> None:
@@ -62,12 +75,15 @@ def test_curator_staged_includes_guide_and_mode_envelope() -> None:
     sys_gen = gen[0]["content"]
     sys_rev = rev[0]["content"]
     assert "Do not redesign the episode" in sys_gen
-    assert "You are not the Planner" in sys_gen
     assert "selection_reason" in sys_gen
-    assert "Hard constraints" in sys_gen
+    assert "You are NOT the Planner" in sys_gen
     assert "MODE: GENERATION" in sys_gen
     assert "MODE: REVISION" in sys_rev
     assert "Do NOT write bpm" in sys_gen or "bpm" in sys_gen.lower()
+    assert "OUTPUT SHAPE" in sys_gen
+    assert '"segments"' in sys_gen and '"playlist"' in sys_gen
+    assert "FORBIDDEN as top-level keys" in sys_gen
+    assert "nesting is mandatory" in sys_gen
     assert len(sys_gen) > 2000
     assert "critic.actions" in sys_rev or "REVISION" in sys_rev
 

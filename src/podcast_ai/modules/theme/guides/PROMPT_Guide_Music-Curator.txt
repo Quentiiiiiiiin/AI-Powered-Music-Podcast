@@ -123,6 +123,11 @@ Follow the provided output schema exactly.
 
 Do not add commentary outside the schema.
 
+CRITICAL — nesting: top-level key is ONLY `segments` (array of objects that each
+contain `playlist`). Never emit `playlist`, `track`, `artist`, or Planner fields
+(`meta`, `plan`, `theme_description`, …) as top-level JSON keys.
+Do not write `script`, `critic`, or `control`.
+
 For every playlist item:
 
 ### track

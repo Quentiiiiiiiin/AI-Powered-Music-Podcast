@@ -30,7 +30,7 @@ from podcast_ai.infra.config import Settings, load_settings
 
 logger = logging.getLogger(__name__)
 
-CommandName = Literal["plan", "stage2", "stage3", "create"]
+CommandName = Literal["plan", "stage2", "stage3", "create", "ncm_decode"]
 RunStatus = Literal["idle", "running", "success", "error"]
 
 _TTS_PROVIDERS = frozenset({"edge", "elevenlabs", "minimax"})
@@ -64,6 +64,9 @@ class ConsoleParams:
     web_search_max_uses: int | None = None
     snapshot_path: str = ""
     music_dir: str = "./music"
+    # 阶段二前置：网易云 .ncm → flac/mp3（ncmdump）；默认路径可在 Console 手改
+    ncm_source_dir: str = r"C:\CloudMusic\VipSongsDownload"
+    ncm_output_dir: str = r"C:\Users\yanqu\Desktop\Cursor Project ONE\Episode_Plan_Music"
     tts_provider: str = "default"
     tts_model: str = ""
     tts_voice_id: str = ""
@@ -114,6 +117,7 @@ class ConsoleRunResult:
             "stage2": "create-episode-stage2",
             "stage3": "finalize-episode-stage3",
             "create": "create-episode",
+            "ncm_decode": "decode-ncm",
         }
         return cls(
             status="running",
@@ -127,6 +131,8 @@ def defaults_from_settings(settings: Settings | None = None) -> ConsoleParams:
     return ConsoleParams(
         output_dir=s.app.output_dir,
         music_dir=s.app.music_dir,
+        ncm_source_dir=r"C:\CloudMusic\VipSongsDownload",
+        ncm_output_dir=r"C:\Users\yanqu\Desktop\Cursor Project ONE\Episode_Plan_Music",
         orchestration_mode=str(s.app.orchestration_mode or "staged"),
         llm_interface="openrouter",
         llm_model=s.llm.model,
@@ -485,6 +491,39 @@ def run_plan(
 
     result = _run_command("plan", _inner, debug=bool(params.debug), log_sink=log_sink)
     return _attach_progress(result)
+
+
+def run_ncm_decode(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
+    """阶段二前置：调用内嵌 ncmdump，将 .ncm 解码到指定目录。"""
+    del settings  # 本命令不改 Settings；保留签名与其它 runner 一致
+
+    def _inner() -> ConsoleRunResult:
+        from podcast_ai.infra.ncmdump import decode_ncm_directory
+
+        source_raw = (params.ncm_source_dir or "").strip()
+        output_raw = (params.ncm_output_dir or "").strip() or (params.music_dir or "").strip()
+        if not source_raw:
+            raise PodcastAIError("请填写「网易云原版音乐目录」（含 .ncm 的下载目录）。")
+        if not output_raw:
+            raise PodcastAIError("请填写「解码后文件夹地址」，或先填写 music_dir 作为输出目录。")
+
+        result = decode_ncm_directory(source_raw, output_raw)
+        return ConsoleRunResult(
+            status="success",
+            command="ncm_decode",
+            summary=(
+                f"NCM 解码完成 · {result.ncm_count} 个 .ncm → `{result.output_dir}`"
+                f" · 已清空原版目录 {result.cleared_source_files} 个文件"
+            ),
+            artifacts={
+                "ncm_source_dir": str(result.source_dir),
+                "ncm_output_dir": str(result.output_dir),
+                "ncmdump": str(result.binary),
+                "cleared_source_files": str(result.cleared_source_files),
+            },
+        )
+
+    return _run_command("ncm_decode", _inner, debug=bool(params.debug))
 
 
 def run_stage2(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:

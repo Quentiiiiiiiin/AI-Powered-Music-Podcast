@@ -5,6 +5,7 @@ v6.3：staged Planner / Music Curator 对齐 Guide 全文。
 v6.5：仅 **Planner 阶段 Critic** 对齐 `PROMPT_Guide_Planner_Critic.txt`。
 v6.6：新增 **Music Curator 阶段 Critic** 对齐 `PROMPT_Guide_Curator_Critic.txt`
 （维度与 Planner Critic 分离）。Script Writer Critic / legacy Critic 本轮仍未换专用 Guide。
+v7.4：各 Agent staged envelope 增加 OUTPUT SHAPE 嵌套示例，禁止把子字段摊到顶层。
 """
 from __future__ import annotations
 
@@ -64,6 +65,160 @@ def _mode_envelope(mode: Literal["generation", "revision"], *, revision_focus: s
     ).strip()
 
 
+# v7.4：各 Agent envelope 强制嵌套形状，防止把子字段摊到顶层（DeepSeek 等弱 schema 约束时尤甚）。
+_PLANNER_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory; do NOT flatten leaf fields to the root):
+    Top-level keys ONLY: meta | global_constraints | plan | segments
+    (JSON null on a top-level key = omit that block in revision merge).
+
+    Example (abbreviated; keep real content longer):
+    {
+      "meta": {
+        "theme_description": "...",
+        "theme_type": "...",
+        "theme_subject": "...",
+        "theme_relationship": "..."
+      },
+      "global_constraints": {
+        "energy_strategy": "...",
+        "sonic_world": ["..."],
+        "avoid": ["..."]
+      },
+      "plan": {
+        "segment_count": 3,
+        "episode_direction": "...",
+        "segments_design": "..."
+      },
+      "segments": [
+        {
+          "segment_id": "seg_1",
+          "order": 1,
+          "name": "...",
+          "target_duration_seconds": 600,
+          "narrative_function": "...",
+          "scene": "...",
+          "sonic_direction": ["..."],
+          "lyrical_direction": ["..."],
+          "anchor_tracks": [],
+          "reference_material": [],
+          "sequence_direction": [{"phase": "...", "function": "...", "musical_direction": "..."}],
+          "transition_to_next": "..."
+        }
+      ]
+    }
+
+    FORBIDDEN as top-level keys: theme_description, theme_type, segment_count,
+    episode_direction, segments_design, emotion_curve, mood, segment_design,
+    playlist, script, critic, control.
+    """
+).strip()
+
+_CURATOR_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory; do NOT flatten):
+    Top-level key ONLY: segments
+    Each segments[i] object may contain playlist only (structure fields are locked).
+
+    Example (abbreviated):
+    {
+      "segments": [
+        {
+          "playlist": [
+            {
+              "track": "...",
+              "artist": "...",
+              "selection_reason": "...",
+              "sequence_role": "...",
+              "planner_alignment": ["..."],
+              "transition_logic": "..."
+            }
+          ]
+        }
+      ]
+    }
+
+    FORBIDDEN as top-level keys: playlist, track, artist, meta, plan, script,
+    critic, control, theme_description, global_constraints.
+    Do NOT write bpm on playlist items.
+    """
+).strip()
+
+_SCRIPT_WRITER_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: script_before (array length = N).
+
+    Example (N=5, sparse cues):
+    {"script_before": ["开场……", null, null, "中间……", "最后一首前收束……"]}
+
+    FORBIDDEN as top-level keys: segments, script, segment_intro, between_tracks,
+    playlist, plan, critic, control, or any free-form prose wrapper.
+    """
+).strip()
+
+_PLANNER_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+
+    Example (abbreviated):
+    {
+      "critic": {
+        "scores": {
+          "theme_definition": 80,
+          "theme_relationship": 80,
+          "musical_concept": 80,
+          "segment_differentiation": 80,
+          "sequence_narrative": 80,
+          "curator_actionability": 80,
+          "creative_freedom": 80
+        },
+        "issues": [],
+        "actions": []
+      }
+    }
+
+    FORBIDDEN as top-level keys: scores, issues, actions, overall_score, pass,
+    threshold, control, next_agent, plan, segments, playlist, script.
+    """
+).strip()
+
+_CURATOR_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+
+    Example (abbreviated):
+    {
+      "critic": {
+        "scores": {
+          "planner_alignment": 80,
+          "thematic_relevance": 80,
+          "sequence_coherence": 80,
+          "audience_listening_quality": 80,
+          "track_fitness": 80
+        },
+        "issues": [],
+        "actions": []
+      }
+    }
+
+    FORBIDDEN as top-level keys: scores, issues, actions, overall_score, pass,
+    threshold, control, next_agent, plan, segments, playlist, script.
+    """
+).strip()
+
+_WRITER_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+    Example: {"critic": {"scores": {...}, "issues": [], "actions": []}}
+    FORBIDDEN as top-level keys: scores, issues, actions, pass, threshold, control.
+    """
+).strip()
+
+
 def _user_plan_state_message(state: dict[str, Any], *, mode: str, extra: str = "") -> str:
     parts = [f"MODE: {mode}", ""]
     if extra.strip():
@@ -88,6 +243,8 @@ def build_planner_staged_messages(state: dict[str, Any], mode: str) -> list[dict
         Current gate: PLANNER only. Downstream Music Curator / Script Writer have NOT run yet.
 
         {_mode_envelope(m, revision_focus="Fix Planner deliverables only; do not invent playlist/script.")}
+
+        {_PLANNER_OUTPUT_SHAPE}
 
         === PLANNER THINKING GUIDE (verbatim from {_GUIDE_PLANNER}) ===
         """
@@ -159,6 +316,8 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
         Current gate: MUSIC CURATOR. Planner output is LOCKED — do not change structure fields.
 
         {_mode_envelope(m, revision_focus="Change only playlist items referenced by critic.actions. Keep anything else unchanged.")}
+
+        {_CURATOR_OUTPUT_SHAPE}
 
         === MUSIC CURATOR THINKING GUIDE (verbatim from {_GUIDE_MUSIC_CURATOR}) ===
         """
@@ -245,6 +404,8 @@ def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> lis
         - FINAL ASSISTANT CONTENT must be ONLY the JSON object (no search narration, no checklist,
           no markdown fences). Web search is a server tool — use results silently in the cues.
         - System maps to segments[*].script; do NOT emit segment_intro/between_tracks.
+
+        {_SCRIPT_WRITER_OUTPUT_SHAPE}
 
         === SCRIPT WRITER THINKING GUIDE (verbatim from {_GUIDE_SCRIPT_WRITER}) ===
         """
@@ -355,6 +516,8 @@ def _build_planner_critic_staged_messages(
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
 
+        {_PLANNER_CRITIC_OUTPUT_SHAPE}
+
         === PLANNER CRITIC THINKING GUIDE (verbatim from {_GUIDE_PLANNER_CRITIC}) ===
         """
     ).strip()
@@ -397,8 +560,9 @@ def _build_curator_critic_staged_messages(
         - issues: type, severity (minor|major|critical), location, problem, reason, suggestion.
         - actions: target_agent, location, instruction (location required).
         - Output ONLY {{"critic": {{scores, issues, actions}}}}.
-        FORBIDDEN: 
-        rewriting plan/playlist/script yourself.
+        FORBIDDEN: rewriting plan/playlist/script yourself.
+
+        {_CURATOR_CRITIC_OUTPUT_SHAPE}
 
         === CURATOR CRITIC THINKING GUIDE (verbatim from {_GUIDE_CURATOR_CRITIC}) ===
         """
@@ -463,6 +627,8 @@ def build_critic_staged_messages(
         FORBIDDEN: critic.overall_score, critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
+
+        {_WRITER_CRITIC_OUTPUT_SHAPE}
         """
     ).strip()
     user = _user_plan_state_message(state, mode=m, extra=f"STAGE: {stage}")
