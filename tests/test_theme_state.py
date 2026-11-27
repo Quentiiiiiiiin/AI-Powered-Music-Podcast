@@ -106,6 +106,63 @@ def test_v30_merge_list_of_dict_merges_by_index() -> None:
     assert merged["segments"][1]["playlist"] == []
 
 
+def test_merge_segments_shorter_patch_does_not_truncate() -> None:
+    """Planner revision 只回部分章节时，不得截断丢掉未出现的尾部章节。"""
+    state = initialize_plan_state(_request())
+    state["segments"] = [
+        {"segment_id": "seg_01", "name": "开场", "sonic_direction": ["a"]},
+        {"segment_id": "seg_02", "name": "中段", "sonic_direction": ["b"]},
+        {"segment_id": "seg_03", "name": "收束", "sonic_direction": ["c"]},
+    ]
+    merged = merge_plan_state(
+        state,
+        {
+            "segments": [
+                {"segment_id": "seg_01", "sonic_direction": ["a2"]},
+                {"segment_id": "seg_03", "sonic_direction": ["c2"]},
+            ]
+        },
+    )
+    assert len(merged["segments"]) == 3
+    assert merged["segments"][0]["segment_id"] == "seg_01"
+    assert merged["segments"][0]["sonic_direction"] == ["a2"]
+    assert merged["segments"][0]["name"] == "开场"
+    # 下标 1 仍按索引合并（可能被误写入的 patch[1] 覆盖字段），但不得删除下标 2
+    assert merged["segments"][2]["segment_id"] == "seg_03"
+    assert merged["segments"][2]["name"] == "收束"
+    assert merged["segments"][2]["sonic_direction"] == ["c"]
+
+
+def test_merge_playlist_shorter_patch_still_truncates() -> None:
+    """playlist 回修变短时仍截断，避免旧曲尾巴残留。"""
+    state = initialize_plan_state(_request())
+    state["segments"] = [
+        {
+            "segment_id": "seg_01",
+            "playlist": [
+                {"track": "A", "artist": "X"},
+                {"track": "B", "artist": "Y"},
+                {"track": "C", "artist": "Z"},
+            ],
+        }
+    ]
+    merged = merge_plan_state(
+        state,
+        {
+            "segments": [
+                {
+                    "playlist": [
+                        {"track": "A2", "artist": "X"},
+                        {"track": "B2", "artist": "Y"},
+                    ]
+                }
+            ]
+        },
+    )
+    assert len(merged["segments"]) == 1
+    assert [t["track"] for t in merged["segments"][0]["playlist"]] == ["A2", "B2"]
+
+
 # ---------- v3.1：state_schema.json 同构校验 ----------
 
 
@@ -134,4 +191,15 @@ def test_v31_validate_state_conforms_to_schema_allows_between_tracks_text_string
     """between_tracks[*].text 在模板中为 null，但实际允许为字符串或 null（交给 agent 决定）。"""
     state = initialize_plan_state(_request())
     state["segments"][0]["script"]["between_tracks"][0]["text"] = "下一首歌稍微推高情绪。"
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+
+def test_v73_validate_state_conforms_to_schema_allows_null_segment_intro() -> None:
+    """v7.3：扁平串词空槽映射后 segment_intro 可为 null，落盘校验须通过。"""
+    state = initialize_plan_state(_request())
+    state["segments"][0]["script"]["segment_intro"] = None
+    state["segments"][0]["script"]["between_tracks"][0]["text"] = None
+    validate_state_conforms_to_schema(state, agent_mode="multi_agent")
+
+    state["segments"][0]["script"]["segment_intro"] = "段首可选串词。"
     validate_state_conforms_to_schema(state, agent_mode="multi_agent")

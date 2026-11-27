@@ -194,6 +194,39 @@ def test_insight_md_shows_failure_and_single_agent() -> None:
     assert "legacy" in md_sa and "强制" in md_sa
 
 
+def test_insight_md_shows_web_search_requests() -> None:
+    from podcast_ai.console.app import _insight_md
+    from podcast_ai.console.runner import ConsoleRunResult
+
+    counted = ConsoleRunResult(
+        status="success",
+        command="plan",
+        plan_web_search_requests=3,
+        plan_current_agent="Planner",
+    )
+    md = _insight_md(counted, agent_mode="multi_agent")
+    assert "web_search_requests" in md and "`3`" in md
+
+    missing = ConsoleRunResult(status="success", command="plan", plan_current_agent="Planner")
+    md_na = _insight_md(missing, agent_mode="multi_agent")
+    assert "web_search_requests" in md_na and "`N/A`" in md_na
+
+
+def test_format_run_error_debug_redacts_secrets() -> None:
+    from podcast_ai.console.runner import _format_run_error
+    from podcast_ai.core.exceptions import PodcastAIError
+
+    try:
+        raise PodcastAIError("boom api_key=sk-live-secret")
+    except PodcastAIError as exc:
+        brief = _format_run_error(exc, debug=False)
+        assert "boom" in brief
+        assert "sk-live-secret" not in brief
+        detailed = _format_run_error(exc, debug=True)
+        assert "sk-live-secret" not in detailed
+        assert "PodcastAIError" in detailed or "Traceback" in detailed
+
+
 def test_cli_commands_not_removed() -> None:
     """v5.0 只新增 console，既有子命令必须仍在。"""
     from podcast_ai.cli import app

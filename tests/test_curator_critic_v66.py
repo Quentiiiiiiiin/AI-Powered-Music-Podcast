@@ -62,7 +62,9 @@ def test_curator_critic_messages_include_guide() -> None:
     assert "MODE: GENERATION" in sys
     assert "planner_alignment" in sys
     assert "FORBIDDEN" in sys
-    assert "critic.pass" in sys
+    assert "OUTPUT SHAPE" in sys
+    assert '"critic"' in sys
+    assert "Top-level key ONLY: critic" in sys
     assert "PROMPT_Guide_Planner_Critic" not in sys
     assert len(sys) > 4000
 

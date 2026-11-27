@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -28,12 +30,18 @@ from podcast_ai.infra.config import Settings, load_settings
 
 logger = logging.getLogger(__name__)
 
-CommandName = Literal["plan", "stage2", "stage3", "create"]
+CommandName = Literal["plan", "stage2", "stage3", "create", "ncm_decode"]
 RunStatus = Literal["idle", "running", "success", "error"]
 
 _TTS_PROVIDERS = frozenset({"edge", "elevenlabs", "minimax"})
 _LANGUAGES = frozenset({"zh", "en"})
 _AGENT_MODES = frozenset({"single_agent", "multi_agent"})
+_WEB_SEARCH_ENGINES = frozenset(
+    {"auto", "native", "exa", "firecrawl", "parallel", "perplexity"}
+)
+_SECRET_RE = re.compile(
+    r"(?i)(api[_-]?key|authorization|bearer|password|secret|token)\s*[=:]\s*\S+"
+)
 
 
 @dataclass
@@ -50,8 +58,15 @@ class ConsoleParams:
     llm_model: str = ""
     openrouter_provider: str = ""
     llm_base_url: str = ""
+    web_search_enabled: bool = False
+    web_search_engine: str = "auto"
+    web_search_max_results: int = 5
+    web_search_max_uses: int | None = None
     snapshot_path: str = ""
     music_dir: str = "./music"
+    # 阶段二前置：网易云 .ncm → flac/mp3（ncmdump）；默认路径可在 Console 手改
+    ncm_source_dir: str = r"C:\CloudMusic\VipSongsDownload"
+    ncm_output_dir: str = r"C:\Users\yanqu\Desktop\Cursor Project ONE\Episode_Plan_Music"
     tts_provider: str = "default"
     tts_model: str = ""
     tts_voice_id: str = ""
@@ -64,6 +79,8 @@ class ConsoleParams:
     voice_gain_db: float = 0.0
     voice_music_overlay_music_max_db: float = 0.0
     voice_music_post_overlay_ramp_seconds: float = 0.0
+    # v7.1：等价 CLI --log-level DEBUG
+    debug: bool = False
 
     def as_form_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,6 +107,8 @@ class ConsoleRunResult:
     orchestration_mode: str | None = None
     plan_stage: str | None = None
     plan_revision: int | None = None
+    # v7.1：最近一次 LLM 响应中的搜索次数；None=日志未出现该字段
+    plan_web_search_requests: int | None = None
 
     @classmethod
     def running(cls, command: CommandName) -> ConsoleRunResult:
@@ -98,6 +117,7 @@ class ConsoleRunResult:
             "stage2": "create-episode-stage2",
             "stage3": "finalize-episode-stage3",
             "create": "create-episode",
+            "ncm_decode": "decode-ncm",
         }
         return cls(
             status="running",
@@ -111,11 +131,17 @@ def defaults_from_settings(settings: Settings | None = None) -> ConsoleParams:
     return ConsoleParams(
         output_dir=s.app.output_dir,
         music_dir=s.app.music_dir,
+        ncm_source_dir=r"C:\CloudMusic\VipSongsDownload",
+        ncm_output_dir=r"C:\Users\yanqu\Desktop\Cursor Project ONE\Episode_Plan_Music",
         orchestration_mode=str(s.app.orchestration_mode or "staged"),
         llm_interface="openrouter",
         llm_model=s.llm.model,
         openrouter_provider=s.llm.openrouter_provider or "",
         llm_base_url=base_url_for_interface("openrouter"),
+        web_search_enabled=bool(s.llm.web_search.enabled),
+        web_search_engine=str(s.llm.web_search.engine or "auto"),
+        web_search_max_results=int(s.llm.web_search.max_results or 5),
+        web_search_max_uses=s.llm.web_search.max_uses,
         tts_provider="default",
         tts_model="",
         tts_voice_id="",
@@ -151,6 +177,39 @@ def _llm_interface(params: ConsoleParams) -> str:
     return raw
 
 
+def _web_search_engine(params: ConsoleParams) -> str:
+    raw = (params.web_search_engine or "auto").strip().lower() or "auto"
+    if raw not in _WEB_SEARCH_ENGINES:
+        raise PodcastAIError(
+            "web_search.engine 仅支持 auto/native/exa/firecrawl/parallel/perplexity "
+            f"（收到：{params.web_search_engine!r}）"
+        )
+    return raw
+
+
+def _web_search_max_results(params: ConsoleParams) -> int:
+    try:
+        n = int(params.web_search_max_results)
+    except (TypeError, ValueError) as exc:
+        raise PodcastAIError("web_search.max_results 须为 1–25 的整数。") from exc
+    if n < 1 or n > 25:
+        raise PodcastAIError(f"web_search.max_results 须为 1–25（收到：{n}）")
+    return n
+
+
+def _web_search_max_uses(value: Any) -> int | None:
+    """空 / 0 / 负数 → None（不写入限制）。"""
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PodcastAIError("web_search.max_uses 须为整数，或留空表示不限制。") from exc
+    if n <= 0:
+        return None
+    return n
+
+
 def settings_from_params(params: ConsoleParams, base: Settings | None = None) -> Settings:
     """用表单覆盖 Settings 的常用字段；密钥仍来自 .env / config。"""
     settings = base or load_settings()
@@ -158,6 +217,14 @@ def settings_from_params(params: ConsoleParams, base: Settings | None = None) ->
     llm_update: dict[str, Any] = {
         "openrouter_provider": (params.openrouter_provider or "").strip(),
         "base_url": base_url_for_interface(iface),
+        "web_search": settings.llm.web_search.model_copy(
+            update={
+                "enabled": bool(params.web_search_enabled),
+                "engine": _web_search_engine(params),
+                "max_results": _web_search_max_results(params),
+                "max_uses": _web_search_max_uses(params.web_search_max_uses),
+            }
+        ),
     }
     if (params.llm_model or "").strip():
         llm_update["model"] = params.llm_model.strip()
@@ -255,9 +322,10 @@ def _agent_mode(params: ConsoleParams) -> Literal["single_agent", "multi_agent"]
 class _BufferLogHandler(logging.Handler):
     """把本次 Run 的 logging 抓到内存，供 UI 展示；不改 pipeline。"""
 
-    def __init__(self) -> None:
+    def __init__(self, sink: list[str] | None = None) -> None:
         super().__init__()
-        self.lines: list[str] = []
+        self.lines: list[str] = sink if sink is not None else []
+        self.setLevel(logging.DEBUG)
         self.setFormatter(
             logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
         )
@@ -269,19 +337,47 @@ class _BufferLogHandler(logging.Handler):
             pass
 
 
+def _redact_secrets(text: str) -> str:
+    return _SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+
+
+def _format_run_error(exc: BaseException, *, debug: bool) -> str:
+    """DEBUG 时附带 traceback 末段；始终打码疑似密钥。"""
+    if isinstance(exc, PodcastAIError):
+        head = str(exc)
+    elif isinstance(exc, ValidationError):
+        head = f"参数校验失败：{exc}"
+    else:
+        head = f"未预期错误：{exc}"
+    if not debug:
+        return _redact_secrets(head)
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    tail = "\n".join(tb.strip().splitlines()[-16:])
+    return _redact_secrets(f"{head}\n\n{tail}")
+
+
 def _format_elapsed(elapsed_ms: int) -> str:
     if elapsed_ms < 1000:
         return f"{elapsed_ms}ms"
     return f"{elapsed_ms / 1000:.1f}s"
 
 
-def _run_command(command: CommandName, fn: Callable[[], ConsoleRunResult]) -> ConsoleRunResult:
-    handler = _BufferLogHandler()
+def _run_command(
+    command: CommandName,
+    fn: Callable[[], ConsoleRunResult],
+    *,
+    debug: bool = False,
+    log_sink: list[str] | None = None,
+) -> ConsoleRunResult:
+    handler = _BufferLogHandler(sink=log_sink)
     root = logging.getLogger()
     previous_level = root.level
     root.addHandler(handler)
-    if root.level > logging.INFO:
-        root.setLevel(logging.INFO)
+    target = logging.DEBUG if debug else logging.INFO
+    if root.level > target:
+        root.setLevel(target)
+    if debug and root.level != logging.DEBUG:
+        root.setLevel(logging.DEBUG)
     started = time.perf_counter()
     try:
         result = fn()
@@ -290,31 +386,24 @@ def _run_command(command: CommandName, fn: Callable[[], ConsoleRunResult]) -> Co
         if result.status == "success" and result.summary:
             result.summary = f"{result.summary} · {_format_elapsed(result.elapsed_ms)}"
         return result
-    except PodcastAIError as exc:
+    except (PodcastAIError, ValidationError) as exc:
+        elapsed = int((time.perf_counter() - started) * 1000)
         return ConsoleRunResult(
             status="error",
             command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=str(exc),
+            elapsed_ms=elapsed,
+            error=_format_run_error(exc, debug=debug),
             logs="\n".join(handler.lines),
-            summary=f"失败 · {_format_elapsed(int((time.perf_counter() - started) * 1000))}",
-        )
-    except ValidationError as exc:
-        return ConsoleRunResult(
-            status="error",
-            command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=f"参数校验失败：{exc}",
-            logs="\n".join(handler.lines),
-            summary="失败（校验）",
+            summary=f"失败 · {_format_elapsed(elapsed)}",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Console 调用 pipeline 时发生未预期错误")
+        elapsed = int((time.perf_counter() - started) * 1000)
         return ConsoleRunResult(
             status="error",
             command=command,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
-            error=f"未预期错误：{exc}",
+            elapsed_ms=elapsed,
+            error=_format_run_error(exc, debug=debug),
             logs="\n".join(handler.lines),
             summary="失败",
         )
@@ -328,6 +417,7 @@ def run_plan(
     *,
     settings: Settings | None = None,
     progress_sink: list[dict[str, Any]] | None = None,
+    log_sink: list[str] | None = None,
 ) -> ConsoleRunResult:
     # 可注入外部 list，供 UI 在运行中轮询 iteration/agent（默认仍用内部 list）。
     progress_events: list[dict[str, Any]] = progress_sink if progress_sink is not None else []
@@ -352,6 +442,7 @@ def run_plan(
         result.plan_progress_events = list(merged.events)
         result.plan_stage = merged.stage
         result.plan_revision = merged.revision
+        result.plan_web_search_requests = merged.web_search_requests
         if result.orchestration_mode is None:
             result.orchestration_mode = str(
                 settings_from_params(params, base=settings).app.orchestration_mode
@@ -398,8 +489,41 @@ def run_plan(
             orchestration_mode=orch,
         )
 
-    result = _run_command("plan", _inner)
+    result = _run_command("plan", _inner, debug=bool(params.debug), log_sink=log_sink)
     return _attach_progress(result)
+
+
+def run_ncm_decode(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
+    """阶段二前置：调用内嵌 ncmdump，将 .ncm 解码到指定目录。"""
+    del settings  # 本命令不改 Settings；保留签名与其它 runner 一致
+
+    def _inner() -> ConsoleRunResult:
+        from podcast_ai.infra.ncmdump import decode_ncm_directory
+
+        source_raw = (params.ncm_source_dir or "").strip()
+        output_raw = (params.ncm_output_dir or "").strip() or (params.music_dir or "").strip()
+        if not source_raw:
+            raise PodcastAIError("请填写「网易云原版音乐目录」（含 .ncm 的下载目录）。")
+        if not output_raw:
+            raise PodcastAIError("请填写「解码后文件夹地址」，或先填写 music_dir 作为输出目录。")
+
+        result = decode_ncm_directory(source_raw, output_raw)
+        return ConsoleRunResult(
+            status="success",
+            command="ncm_decode",
+            summary=(
+                f"NCM 解码完成 · {result.ncm_count} 个 .ncm → `{result.output_dir}`"
+                f" · 已清空原版目录 {result.cleared_source_files} 个文件"
+            ),
+            artifacts={
+                "ncm_source_dir": str(result.source_dir),
+                "ncm_output_dir": str(result.output_dir),
+                "ncmdump": str(result.binary),
+                "cleared_source_files": str(result.cleared_source_files),
+            },
+        )
+
+    return _run_command("ncm_decode", _inner, debug=bool(params.debug))
 
 
 def run_stage2(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
@@ -428,7 +552,7 @@ def run_stage2(params: ConsoleParams, *, settings: Settings | None = None) -> Co
             mix_params_path=str(mix_params_path),
         )
 
-    return _run_command("stage2", _inner)
+    return _run_command("stage2", _inner, debug=bool(params.debug))
 
 
 def run_stage3(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
@@ -437,14 +561,31 @@ def run_stage3(params: ConsoleParams, *, settings: Settings | None = None) -> Co
         if not mix_raw:
             raise PodcastAIError("请填写 MixParamsJSON 路径（`*_mix_params.json`）。")
         mix_path = Path(mix_raw)
+        effective = settings_from_params(params, base=settings)
+        # 便于核对 Console 表单是否把 voice_gain_db 下发到本次 Stage 3
+        logger.info(
+            "stage3 audio overrides from Console: voice_gain_db=%s (params) → %s (effective); "
+            "per_track_normalize=%s; overlay_max_db=%s; post_overlay_ramp=%s",
+            params.voice_gain_db,
+            effective.audio.voice_gain_db,
+            effective.audio.per_track_normalize_enabled,
+            effective.audio.voice_music_overlay_music_max_db,
+            effective.audio.voice_music_post_overlay_ramp_seconds,
+        )
         result = finalize_episode_stage3(
             mix_params_json_path=mix_path,
-            settings=settings_from_params(params, base=settings),
+            settings=effective,
             topic=(params.topic or "").strip() or None,
         )
-        return _result_from_episode("stage3", result)
+        out = _result_from_episode("stage3", result)
+        out.summary = (
+            f"{out.summary} · voice_gain_db={effective.audio.voice_gain_db:g}"
+            if out.summary
+            else f"voice_gain_db={effective.audio.voice_gain_db:g}"
+        )
+        return out
 
-    return _run_command("stage3", _inner)
+    return _run_command("stage3", _inner, debug=bool(params.debug))
 
 
 def run_create(params: ConsoleParams, *, settings: Settings | None = None) -> ConsoleRunResult:
@@ -467,7 +608,7 @@ def run_create(params: ConsoleParams, *, settings: Settings | None = None) -> Co
         )
         return _result_from_episode("create", result)
 
-    return _run_command("create", _inner)
+    return _run_command("create", _inner, debug=bool(params.debug))
 
 
 def _result_from_episode(command: CommandName, result: Any) -> ConsoleRunResult:

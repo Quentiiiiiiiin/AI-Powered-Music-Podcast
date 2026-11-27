@@ -1,8 +1,8 @@
 # AI 音乐 Podcast 自动生成工具 - 产品需求文档（PRD）
 
-**文档版本**：v6.8  
+**文档版本**：v7.4  
 **创建日期**：2025-03-06  
-**产品阶段**：迭代验证中（进入 v6.8）
+**产品阶段**：迭代验证中（进入 v7.4）
 
 ---
 
@@ -576,6 +576,91 @@
     4. 该失败路径 snapshot 字段契约与既有成功路径 snapshot 对齐，可供阶段二或 Console 继续消费（内容完整度以 partial 所能覆盖为限）。
     5. 不因本迭代回退 v6.6/v6.7 的 Critic schema 与终态 `state` 精简约定。
 
+- **v7.0（迭代三十八：OpenRouter Server Tool 联网搜索接入全 Agent）**：
+  - **问题**：阶段一各 Agent（Planner / Music Curator / Script Writer / Critic，含 staged 各阶段 Critic）仅依赖模型内置知识，无法按需获取实时网页信息（新曲、艺人动态、风格语境等），内容时效与事实依据不足。自建搜索 tool 成本高且难维护。
+  - **方案选型**：采用 OpenRouter **Server Tools — `openrouter:web_search`**（见仓库 `OpenRouter_Web_Search_Guide.md`）。**不**使用已弃用的 `plugins: [{ id: "web" }]` 或模型 `:online` 后缀。由模型自行决定是否/何时搜索；OpenRouter 服务端执行搜索并回传结果。
+  - **变更目标**：
+    1. 在经 **OpenRouter** 的 LLM 请求中统一附带 `tools: [{ "type": "openrouter:web_search", "parameters": {…} }]`，覆盖阶段一**每一个** Agent 调用路径（含 `staged` / `legacy` / 各阶段 Critic；`single_agent` 若走同一 LLM 客户端则一并启用）。
+    2. **配置化**：在 `config.yaml`（及示例配置）提供联网搜索开关与可选参数（至少：`enabled`；建议可配 `engine`、`max_results`、`max_uses`；默认值对齐官方：`engine=auto`、`max_results=5`）。关闭时请求不携带该 tool。
+    3. **与既有能力共存**：继续满足 v3.4 `response_format` / json_schema 结构化输出；Agent 业务 I/O 契约、snapshot 对外格式、终态 `state` 精简（v6.6）不因本迭代变更。
+    4. **可观测**：日志或审计中可体现本次调用是否启用 web_search，以及（若响应含）`usage.server_tool_use.web_search_requests` 等用量信息，便于成本与调试排查。
+  - **功能归类**：**新功能**（全 Agent 联网搜索能力）。
+  - **User Story（用户视角）**：作为创作者/开发者，我希望各 Agent 在需要时能联网查证时新信息，从而写出更靠谱的策划与选曲理由；同时我能在配置里开关搜索并控制大致成本，而不必自建搜索工具。
+  - **Acceptance Criteria（验收标准）**：
+    1. OpenRouter 且配置启用时，Planner / Music Curator / Script Writer / Critic（含 staged 分阶段 Critic）的 LLM 请求均携带 `openrouter:web_search`；关闭或非 OpenRouter 时不携带。
+    2. **不**使用弃用的 web plugin / `:online`；参数与官方 Server Tool 字段一致（见 Guide）。
+    3. 开启联网后仍能产出符合各 Agent `response_format` 的结构化结果；主路径 state / snapshot 契约不破坏。
+    4. `config` 可开关并可调整关键搜索参数；修改后无需改业务代码即可生效（Console 若本轮暴露开关为加分项，非必须）。
+    5. 日志/审计至少能区分「已启用 web_search」；在 API 返回用量字段时可复查搜索次数。
+
+- **v7.1（迭代三十九：Console 调试可观测性增强 + 联网搜索控件）**：
+  - **问题**：
+    1. Console 执行 plan / stage2 / stage3 / create 等操作时日志颗粒度不足，报错后难定位；CMD 下可用 `podcast-ai --log-level DEBUG` 看全量日志，Console 尚无对等能力。
+    2. `staged` 下 Agent 返回解析失败（如「Critic Agent JSON解析失败」）时，审计**未**保存该次 Agent 原始返回，无法对照失败内容。
+    3. v7.0 联网搜索的 `web_search_requests` 尚未在 Console **运行态洞察**中展示。
+    4. Console 尚未暴露 web_search 的 `engine` / `max_results` / `max_uses`，调试需改 YAML。
+  - **变更目标**：
+    1. Console 支持 **DEBUG 全量日志**观测（覆盖 plan / stage2 / stage3 / create 等入口）；DEBUG 下报错须展示更详细错误信息，达到与 CLI `--log-level DEBUG` 相当的排查能力。
+    2. Agent **JSON/结构化解析失败**时，将该次 Agent **原始返回内容**写入审计产物（与既有按 Agent 落盘约定对齐），便于事后对照。
+    3. 运行态洞察展示当前（或最近一次）Agent 的 **`web_search_requests` 次数**（无用量或未启用时明确显示 0 / N/A，以实现约定为准）。
+    4. Console 可配置联网搜索：`engine`（下拉：`auto` / `native` / `exa` / `firecrawl` / `parallel` / `perplexity`）、`max_results`（默认 **5**）、`max_uses`（默认 **不限制**）；与 v7.0 config / 请求参数对齐。
+  - **功能归类**：**优化**（Console 调试效率）+ **bug 修复**（解析失败审计缺口）+ **新功能**（运行态 web_search 次数与 Console 搜索参数控件）。
+  - **User Story（用户视角）**：作为用 Console 调试的开发者，我希望能像 CMD DEBUG 一样看到全量日志与详细报错；解析失败时审计里能看到 Agent 原话；运行中能看到本次搜了几次网，并能在面板上直接改 engine / max_results / max_uses。
+  - **Acceptance Criteria（验收标准）**：
+    1. Console 开启 DEBUG（或等价控件）后，plan / stage2 / stage3 / create 等操作可观测全量日志；失败时可见比默认更详细的报错信息。
+    2. Agent 返回解析失败时，审计目录中存在该次 Agent 的原始返回（或等价可复查落盘）；不得仅有错误摘要而无原文。
+    3. 运行态洞察可展示当前 Agent 的 `web_search_requests`（有用量则显示次数；未启用/无字段时有明确占位，不静默空白误导）。
+    4. Console 可设置 `engine`（上述 6 项下拉）、`max_results`（默认 5）、`max_uses`（默认不限制），并实际作用于 OpenRouter `openrouter:web_search` 请求参数。
+    5. 不破坏 v7.0 联网搜索主路径、结构化输出及既有 snapshot / 终态 state 契约。
+
+- **v7.2（迭代四十：Agent 输出校验重试，与 HTTP retry 分离）**：
+  - **问题**：阶段一各 Agent 在拿到模型原文后依次做 JSON 解析与 sanitize；任一步失败即抛错、编排中止后续 Agent，并将 `control.status` 标为 `error`。现有 `llm.max_retries` 只覆盖网络等 HTTP 调用异常，不覆盖「已返回文本但 JSON/字段不合格」。模型与 `response_format` 变严后，此类偶发格式失败增多；同一请求人工再跑多数能过。
+  - **变更目标**：在**不改变**编排 FSM、Agent 字段契约、sanitize/`response_format` 严格度的前提下，于各 Agent `run()` 内包住「generate → JSON 解析 → sanitize」：解析或 sanitize 失败时，用**同一套** messages / `response_format` / tools **再 generate 有限次**（不把错误拼进下一轮 prompt、不改 temperature）。配置与 HTTP retry **分开、分开计数**；建议默认额外 **2** 次（合计最多 3 次 generate）；`0` 关闭，行为与现网一致。任一次成功即 merge；次数用尽仍抛 `AIServiceError` 并中止后续 Agent。
+  - **非目标**：错误回灌 prompt；Orchestrator 整轮重跑；放宽校验；把校验失败当成 Critic revision；用 `llm.max_retries` 兼做输出校验重试；本轮不做 Console/CLI 新控件（先走 config）；不作用于 TTS/混音。
+  - **可观测**：每次失败的 raw 仍按现有审计落盘（解析失败 `parsed_patch=None`）；日志区分第几次输出尝试、失败阶段（parse vs sanitize）、最终成功或耗尽。
+  - **功能归类**：**优化**（降低偶发格式失败导致的整期中断）。
+  - **User Story（用户视角）**：作为跑阶段一规划的开发者，我希望 Agent 偶发 JSON/字段不合格时系统能自动再抽几次同样请求，而不是整期立刻失败；网络重试与格式重试互不影响，关掉新开关应和现在一样。
+  - **Acceptance Criteria（验收标准）**：
+    1. `output_max_retries=0`（字段名以实现为准）时行为与当前线上一致。
+    2. 第一次非法 JSON 或 sanitize 失败、后续一次合格：Agent 成功，state 采用合格那次结果。
+    3. 连续失败直到用尽：抛错，编排 `control.status=error`，不进入下一 Agent。
+    4. `llm.max_retries` 与输出校验重试**互不影响计数**；成功路径不增加额外 generate。
+    5. 失败尝试的原文仍写入审计；不改变 Orchestrator FSM、sanitize 规则与 Agent 输出契约。
+
+- **v7.3（迭代四十一：Script Writer 整期扁平串词契约 + 系统回填）**：
+  - **问题**：Writer 按段填写 `segment_intro` / `between_tracks`，字段名易被理解成「介绍本段」，与电台「陪伴听歌、不必报幕章节」不符，整期插点节奏也难统一。直接改 `state_schema` / snapshot / TTS 属破坏性变更，本期不做。
+  - **方案**（详见根目录 `ScriptWriter_FlatCue_Adapter.md`）：
+    1. **Agent 输入**：策划要点 + **带编号的扁平歌单**（整期一首接一首，`episode_track_index`）。
+    2. **Agent 输出**：定长 `script_before[]`（长度 = 总曲目数 `N`；元素为 `string | null`；插在第 i 首之前；不设「最后一首之后」槽；禁止写 playlist/曲名）。
+    3. **系统 mapper**：按下标写回各段 `segment_intro` / `between_tracks`（锚点用下标，不用曲名回填）；映射失败与 sanitize 失败同等处理，**不**写入半套 script。
+    4. **下游不变**：`state_schema` 持久化 `script` 形态、阶段二 snapshot、TTS、Console 时间线契约不变；staged / legacy prompt 与 Guide 口径对齐。
+    5. **Revision**：仍输出整份定长 `script_before`；未点名处保持原文；不双格式并存。
+  - **功能归类**：**优化**（整期插点、少报幕）+ **新功能**（Agent 扁平契约与系统回填层）。
+  - **User Story（用户视角）**：作为听众/创作者，我希望主持串词按整期听感自然穿插，而不是按章节报幕；作为开发者，我希望阶段二/三与 snapshot 不用跟着改 schema。
+  - **Acceptance Criteria（验收标准）**：
+    1. Writer 的 structured output 仅为定长 `script_before`（长度 = `N`）；sanitize 拒绝越权键与长度不符；落盘前由系统映射为既有 `segments[*].script`。
+    2. 持久化 `script` / snapshot / 阶段二 TTS 插点语义与现网一致；Planner/Curator 契约不变。
+    3. 跨段与 `N=1` 映射正确；最后一首前可有文案；无「曲后」槽要求；全 `null` 合法（无 TTS，除非另有业务底线）。
+    4. revision 只改 action 点名处时，其它 cues 与上一轮落盘一致（允许 `null`/空白规范化）。
+    5. 审计可复查 Agent 原始扁平输出与映射后的 `segments.script`；编排 FSM 不动。
+
+- **v7.4（迭代四十二：`estimate_track_intro_seconds` 改为结构边界估计）**：
+  - **问题**：v4.4 的 R1/R2（首个稳定 RMS 抬升 + 过滤后的首个 onset）在真实曲目上常把「音乐起声」误判为「前奏结束」，`intro_seconds` 系统性偏早（相对人工标注的 `vm_seconds` 平均绝对误差约 9s 量级），导致串词→歌动态叠化候选时长偏短。
+  - **变更目标**：仅优化 `intro_align.py` 中 `estimate_track_intro_seconds` 的**内部判定逻辑**，在**不改变**上游接口与返回结构（仍为 `intro_seconds / confidence / reason`）的前提下，使估计结果更接近人工可接受的前奏结束点（以阶段二/三调试样本中的 `vm_seconds` 为对齐参考；允许个别样本偏差较大）。
+  - **核心思路（明确）**：
+    1. 仍先估计起声点 `t0`（能量抬升），但**不以 `t0` 作为 intro 结束**。
+    2. 在 `[t0+δ, max_intro_seconds]` 内用多尺度 mid/rms/high 能量跳变 + mel 谱差分 / onset novelty，搜索「前奏 → 主段」的**结构边界峰**。
+    3. 在足够强的 novelty 峰中，结合轻度时间先验与「勿过晚」惩罚选峰，并就近吸附到 onset；失败路径仍返回 `intro_seconds=None` + 可区分 `reason`。
+    4. 仅本地启发式计算（librosa 特征），不引入外部 API / 开源前奏标注服务。
+  - **功能归类**：**优化**（intro 估计精度与听感对齐）。
+  - **User Story（用户视角）**：作为听众/创作者，我希望系统估计的前奏结束点更接近我手动调好的叠化时机，从而减少阶段三对 `vm_seconds` 的大幅手改。
+  - **Acceptance Criteria（验收标准）**：
+    1. `estimate_track_intro_seconds` 对外契约不变：输入仍为曲目路径 + `max_intro_seconds`，返回仍为 `intro_seconds` / `confidence` / `reason`；mixer / 阶段二调用方无需改接口。
+    2. 相对 v4.4 基线，在人工编辑过的 transitions 抽样集（以 `vm_seconds` 为参考）上，平均绝对误差与「误差 ≤2s」占比均有可度量改善（实现侧记录基线对比即可）。
+    3. 估计失败或过小时仍稳定回退（`intro_seconds=None` + 明确 `reason`），不得导致混音崩溃或静默写出不可解释参数。
+    4. 不改变 `voice_music_intro_align_max_seconds` 等配置语义，也不改变串词时长限幅（v4.3）与阶段三人工覆盖能力（v4.5 / v5.3）。
+    5. 相关单测覆盖契约与「结构抬升晚于起声」类合成样例；既有 mixer 对 intro 估计的 monkeypatch 路径不被破坏。
+
 
 ## 1. 产品背景
 
@@ -818,13 +903,13 @@
 | **可选** | Show Notes 文本 |
 | **优先级** | P0 |
 
-### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 / v6.4 增补）
+### 6.3 Agent 输入/输出契约表（v3.0 / v6.1 / v6.4 / v7.3 增补）
 
 | Agent | 可读字段（Read） | 可写字段（Write） | 禁止写字段（Forbidden Write） |
 |------|------|------|------|
 | **Planner（v6.1）** | `meta`、`global_constraints`、历史 `critic.issues` | 按 **Schema_Planner_v4** 负责的 `meta` / `global_constraints` / `plan` / `segments[*]` 规划字段（含主题拆解、能量/声景、段落叙事与声响方向、锚定/参考、序列方向等；以实现字段清单为准） | `segments[*].script`、`critic.*`、`control.*`；playlist 细项解释字段归属 Curator（若 Planner 样例含 playlist 占位，以实现边界为准） |
 | **Music Curator（v6.1）** | `meta`、`global_constraints`、`plan`、`segments[*]` 规划字段、历史 `critic.issues` | `segments[*].playlist`（曲目与顺序）及 **Schema_Music-Curator_v4** 解释字段（如 `selection_reason` / `sequence_role` / `planner_alignment` / `transition_logic`） | `plan` 主结构、`segments[*].script`、`critic.*`、`control.max_iterations` |
-| **Script Writer** | `meta.language`、`global_constraints`、`plan`、`segments[*].playlist/mood`、历史 `critic.issues` | `segments[*].script.segment_intro`、`segments[*].script.between_tracks` | `segments[*].playlist`、`plan`、`critic.*`、`control.max_iterations` |
+| **Script Writer（v7.3）** | 策划要点 + **扁平歌单**（`episode_track_index`）；语言/主题/约束/段落意图；revision 时含上一版扁平串词与 `critic.actions` | **模型侧**仅 `script_before[]`（长度 = 总曲目 `N`，元素 `string\|null`）；**系统 mapper** 写回 `segments[*].script.segment_intro` / `between_tracks` | 模型不得写/改 `playlist`、曲名/艺人、`plan`、`critic.*`、`control.*` |
 | **Critic（v6.4 / v6.6 / v6.7）** | 全量或本阶段相关 `state`（`staged` 下应聚焦本阶段交付物） | **`staged` 按阶段 schema**：Planner Critic **无 `overall_score`**，含多维 `scores` / `issues` / `actions`（含 `location`）；**Curator Critic** 用 Schema_Curator_Critic_v4，**`actions` 含 `location`**；均**不含 pass** | `meta`、`global_constraints`、`plan`、`segments` 内容本身；**不得输出** `pass` / `threshold` / `control`（由系统派生） |
 | **Orchestrator（流程控制）** | 全量 `state` | 过程态 `control`；**派生写入** `critic.pass`；**`legacy` 下按规则写入 `control.next_agent`**；**`staged` 下按阶段选择 Critic 变体并推进** | 业务内容字段（`plan`、`segments[*].playlist/script`） |
 
@@ -836,8 +921,12 @@
 - **`staged`（v6.0 / v6.6 / v6.8）**：按阶段闸门推进；每阶段最多 2 次修复；**禁止回退**；**Planner / Curator（及未来 Writer）Critic 使用各自 schema+prompt**；阶段失败仍应输出可被阶段二/Console 消费的 snapshot 并保留审计。**v6.8**：revision **不以** `issue.problem` 文本比对做「禁止新 issue」硬护栏，更不得因此中止运行。
 - **最终主 `state`（v6.6）**：无论 `staged` 或 `legacy`，落盘主 `state` **不包含** `critic`、`control`；过程/审计产物可保留完整字段。
 - **snapshot（v6.1 / v6.8）**：**snapshot 对外格式不变**；**v6.8** 在写出 `state_partial` 的失败路径上，须于**同目录**再写一份由 partial 派生的可消费 snapshot。
+- **联网搜索（v7.0 / v7.1）**：经 OpenRouter 时，各 Agent 可通过请求体 `tools` 使用 Server Tool `openrouter:web_search`（配置可关）；**禁止**再依赖已弃用的 `plugins.web` / `:online`。搜索为模型按需调用，**不改变** Agent 字段级 I/O 契约与 snapshot 格式。**v7.1**：Console 可配 `engine` / `max_results` / `max_uses`（默认 `auto` / `5` / 不限制）；运行态洞察展示 `web_search_requests`。
+- **审计完整性（v7.1 / v7.2）**：Agent 输出解析失败时，仍须落盘该次**原始返回**，不得因解析失败而跳过审计写入；**v7.2** 输出校验重试的每一次失败尝试同样落盘。
+- **输出校验重试（v7.2）**：JSON 解析 / sanitize 失败时，在 Agent 层用相同 messages 再 generate（默认额外 2 次，可配 0 关闭）；与 `llm.max_retries` 分开计数；**不**放宽契约、**不**错误回灌 prompt、**不**改编排 FSM。
+- **Script Writer 扁平串词（v7.3）**：Agent 输出定长 `script_before`；系统按 `episode_track_index` 映射回既有 `script` schema；**不改** snapshot / 阶段二/三消费契约。细节见 `ScriptWriter_FlatCue_Adapter.md`。
 
-### 6.4 当前版本成功指标（v6.8）
+### 6.4 当前版本成功指标（v7.4）
 
 | 指标 | 目标 |
 |------|------|
@@ -854,6 +943,7 @@
 | **串词→歌 intro 对齐** | 在可用分析路径下，长串词尾部有合理的 intro 垫底、收尾与主歌衔接更自然；失败时稳定回退 |
 | **串词→歌重叠合法性** | 任意边界均满足 `crossfade <= 串词时长`，避免出现 crossfade 大于串词时长导致的异常混音 |
 | **intro 估计稳定性** | `estimate_track_intro_seconds` 在噪声/装饰音场景下误触发率下降，`confidence/reason` 可用于后续策略分流 |
+| **intro 结构边界对齐（v7.4）** | 相对人工 `vm_seconds` 参考集，平均绝对误差与 ≤2s 占比优于 v4.4「起声即 intro」基线；接口契约不变 |
 | **阶段三可编辑混音参数** | 用户可在最终导出前基于阶段二输出 JSON 微调 crossfade 参数，并通过阶段三获得最终 `wav/mp3` |
 | **OpenRouter 可配置 provider** | 在 `config.yaml` 中可配置 `provider`（可留空走自动路由）与 `model`，便于调试且请求层行为一致 |
 | **Developer Console 可用** | 本机 Gradio 控制台可改参、Run、结构化查看 Pipeline 各阶段状态与产物；CLI 仍可用 |
@@ -870,6 +960,12 @@
 | **Critic Schema 一致性** | Planner Critic 无 `overall_score`；Curator Critic `actions` 含 `location`，与 Planner 对齐 |
 | **revision 护栏不误杀** | staged Critic revision 不以 `problem` 文本比对硬判新 issue，不因此中止运行 |
 | **失败路径可消费 snapshot** | 写出 `state_partial` 时同目录同步产出可被 Console/阶段二消费的 snapshot |
+| **OpenRouter 联网搜索（全 Agent）** | OpenRouter 下可配置启用 `openrouter:web_search`；各 Agent 按需联网；与结构化输出及 snapshot 契约兼容 |
+| **Console DEBUG 全量日志** | Console 可观测与 CLI `--log-level DEBUG` 对等的全量日志；失败时有更详细报错 |
+| **解析失败审计原文** | Agent JSON/结构化解析失败时审计仍保存该次原始返回 |
+| **Console 联网搜索调试** | 运行态洞察展示 `web_search_requests`；可配 engine / max_results / max_uses（默认 auto / 5 / 不限制） |
+| **Agent 输出校验重试** | 解析/sanitize 失败可按独立配置再 generate；与 HTTP retry 分计；0 即关闭；契约与 FSM 不变 |
+| **Script Writer 扁平串词** | Agent 输出定长 `script_before`；系统映射回既有 script；snapshot/阶段二契约不变 |
 
 ---
 
@@ -887,9 +983,9 @@
 
 | 需求 | 说明 |
 |------|------|
-| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。Console 支持混音/编排/LLM/TTS 可视化配置（v6.2）；多 agent 编排默认 `staged`，可切 `legacy`（v6.0） |
-| **错误提示** | 关键步骤失败时给出明确错误信息 |
-| **日志** | 记录主要步骤执行状态，便于排查问题 |
+| **交互方式** | 命令行仍可用；开发调试优先使用本地 Gradio Developer Console（v5.0+）。Console 支持混音/编排/LLM/TTS 可视化配置（v6.2）；多 agent 编排默认 `staged`，可切 `legacy`（v6.0）；**v7.1** 支持 DEBUG 全量日志与联网搜索参数控件 |
+| **错误提示** | 关键步骤失败时给出明确错误信息；Console DEBUG 下展示更详细报错 |
+| **日志** | 记录主要步骤执行状态；Console 可选 DEBUG 全量日志便于排查 |
 
 ### 7.3 可维护性需求
 

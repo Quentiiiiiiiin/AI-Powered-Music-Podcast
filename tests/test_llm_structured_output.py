@@ -179,17 +179,7 @@ def test_script_writer_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp
 
     def handler(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
-        reply = {
-            "segments": [
-                {
-                    "segment_id": "seg_01",
-                    "script": {
-                        "segment_intro": "开场白含有汉字用于语言校验。",
-                        "between_tracks": [{"after_track_index": 0, "text": None}],
-                    },
-                },
-            ]
-        }
+        reply = {"script_before": ["开场白含有汉字用于语言校验。", None]}
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": json.dumps(reply, ensure_ascii=False)}}]},
@@ -200,9 +190,29 @@ def test_script_writer_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp
     llm_cfg = LLMConfig(api_key="k", base_url="https://openrouter.ai/api/v1", model="m")
     settings = Settings(app=AppConfig(output_dir=str(tmp_path)), llm=llm_cfg)
     state = initialize_plan_state(_episode_request(tmp_path))
+    state["segments"][0]["playlist"] = [
+        {
+            "track": "T1",
+            "artist": "A1",
+            "selection_reason": "x",
+            "sequence_role": "main",
+            "planner_alignment": [],
+            "transition_logic": "",
+        },
+        {
+            "track": "T2",
+            "artist": "A2",
+            "selection_reason": "x",
+            "sequence_role": "main",
+            "planner_alignment": [],
+            "transition_logic": "",
+        },
+    ]
     ScriptWriterAgent(llm_client=OpenAICompatibleLLMClient(llm_cfg), settings=settings).run(state)
 
     assert bodies[0]["response_format"]["json_schema"]["name"] == "podcast_script_writer_response"
+    arr = bodies[0]["response_format"]["json_schema"]["schema"]["properties"]["script_before"]
+    assert arr["minItems"] == 2 and arr["maxItems"] == 2
 
 
 def test_critic_response_format_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

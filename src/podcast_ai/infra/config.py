@@ -14,13 +14,60 @@ from pydantic_settings import (
 )
 
 
+class WebSearchConfig(BaseModel):
+    """v7.0：OpenRouter Server Tool `openrouter:web_search` 参数（仅 OpenRouter 网关生效）。"""
+
+    enabled: bool = Field(
+        default=False,
+        description="是否注入 openrouter:web_search；默认 false 控成本",
+    )
+    engine: str = Field(default="auto", description="搜索引擎：auto/native/exa/firecrawl/parallel/perplexity")
+    max_results: int = Field(default=5, description="每次搜索返回条数上限（1–25）")
+    # None = 不写入 parameters；有值才限制单次请求内搜索次数
+    max_uses: int | None = Field(default=None, description="单次请求内最大搜索次数；None 表示不限制")
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _normalize_engine(cls, value: object) -> str:
+        raw = str(value or "auto").strip().lower() or "auto"
+        allowed = {"auto", "native", "exa", "firecrawl", "parallel", "perplexity"}
+        if raw not in allowed:
+            raise ValueError(
+                "llm.web_search.engine 仅支持 auto/native/exa/firecrawl/parallel/perplexity "
+                f"（收到：{value!r}）"
+            )
+        return raw
+
+    @field_validator("max_results")
+    @classmethod
+    def _check_max_results(cls, value: int) -> int:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1 or value > 25:
+            raise ValueError(f"llm.web_search.max_results 须为 1–25 的整数（收到：{value!r}）")
+        return value
+
+    @field_validator("max_uses")
+    @classmethod
+    def _check_max_uses(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"llm.web_search.max_uses 须为 >=1 的整数或 null（收到：{value!r}）")
+        return value
+
+
 class LLMConfig(BaseModel):
     provider: str = "openai_compatible"
     api_key: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
     model: str = "minimax/minimax-m2.5"
     timeout_seconds: int = 60
+    # HTTP 传输/网关失败重试（仅 llm_client；与 output_max_retries 分计）
     max_retries: int = 2
+    # v7.2：JSON 解析 / sanitize 失败后的额外 generate 次数（不含首次；默认 2 → 最多 3 次；0=关闭）
+    output_max_retries: int = Field(
+        default=2,
+        description="Agent 输出校验额外 generate 次数；0=关闭；与 max_retries（HTTP）分计",
+    )
     # v3.4：None = 仅当 base_url 指向 openrouter.ai 时在请求体附加 response_format；True/False 强制开关
     structured_output: bool | None = Field(
         default=None,
@@ -29,6 +76,15 @@ class LLMConfig(BaseModel):
     # v4.6：OpenRouter 供应方路由（与 llm.provider「客户端实现类型」无关）。留空=请求体不携带 provider，由 OpenRouter 自动选路。
     # 非空：可为 JSON 对象字符串（与官方 provider 字段一致），或单个供应方 slug（实现为 {"only": [slug]}）。
     openrouter_provider: str = ""
+    # v7.0：Server Tool 联网搜索（OpenRouter only；默认关闭）
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+
+    @field_validator("output_max_retries")
+    @classmethod
+    def _check_output_max_retries(cls, value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"llm.output_max_retries 须为 >=0 的整数（收到：{value!r}）")
+        return value
 
 
 def is_openrouter_base_url(url: str) -> bool:
@@ -49,6 +105,23 @@ def should_use_structured_output(cfg: LLMConfig) -> bool:
     if cfg.structured_output is False:
         return False
     return is_openrouter_base_url(cfg.base_url)
+
+
+def should_inject_web_search(cfg: LLMConfig) -> bool:
+    """v7.0：仅当 OpenRouter 网关且 llm.web_search.enabled 时注入 Server Tool。"""
+    return bool(cfg.web_search.enabled) and is_openrouter_base_url(cfg.base_url)
+
+
+def build_openrouter_web_search_tool(cfg: LLMConfig) -> dict[str, Any]:
+    """构造官方形态的 `openrouter:web_search` tool 对象（不含弃用 plugins / :online）。"""
+    ws = cfg.web_search
+    params: dict[str, Any] = {
+        "engine": ws.engine,
+        "max_results": ws.max_results,
+    }
+    if ws.max_uses is not None:
+        params["max_uses"] = ws.max_uses
+    return {"type": "openrouter:web_search", "parameters": params}
 
 
 class ElevenLabsConfig(BaseModel):

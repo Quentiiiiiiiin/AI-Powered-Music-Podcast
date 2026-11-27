@@ -182,7 +182,8 @@ class Stage2BetweenTrackItem(BaseModel):
 class Stage2Script(BaseModel):
     """阶段二快照中的脚本文本结构。"""
 
-    segment_intro: str
+    # v7.3：与 between_tracks.text 一致，允许 null（无段首串词）
+    segment_intro: str | None = None
     between_tracks: List[Stage2BetweenTrackItem] = Field(default_factory=list)
 
 

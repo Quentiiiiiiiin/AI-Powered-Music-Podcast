@@ -158,9 +158,17 @@ llm:
   model: "openai/gpt-4o-mini"
   timeout_seconds: 60
   max_retries: 2
+  # v7.2：JSON/sanitize 失败后的额外 generate 次数（不含首次；与 max_retries 分计；0=关闭）
+  output_max_retries: 2
   # v4.6：OpenRouter 供应方路由。留空=请求体不携带 provider（由 OpenRouter 自动选路）。
   # 非空：填单个 slug（实现为 {"only":[slug]}）或 JSON 对象字符串（与官方 provider 字段一致）。
   openrouter_provider: "azure/swedencentral"
+  # v7.0：OpenRouter Server Tool 联网搜索（默认关闭；启用后各 Agent 请求附带 openrouter:web_search）
+  web_search:
+    enabled: false
+    engine: "auto"
+    max_results: 5
+    # max_uses: null
 
 tts:
   provider: "elevenlabs"
@@ -189,6 +197,12 @@ PODCAST_AI_LLM__API_KEY=your_llm_api_key_here
 # PODCAST_AI_LLM__BASE_URL=https://openrouter.ai/api/v1
 # v4.6：OpenRouter 供应方路由（仅当 base_url 为 OpenRouter 时生效；留空=自动选路）
 # PODCAST_AI_LLM__OPENROUTER_PROVIDER=
+# v7.0：联网搜索（嵌套配置）
+# PODCAST_AI_LLM__WEB_SEARCH__ENABLED=false
+# PODCAST_AI_LLM__WEB_SEARCH__ENGINE=auto
+# PODCAST_AI_LLM__WEB_SEARCH__MAX_RESULTS=5
+# v7.2：输出校验额外 generate 次数（与 PODCAST_AI_LLM__MAX_RETRIES 分计）
+# PODCAST_AI_LLM__OUTPUT_MAX_RETRIES=2
 PODCAST_AI_TTS__PROVIDER=elevenlabs
 PODCAST_AI_TTS__ELEVENLABS__API_KEY=your_elevenlabs_api_key_here
 PODCAST_AI_TTS__ELEVENLABS__VOICE_ID=your_elevenlabs_voice_id_here
@@ -290,6 +304,48 @@ def create_episode_cli(
     typer.echo(f"- 音频：{result.audio_path}")
     typer.echo(f"- Show Notes：{show_notes_path}")
     typer.echo(f"- 时长：{result.actual_duration_seconds}s，曲目：{len(result.tracks)} 首")
+
+
+@app.command("decode-ncm")
+def decode_ncm_cli(
+    source_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="网易云下载后的原版 .ncm 目录（默认不递归子文件夹）。",
+    ),
+    output_dir: Path = typer.Argument(
+        ...,
+        path_type=Path,
+        help="解码后的输出目录（flac/mp3）。",
+    ),
+    recursive: bool = typer.Option(
+        False,
+        "--recursive",
+        "-r",
+        help="递归处理子文件夹中的 .ncm。",
+    ),
+) -> None:
+    """将网易云 .ncm 批量解码为 mp3/flac（调用仓库内 tools/ncmdump）。"""
+    from podcast_ai.infra.ncmdump import decode_ncm_directory
+
+    try:
+        result = decode_ncm_directory(
+            source_dir,
+            output_dir,
+            recursive=recursive,
+        )
+    except PodcastAIError as exc:
+        typer.echo(f"[错误] NCM 解码失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("NCM 解码完成：")
+    typer.echo(f"- 源目录：{result.source_dir}")
+    typer.echo(f"- 输出目录：{result.output_dir}")
+    typer.echo(f"- .ncm 数量：{result.ncm_count}")
+    typer.echo(f"- 已清空原版目录文件：{result.cleared_source_files}")
+    typer.echo(f"- ncmdump：{result.binary}")
+    if result.stdout:
+        typer.echo(result.stdout)
 
 
 @app.command("create-episode-stage2")

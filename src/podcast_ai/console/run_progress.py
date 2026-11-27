@@ -20,6 +20,9 @@ _RE_STAGED_REV = re.compile(
     r"StagedOrchestrator\s+stage=(?P<stage>\S+)\s+rev=(?P<rev>\d+)",
 )
 _RE_STAGED_FAIL = re.compile(r"StagedOrchestrator\s+stage=(?P<stage>\S+)\s+FAILED")
+_RE_WEB_SEARCH_REQ = re.compile(
+    r"server_tool_use\.web_search_requests=(?P<n>\d+)",
+)
 
 
 @dataclass
@@ -32,6 +35,8 @@ class PlanRunProgress:
     # v6.0 staged：当前闸门阶段 / 修订轮次（legacy 通常为 None）
     stage: str | None = None
     revision: int | None = None
+    # v7.1：最近一次 LLM usage 中的 web_search_requests；无该日志则为 None
+    web_search_requests: int | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -41,6 +46,7 @@ class PlanRunProgress:
             "failure_reason": self.failure_reason,
             "stage": self.stage,
             "revision": self.revision,
+            "web_search_requests": self.web_search_requests,
             "events": list(self.events),
         }
 
@@ -56,6 +62,7 @@ def parse_plan_progress_from_logs(logs: str) -> PlanRunProgress:
     failure_reason: str | None = None
     stage: str | None = None
     revision: int | None = None
+    web_search_requests: int | None = None
     events: list[dict[str, Any]] = []
 
     for raw_line in (logs or "").splitlines():
@@ -121,6 +128,17 @@ def parse_plan_progress_from_logs(logs: str) -> PlanRunProgress:
         if m_staged_start:
             stage = m_staged_start.group("stage").strip()
             events.append({"event": "stage_start", "stage": stage})
+            continue
+
+        m_ws = _RE_WEB_SEARCH_REQ.search(line)
+        if m_ws:
+            web_search_requests = int(m_ws.group("n"))
+            events.append(
+                {
+                    "event": "web_search_usage",
+                    "web_search_requests": web_search_requests,
+                }
+            )
 
     return PlanRunProgress(
         iteration=iteration,
@@ -128,6 +146,7 @@ def parse_plan_progress_from_logs(logs: str) -> PlanRunProgress:
         failure_reason=failure_reason,
         stage=stage,
         revision=revision,
+        web_search_requests=web_search_requests,
         events=events,
     )
 
@@ -142,6 +161,7 @@ def progress_from_events(
     current_agent: str | None = None
     stage: str | None = None
     revision: int | None = None
+    web_search_requests: int | None = None
     err = failure_reason
     for ev in events:
         if not isinstance(ev, dict):
@@ -168,12 +188,18 @@ def progress_from_events(
                 err = msg.strip()
             elif ev.get("event") == "stage_failed" and not err:
                 err = f"stage_failed:{stage or 'unknown'}"
+        if ev.get("web_search_requests") is not None:
+            try:
+                web_search_requests = int(ev["web_search_requests"])
+            except (TypeError, ValueError):
+                pass
     return PlanRunProgress(
         iteration=iteration,
         current_agent=current_agent,
         failure_reason=err,
         stage=stage,
         revision=revision,
+        web_search_requests=web_search_requests,
         events=list(events),
     )
 
@@ -189,5 +215,10 @@ def merge_progress(
         failure_reason=primary.failure_reason or fallback.failure_reason,
         stage=primary.stage or fallback.stage,
         revision=primary.revision if primary.revision is not None else fallback.revision,
+        web_search_requests=(
+            primary.web_search_requests
+            if primary.web_search_requests is not None
+            else fallback.web_search_requests
+        ),
         events=primary.events or fallback.events,
     )

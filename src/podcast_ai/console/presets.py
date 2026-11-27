@@ -22,8 +22,14 @@ PRESET_KEYS: tuple[str, ...] = (
     "llm_model",
     "openrouter_provider",
     "llm_base_url",
+    "web_search_enabled",
+    "web_search_engine",
+    "web_search_max_results",
+    "web_search_max_uses",
     "snapshot_path",
     "music_dir",
+    "ncm_source_dir",
+    "ncm_output_dir",
     "tts_provider",
     "tts_model",
     "tts_voice_id",
@@ -36,6 +42,7 @@ PRESET_KEYS: tuple[str, ...] = (
     "voice_gain_db",
     "voice_music_overlay_music_max_db",
     "voice_music_post_overlay_ramp_seconds",
+    "debug",
 )
 
 _SECRET_KEY_RE = re.compile(r"(api_key|apikey|secret|token|password)", re.IGNORECASE)

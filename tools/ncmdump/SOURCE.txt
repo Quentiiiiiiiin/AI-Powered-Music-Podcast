@@ -1,0 +1,4 @@
+ncmdump 1.5.1 (windows-amd64)
+Upstream: https://github.com/taurusxin/ncmdump
+Release asset: ncmdump-1.5.1-windows-amd64.zip
+License: follow upstream repository.

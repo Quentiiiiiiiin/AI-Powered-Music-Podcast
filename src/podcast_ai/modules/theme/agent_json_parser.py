@@ -8,6 +8,7 @@ from typing import Any
 from podcast_ai.core.exceptions import AIServiceError
 from podcast_ai.modules.theme.json_repair import (
     dump_json_repair_debug,
+    extract_first_json_substring,
     repair_and_standardize_json,
     standardize_llm_json_text,
 )
@@ -30,8 +31,11 @@ def parse_agent_json_response(
 
     解析策略：
     - 先对 raw 原文直接 json.loads，避免标准化改写文本内容
-    - structured=True（OpenRouter strict 主路径）：禁用 repair；仅在原文失败时尝试 lightweight standardize 后再次 loads
-    - structured=False：原文失败后，再尝试 standardize；仅在仍失败且 allow_repair_fallback=True 时调用 repair_and_standardize_json
+    - 原文失败：lightweight standardize（去 fence）后再 loads
+    - 仍失败：尝试提取第一个完整 JSON 对象/数组子串后再 loads
+      （应对 web_search / 工具调用后模型在 content 夹带搜索叙述；**不做**尾逗号/补括号等激进 repair）
+    - structured=True：禁用 repair_and_standardize_json；提取失败则报错
+    - structured=False 且 allow_repair_fallback=True：再调用 repair_and_standardize_json
 
     返回保证：
     - 顶层 JSON 必须是对象 dict，否则抛 AIServiceError
@@ -57,14 +61,24 @@ def parse_agent_json_response(
         except Exception as exc:  # noqa: BLE001
             parse_error = exc
 
-        # structured 主路径禁用 repair：只要 json.loads/顶层类型检查失败就直接报错。
+        # web_search / 思维链常见：前缀叙述 + 完整 JSON + 后缀自检。
+        # 仅抽取完整对象子串，不改写 JSON 内部、不补闭合括号（与 repair 路径分离）。
+        # prefer_object：避免叙述里的 `field[0]` 被当成 JSON 数组起点。
+        extracted = extract_first_json_substring(standardized, prefer_object=True)
+        if extracted is not None and extracted != standardized:
+            try:
+                return _loads_as_dict(extracted)
+            except Exception as exc_ext:  # noqa: BLE001
+                parse_error = exc_ext
+
+        # structured 主路径禁用激进 repair：抽取失败则报错。
         if structured or not allow_repair_fallback:
             dump_info = dump_json_repair_debug(
                 output_dir=output_dir,
                 agent_name=agent_label,
                 state=state,
                 raw=raw,
-                repaired=standardized,
+                repaired=extracted if extracted is not None else standardized,
                 exc=parse_error if parse_error is not None else RuntimeError("JSON parse failed"),
             )
             logger.error(

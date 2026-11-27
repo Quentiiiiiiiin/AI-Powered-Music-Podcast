@@ -177,21 +177,40 @@ def test_music_curator_agent_json_repair_success(tmp_path: Path) -> None:
 def test_script_writer_agent_json_repair_success(tmp_path: Path) -> None:
     request = _request(tmp_path)
     state = initialize_plan_state(request)
+    state["segments"][0]["playlist"] = [
+        {
+            "track": "T1",
+            "artist": "A1",
+            "selection_reason": "x",
+            "sequence_role": "main",
+            "planner_alignment": [],
+            "transition_logic": "",
+        },
+        {
+            "track": "T2",
+            "artist": "A2",
+            "selection_reason": "x",
+            "sequence_role": "main",
+            "planner_alignment": [],
+            "transition_logic": "",
+        },
+        {
+            "track": "T3",
+            "artist": "A3",
+            "selection_reason": "x",
+            "sequence_role": "main",
+            "planner_alignment": [],
+            "transition_logic": "",
+        },
+    ]
 
-    # script writer 要求 segment_intro 非空且语言匹配（zh：至少包含中文字符）
     bad = """
     ```json
     {
-      "segments": [
-        {
-          "script": {
-            "segment_intro": "欢迎收听今晚的 Luma Hits。",
-            "between_tracks": [
-              {"after_track_index": 0, "text": null,},
-              {"after_track_index": 1, "text": "下一首把情绪推高。",},
-            ],
-          }
-        }
+      "script_before": [
+        "欢迎收听今晚的 Luma Hits。",
+        null,
+        "下一首把情绪推高。",
       ],
     }
     ```

@@ -5,6 +5,7 @@ v6.3：staged Planner / Music Curator 对齐 Guide 全文。
 v6.5：仅 **Planner 阶段 Critic** 对齐 `PROMPT_Guide_Planner_Critic.txt`。
 v6.6：新增 **Music Curator 阶段 Critic** 对齐 `PROMPT_Guide_Curator_Critic.txt`
 （维度与 Planner Critic 分离）。Script Writer Critic / legacy Critic 本轮仍未换专用 Guide。
+v7.4：各 Agent staged envelope 增加 OUTPUT SHAPE 嵌套示例，禁止把子字段摊到顶层。
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ _GUIDE_PLANNER = "PROMPT_Guide_Planner.txt"
 _GUIDE_MUSIC_CURATOR = "PROMPT_Guide_Music-Curator.txt"
 _GUIDE_PLANNER_CRITIC = "PROMPT_Guide_Planner_Critic.txt"
 _GUIDE_CURATOR_CRITIC = "PROMPT_Guide_Curator_Critic.txt"
-
+_GUIDE_SCRIPT_WRITER = "PROMPT_Guide_Script-Writer.txt"
 
 def _state_json(state: dict[str, Any]) -> str:
     return json.dumps(state, ensure_ascii=False, indent=2)
@@ -64,6 +65,160 @@ def _mode_envelope(mode: Literal["generation", "revision"], *, revision_focus: s
     ).strip()
 
 
+# v7.4：各 Agent envelope 强制嵌套形状，防止把子字段摊到顶层（DeepSeek 等弱 schema 约束时尤甚）。
+_PLANNER_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory; do NOT flatten leaf fields to the root):
+    Top-level keys ONLY: meta | global_constraints | plan | segments
+    (JSON null on a top-level key = omit that block in revision merge).
+
+    Example (abbreviated; keep real content longer):
+    {
+      "meta": {
+        "theme_description": "...",
+        "theme_type": "...",
+        "theme_subject": "...",
+        "theme_relationship": "..."
+      },
+      "global_constraints": {
+        "energy_strategy": "...",
+        "sonic_world": ["..."],
+        "avoid": ["..."]
+      },
+      "plan": {
+        "segment_count": 3,
+        "episode_direction": "...",
+        "segments_design": "..."
+      },
+      "segments": [
+        {
+          "segment_id": "seg_1",
+          "order": 1,
+          "name": "...",
+          "target_duration_seconds": 600,
+          "narrative_function": "...",
+          "scene": "...",
+          "sonic_direction": ["..."],
+          "lyrical_direction": ["..."],
+          "anchor_tracks": [],
+          "reference_material": [],
+          "sequence_direction": [{"phase": "...", "function": "...", "musical_direction": "..."}],
+          "transition_to_next": "..."
+        }
+      ]
+    }
+
+    FORBIDDEN as top-level keys: theme_description, theme_type, segment_count,
+    episode_direction, segments_design, emotion_curve, mood, segment_design,
+    playlist, script, critic, control.
+    """
+).strip()
+
+_CURATOR_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory; do NOT flatten):
+    Top-level key ONLY: segments
+    Each segments[i] object may contain playlist only (structure fields are locked).
+
+    Example (abbreviated):
+    {
+      "segments": [
+        {
+          "playlist": [
+            {
+              "track": "...",
+              "artist": "...",
+              "selection_reason": "...",
+              "sequence_role": "...",
+              "planner_alignment": ["..."],
+              "transition_logic": "..."
+            }
+          ]
+        }
+      ]
+    }
+
+    FORBIDDEN as top-level keys: playlist, track, artist, meta, plan, script,
+    critic, control, theme_description, global_constraints.
+    Do NOT write bpm on playlist items.
+    """
+).strip()
+
+_SCRIPT_WRITER_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: script_before (array length = N).
+
+    Example (N=5, sparse cues):
+    {"script_before": ["开场……", null, null, "中间……", "最后一首前收束……"]}
+
+    FORBIDDEN as top-level keys: segments, script, segment_intro, between_tracks,
+    playlist, plan, critic, control, or any free-form prose wrapper.
+    """
+).strip()
+
+_PLANNER_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+
+    Example (abbreviated):
+    {
+      "critic": {
+        "scores": {
+          "theme_definition": 80,
+          "theme_relationship": 80,
+          "musical_concept": 80,
+          "segment_differentiation": 80,
+          "sequence_narrative": 80,
+          "curator_actionability": 80,
+          "creative_freedom": 80
+        },
+        "issues": [],
+        "actions": []
+      }
+    }
+
+    FORBIDDEN as top-level keys: scores, issues, actions, overall_score, pass,
+    threshold, control, next_agent, plan, segments, playlist, script.
+    """
+).strip()
+
+_CURATOR_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+
+    Example (abbreviated):
+    {
+      "critic": {
+        "scores": {
+          "planner_alignment": 80,
+          "thematic_relevance": 80,
+          "sequence_coherence": 80,
+          "audience_listening_quality": 80,
+          "track_fitness": 80
+        },
+        "issues": [],
+        "actions": []
+      }
+    }
+
+    FORBIDDEN as top-level keys: scores, issues, actions, overall_score, pass,
+    threshold, control, next_agent, plan, segments, playlist, script.
+    """
+).strip()
+
+_WRITER_CRITIC_OUTPUT_SHAPE = dedent(
+    """
+    OUTPUT SHAPE (nesting is mandatory):
+    Top-level key ONLY: critic
+    Example: {"critic": {"scores": {...}, "issues": [], "actions": []}}
+    FORBIDDEN as top-level keys: scores, issues, actions, pass, threshold, control.
+    """
+).strip()
+
+
 def _user_plan_state_message(state: dict[str, Any], *, mode: str, extra: str = "") -> str:
     parts = [f"MODE: {mode}", ""]
     if extra.strip():
@@ -89,20 +244,61 @@ def build_planner_staged_messages(state: dict[str, Any], mode: str) -> list[dict
 
         {_mode_envelope(m, revision_focus="Fix Planner deliverables only; do not invent playlist/script.")}
 
+        {_PLANNER_OUTPUT_SHAPE}
+
         === PLANNER THINKING GUIDE (verbatim from {_GUIDE_PLANNER}) ===
         """
     ).strip()
     system = f"{envelope}\n\n{guide}"
-    user = _user_plan_state_message(
-        state,
-        mode=m,
-        extra=(
-            "REVISION focus: follow critic.issues / actions targeting Planner; "
-            "copy untouched Planner fields verbatim when possible."
-            if m == "revision"
-            else ""
-        ),
-    )
+
+    cleaned_state = dedent(
+        f"""
+        THEME: {state.get("meta", {}).get("theme", "")}
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        TARGET DURATION: {state.get("meta", {}).get("target_duration_seconds", "")}
+        THEME TYPE: {state.get("meta", {}).get("theme_type", "")}
+        THEME SUBJECT: {state.get("meta", {}).get("theme_subject", "")}
+        THEME RELATIONSHIP: {state.get("meta", {}).get("theme_relationship", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        PLAN: {state.get("plan")}
+        SEGMENTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "narrative_function": s.get("narrative_function"),
+            "scene": s.get("scene"),
+            "sonic_direction": s.get("sonic_direction"),
+            "lyrical_direction": s.get("lyrical_direction"),
+            "anchor_tracks": s.get("anchor_tracks"),
+            "reference_material": s.get("reference_material"),
+            "sequence_direction": s.get("sequence_direction"),
+            "transition_to_next": s.get("transition_to_next"),
+          }
+          for s in state.get("segments", [])
+        ]}
+        """
+    ).strip()
+
+    planner_issues = [
+        i for i in state.get("critic", {}).get("issues", [])
+    ]
+    planner_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+    ]
+
+    user = dedent(
+        f"""
+        MODE: {m}
+        {cleaned_state}
+        PLANNER ISSUES: {planner_issues}
+        PLANNER ACTIONS: {planner_actions}
+        """
+    ).strip()
+
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -119,47 +315,132 @@ def build_music_curator_staged_messages(state: dict[str, Any], mode: str) -> lis
         === STAGE-GATED ORCHESTRATION ENVELOPE (v6.3 staged) ===
         Current gate: MUSIC CURATOR. Planner output is LOCKED — do not change structure fields.
 
-        {_mode_envelope(m, revision_focus="Change only playlist items referenced by critic.actions.")}
+        {_mode_envelope(m, revision_focus="Change only playlist items referenced by critic.actions. Keep anything else unchanged.")}
+
+        {_CURATOR_OUTPUT_SHAPE}
 
         === MUSIC CURATOR THINKING GUIDE (verbatim from {_GUIDE_MUSIC_CURATOR}) ===
         """
     ).strip()
     system = f"{envelope}\n\n{guide}"
-    user = _user_plan_state_message(
-        state,
-        mode=m,
-        extra=(
-            "REVISION focus: keep untouched segment playlists identical to state; "
-            "Planner fields are read-only."
-            if m == "revision"
-            else "Generate playlist"
-        ),
-    )
+
+    cleaned_state = dedent(
+        f"""
+        THEME DESCRIPTION: {state.get("meta", {}).get("theme_description", "")}
+        LANGUAGE: {state.get("meta", {}).get("language", "")}
+        TARGET DURATION: {state.get("meta", {}).get("target_duration_seconds", "")}
+        THEME TYPE: {state.get("meta", {}).get("theme_type", "")}
+        THEME SUBJECT: {state.get("meta", {}).get("theme_subject", "")}
+        THEME RELATIONSHIP: {state.get("meta", {}).get("theme_relationship", "")}
+        GLOBAL CONSTRAINTS: {state.get("global_constraints")}
+        PLAN: {state.get("plan")}
+        SEGMENTS:
+        {[
+          {
+            "segment_id": s.get("segment_id"),
+            "order": s.get("order"),
+            "name": s.get("name"),
+            "target_duration_seconds": s.get("target_duration_seconds"),
+            "narrative_function": s.get("narrative_function"),
+            "scene": s.get("scene"),
+            "sonic_direction": s.get("sonic_direction"),
+            "lyrical_direction": s.get("lyrical_direction"),
+            "anchor_tracks": s.get("anchor_tracks"),
+            "reference_material": s.get("reference_material"),
+            "sequence_direction": s.get("sequence_direction"),
+            "transition_to_next": s.get("transition_to_next"),
+            "playlist": s.get("playlist"),
+          }
+          for s in state.get("segments", [])
+        ]}
+        """
+    ).strip()
+
+    curator_issues = [
+        i for i in state.get("critic", {}).get("issues", [])
+    ]
+    curator_actions = [
+        a for a in state.get("critic", {}).get("actions", [])
+    ]
+
+    user = dedent(
+        f"""
+        MODE: {m}
+        {cleaned_state}
+        CURATOR ISSUES: {curator_issues}
+        CURATOR ACTIONS: {curator_actions}
+        """
+    ).strip()
+
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def build_script_writer_staged_messages(state: dict[str, Any], mode: str) -> list[dict[str, str]]:
-    """Script Writer 闸门：只写 script；结构与 playlist 已锁定。（v6.3 未纳入 Guide）"""
-    m = _normalize_mode(mode)
-    revision_hint = (
-        "REVISION：根据 critic.issues / actions 修复 script；不要改 playlist 或段落骨架。"
-        if m == "revision"
-        else "GENERATION：为每个 segment 填写 script。"
+    """Script Writer 闸门：扁平 script_before；结构与 playlist 已锁定。"""
+    from podcast_ai.modules.theme.script_flat_mapper import (
+        build_flat_tracks,
+        build_writer_planning_brief,
+        flatten_script_before_from_state,
+        format_flat_playlist_lines,
+        translate_locations_for_prompt,
     )
-    system = dedent(
+
+    m = _normalize_mode(mode)
+    guide = _load_guide(_GUIDE_SCRIPT_WRITER)
+    flat = build_flat_tracks(state.get("segments") or [])
+    n = len(flat)
+    envelope = dedent(
         f"""
-        You are the Script Writer Agent in Stage-Gated mode (v6.0 staged).
+        === STAGE-GATED ORCHESTRATION ENVELOPE (v7.3 staged) ===
         Current gate: SCRIPT WRITER. Planner structure and Curator playlist are LOCKED.
 
-        {revision_hint}
+        {_mode_envelope(m, revision_focus="Fix cues via full-length script_before only; do not change playlist or segment structure.")}
 
-        Write ONLY segments[*].script (segment_intro + between_tracks).
-        Prefer narrative_function / scene from Planner when writing host voice.
-        FORBIDDEN: playlist, segment structure fields, critic.*, control.next_agent.
-        Output a single JSON object matching the Script Writer response schema.
+        OUTPUT CONTRACT:
+        - Top-level JSON key: script_before only (length N={n}).
+        - script_before[i] = cue before episode track i; string|null.
+        - HARD: script_before[{n - 1}] MUST be a non-null closing cue (goodbye before last track).
+        - HARD: sparse cues only — for N={n}, absolute max non-null ≈ {7 if n <= 24 else 9}; prefer 5–7.
+        - FINAL ASSISTANT CONTENT must be ONLY the JSON object (no search narration, no checklist,
+          no markdown fences). Web search is a server tool — use results silently in the cues.
+        - System maps to segments[*].script; do NOT emit segment_intro/between_tracks.
+
+        {_SCRIPT_WRITER_OUTPUT_SHAPE}
+
+        === SCRIPT WRITER THINKING GUIDE (verbatim from {_GUIDE_SCRIPT_WRITER}) ===
         """
     ).strip()
-    user = _user_plan_state_message(state, mode=m)
+    system = f"{envelope}\n\n{guide}".strip()
+
+    writer_actions = [
+        a
+        for a in (state.get("critic") or {}).get("actions", [])
+        if isinstance(a, dict) and a.get("target_agent") == "Script Writer"
+    ]
+    actions_view = translate_locations_for_prompt(writer_actions, flat)
+    previous = flatten_script_before_from_state(state) if m == "revision" else []
+    brief = build_writer_planning_brief(state)
+    playlist_block = format_flat_playlist_lines(flat) or "(empty)"
+
+    # v7.3：不倾倒整份 PlanState；输入 = 策划要点 + 扁平歌单
+    user = dedent(
+        f"""
+        MODE: {m}
+        N (total tracks): {n}
+
+        WRITER ACTIONS (may include episode_track_index_hint):
+        {json.dumps(actions_view, ensure_ascii=False)}
+
+        PLANNING BRIEF:
+        {brief}
+
+        FLAT PLAYLIST:
+        {playlist_block}
+
+        PREVIOUS script_before (revision baseline):
+        {json.dumps(previous, ensure_ascii=False)}
+        """
+    ).strip()
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -235,6 +516,8 @@ def _build_planner_critic_staged_messages(
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
 
+        {_PLANNER_CRITIC_OUTPUT_SHAPE}
+
         === PLANNER CRITIC THINKING GUIDE (verbatim from {_GUIDE_PLANNER_CRITIC}) ===
         """
     ).strip()
@@ -277,8 +560,9 @@ def _build_curator_critic_staged_messages(
         - issues: type, severity (minor|major|critical), location, problem, reason, suggestion.
         - actions: target_agent, location, instruction (location required).
         - Output ONLY {{"critic": {{scores, issues, actions}}}}.
-        FORBIDDEN: 
-        rewriting plan/playlist/script yourself.
+        FORBIDDEN: rewriting plan/playlist/script yourself.
+
+        {_CURATOR_CRITIC_OUTPUT_SHAPE}
 
         === CURATOR CRITIC THINKING GUIDE (verbatim from {_GUIDE_CURATOR_CRITIC}) ===
         """
@@ -343,6 +627,8 @@ def build_critic_staged_messages(
         FORBIDDEN: critic.overall_score, critic.pass, critic.threshold, control, next_agent,
         rewriting plan/playlist/script yourself.
         System derives critic.pass from scores + issues/actions (threshold default 80).
+
+        {_WRITER_CRITIC_OUTPUT_SHAPE}
         """
     ).strip()
     user = _user_plan_state_message(state, mode=m, extra=f"STAGE: {stage}")

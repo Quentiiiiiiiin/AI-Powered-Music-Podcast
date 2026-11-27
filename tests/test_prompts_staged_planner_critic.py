@@ -66,6 +66,8 @@ def test_planner_critic_generation_includes_guide_and_mode() -> None:
     assert "0–100" in sys or "0-100" in sys
     assert "FORBIDDEN" in sys
     assert "critic.pass" in sys
+    assert "OUTPUT SHAPE" in sys
+    assert '"critic"' in sys and '"scores"' in sys
     assert "Previous critic snapshot" not in user
     assert len(sys) > 5000
 
@@ -95,3 +97,5 @@ def test_script_writer_critic_still_uses_short_prompt() -> None:
     assert "PLANNER CRITIC THINKING GUIDE" not in sys
     assert "0–100" in sys
     assert "script" in sys.lower()
+    assert "OUTPUT SHAPE" in sys
+    assert '"critic"' in sys

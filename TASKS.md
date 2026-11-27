@@ -1,65 +1,117 @@
-﻿## 版本 v6.8（迭代三十七：revision 护栏放宽 + 失败路径补写 snapshot）
+﻿## 版本 v7.3（迭代四十一：Script Writer 整期扁平串词契约 + 系统回填）
 
-基于 PRD **v6.8** 两处修复/优化：
+基于 PRD **v7.3**、ARCHITECTURE **AD-v7.3** 与根目录 **`ScriptWriter_FlatCue_Adapter.md`**：
 
-1. **关闭** staged Critic revision 的系统硬护栏：曾用「前后 `issue.problem`（及 location+problem 指纹）比对」判定疑似新 issue 并 **报错中止**；现改为**不以规则硬判、更不得因此停止运行**（prompt 侧引导可保留）。
-2. 写出 **`state_partial`** 时，在**同一目录**再写一份由 partial 内 state **派生**、可被 Console / 阶段二消费的 **snapshot**（字段契约与成功路径一致；命名实现约定并文档化）。
+- **Agent 输入**：策划要点 + 带 `episode_track_index` 的扁平歌单（各段 `playlist` 顺序拼接）。
+- **Agent 输出**：定长 `script_before[]`（长度 = 总曲目 `N`；元素 `string | null`；插在第 i 首之前；不设「最后一首之后」槽）。
+- **系统 mapper**：按下标回填既有 `segments[*].script.segment_intro` / `between_tracks`；锚点用下标，不用曲名；映射失败 = sanitize 失败，**禁止半套 script**。
+- **下游不变**：持久化 `script` schema、snapshot、TTS、Console 时间线、Planner/Curator、编排 FSM。
 
-**硬约束**：不破坏正常成功路径的 `pass` / 闸门预算 / 审计；不回退 v6.6 终态 `state` 精简与 v6.7 Critic schema；snapshot **对外格式不变**。
+**硬约束**：不双格式并存；revision 仍输出整份定长 `script_before`；审计保留「原始扁平输出 + 映射后 script」。
 
 ---
 
-### Task 01 - 关闭 revision「禁止新 issue」硬护栏
-- **Task name**: v6.8 - disable revision new-issue hard assert
-- **目标**: staged Critic `mode=revision` 路径**不再**因「疑似新 issue / `problem` 文本不一致」触发 `AIServiceError` 或中止流程。
+### Task 01 - 扁平歌单索引与 Agent 输入装配
+- **Task name**: v7.3 - flatten episode playlist for Writer input
+- **目标**: 从当前 PlanState 计算总曲目 `N`，生成带 `episode_track_index`（及 segment 归属）的扁平歌单视图，供 prompt / schema 共用；`N=0` 时 Writer 阶段明确失败。
 - **类型**: backend
 - **依赖关系**: 无
 - **Description**:
-  - 现状：`critic_agent.py` 在 revision 调用 `assert_staged_revision_constraints`（指纹 = `location::problem`，novel → 抛错）。
-  - 处理：移除该调用，或将「禁止新 issue」分支改为 no-op / 仅 debug 日志；**推荐直接去掉硬校验调用**，少留死代码。
-  - 「issues 减少则分数不得低于上一轮」若同函数内硬抛错：本轮可一并关闭（避免另一类误杀），或仅保留非阻断日志——以实现简洁为准并在注释写明。
-  - **保留** `prompts_staged` 中 revision 的软性引导（不要发明新 issues 等），但不得作为硬失败条件。
-  - 更新/删除依赖该护栏的单测。
-- **Input**: `critic_rules.assert_staged_revision_constraints`、`critic_agent.run`
-- **Output**: revision 措辞变化不再中断编排
+  - 纯函数：`(segment_index, track_index_in_segment) ↔ episode_track_index` 双向可逆。
+  - 输入展示格式对齐 Adapter（`[i] Artist – Track (seg_id)`）；策划要点可压缩，勿整份 PlanState 无脑倾倒。
+  - 建议落在 `script_flat_mapper.py` 或 `script_writer_agent` 旁小模块，避免塞进 orchestrator。
+- **Input**: Curator 已写好的 `segments[*].playlist`
+- **Output**: `N` + 扁平表 + 下标映射表
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/critic_agent.py`
-  - `src/podcast_ai/modules/theme/critic_rules.py`
-  - 相关 `tests/test_critic_*.py`
-- **Estimated complexity**: S（≤1 小时）
+  - `src/podcast_ai/modules/theme/script_flat_mapper.py`（新建，建议）
+- **Estimated complexity**: S（1 小时）
 
 ---
 
-### Task 02 - `state_partial` 同目录补写可消费 snapshot
-- **Task name**: v6.8 - snapshot beside state_partial
-- **目标**: 每次成功写出 `state_partial` 后，基于 partial 中的 PlanState（如 `state_before_round`）调用既有 `build_episode_snapshot_from_state`（必要时先补齐空 playlist/script），在**同目录**写入 Console/阶段二可加载的 snapshot；写盘失败只打日志、**不二次抛错淹没原错误**。
+### Task 02 - Writer structured output + sanitize（仅 `script_before`）
+- **Task name**: v7.3 - script_before schema & sanitize
+- **目标**: `response_format` 顶层仅 `script_before`；`minItems=maxItems=N`；元素 `string|null`。sanitize 拒绝其它顶层键、长度不符、错误类型；非空串沿用既有语言启发式。**本步不写** `segments[*].script`。
 - **类型**: backend
-- **依赖关系**: 无（可与 Task 01 并行）
+- **依赖关系**: Task 01（需要 `N`）
 - **Description**:
-  - 接入点优先：`FilePlanAuditSink.write_state_partial`（staged + legacy 文件名分支都覆盖），避免在 orchestrator 多处复制。
-  - 命名建议（择一并注释/README 一行）：`stage_{stage}_rev{r}_snapshot.json` 或与 partial 成对的 `…_state_partial.snapshot.json`；legacy：`iteration{i}_snapshot.json`。
-  - 派生失败（缺 meta/segments 等）→ 记录原因，不强行写坏文件。
-  - 内容完整度以 partial 内 state 为准；契约须通过既有 snapshot 子集校验语义（与成功路径同一 builder）。
-  - **不改**成功路径主目录 `{episode_id}.json` 的既有写出逻辑（pipeline 成功态仍照旧）。
-- **Input**: `plan_audit.write_state_partial`、`build_episode_snapshot_from_state`
-- **Output**: 失败审计目录内 partial 旁可见可打开 snapshot
+  - 替换现有 `build_script_writer_response_schema(segment_count)` 为按 `N` 定长数组。
+  - 空串可规范化为 `null`（实现定一种并测稳）。
+  - 接入 v7.2 output retry：sanitize 失败走再 generate，不落半套。
+- **Input**: Task 01 的 `N`
+- **Output**: 合法扁平 patch（仅 `script_before`）
 - **Files involved**:
-  - `src/podcast_ai/modules/theme/plan_audit.py`
-  - `src/podcast_ai/infra/storage/paths.py`（文件名 helper，可选）
-  - （必要时）复用 `orchestrator_staged._ensure_segment_snapshot_defaults` 或抽到 state/paths 小函数
+  - `src/podcast_ai/modules/theme/agent_response_schemas.py`
+  - `src/podcast_ai/modules/theme/script_writer_agent.py`
 - **Estimated complexity**: M（1.5–2 小时）
 
 ---
 
-### Task 03 - 回归测试
-- **Task name**: v6.8 - revision + partial-snapshot tests
-- **目标**: ① revision 换 `problem` 措辞 / 新增 issue 指纹 **不再**抛错；② `write_state_partial` 后同目录存在合法 snapshot（可用 `validate_episode_snapshot_subset` 或字段冒烟）；③ pass 规则与终态无 critic/control 相关既有测不红。
+### Task 03 - 系统 mapper：`script_before` → 既有 `segments[*].script`
+- **Task name**: v7.3 - flat cues → segment_intro / between_tracks
+- **目标**: 将定长数组按下标写回旧 schema；段内第 0 首 → `segment_intro`；段内第 `k≥1` 首 → `between_tracks` 的 `{ after_track_index: k-1, text }`。补齐空槽，保证下游假设稳定。
 - **类型**: backend
-- **依赖关系**: Task 01, Task 02
+- **依赖关系**: Task 01
 - **Description**:
-  - 用临时目录 + 假 PlanState，不调 LLM。
-- **Input**: Task 01–02
+  - 统一跨段缝策略（Adapter 推荐：一律落在「后一首所属位置」的 before）。
+  - 每段保证有 `script`；未出现文案的 intro / between 用 `null`（与现网可空一致）。
+  - `between_tracks` 建议补齐 `0 … len(playlist)-2`，无文案 `text: null`。
+  - 长度不一致等 → 抛 `AIServiceError`，**不** merge 半套。
+- **Input**: 合法 `script_before` + 当前 segments playlist 结构
+- **Output**: 可 `merge_plan_state` 的 `segments[*].script` patch
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/script_flat_mapper.py`
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 04 - `ScriptWriterAgent.run` 接线 + 审计双产物
+- **Task name**: v7.3 - wire Writer run: sanitize → map → merge
+- **目标**: `run()` 流程改为 generate → parse → sanitize(`script_before`) → mapper → merge 映射后的 script；审计同时保留原始扁平 JSON 与映射后 script（失败尝试仍可只落 raw）。
+- **类型**: backend
+- **依赖关系**: Task 02, Task 03
+- **Description**:
+  - 删除/停用旧「模型直接输出 segments[].script」路径，避免双格式。
+  - mapper 失败与 sanitize 同等：触发 output retry 或最终 `AIServiceError`。
+  - **不改** Orchestrator FSM 调用点签名（仍 `run(state, mode, …)`）。
+- **Input**: Task 02–03
+- **Output**: 落盘 state 仍是旧 `script` 形态
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/script_writer_agent.py`
+  - `src/podcast_ai/modules/theme/plan_audit.py`（仅当需扩展 artifact 字段时）
+- **Estimated complexity**: M（1.5 小时）
+
+---
+
+### Task 05 - staged / legacy prompt + Guide 对齐扁平契约
+- **Task name**: v7.3 - Writer prompts & Guide for script_before
+- **目标**: staged 与 legacy Writer messages、以及 `PROMPT_Guide_Script-Writer.txt` 改为：整期扁平歌单输入、只填 `script_before[i]`、删除「填 segment_intro/between_tracks」的 Agent 填写说明；强调不报幕章节、约每 3–5 首插点、打招呼/收束在最后一首之前。
+- **类型**: backend
+- **依赖关系**: Task 01（可与 02–04 并行起草，联调依赖扁平输入）
+- **Description**:
+  - revision：附带上一版已映射的扁平串词视图 + `critic.actions`；要求整份定长输出；未点名处保持原文。
+  - 可注明系统会把旧 `location`（如 `segments[i].script…`）译成 `episode_track_index` 供理解。
+  - **不做**：回修轮切回旧分段 JSON。
+- **Input**: Adapter §4/§7、现有 Guide
+- **Output**: 双轨 prompt 口径一致
+- **Files involved**:
+  - `src/podcast_ai/modules/theme/guides/PROMPT_Guide_Script-Writer.txt`
+  - `src/podcast_ai/modules/theme/prompts_staged.py`
+  - `src/podcast_ai/modules/theme/prompts.py`
+- **Estimated complexity**: M（2 小时）
+
+---
+
+### Task 06 - revision「未点名保持」+ 单测覆盖 Adapter 验收点
+- **Task name**: v7.3 - preserve cues on revision + mapper tests
+- **目标**: revision 路径确保只改 action 相关下标时其它 cues 与上一轮落盘一致（允许 null/空白规范化）；单测覆盖 Adapter §9：`N=1`、跨段、最后一首前、全 null、长度≠N 失败、映射不污染下游假设。
+- **类型**: backend
+- **依赖关系**: Task 03, Task 04, Task 05
+- **Description**:
+  - 「保持」可用：映射前对比上一轮反扁平结果，或映射后做最小 diff 校验；选简单一种。
+  - 不强制真实 LLM；不测 TTS/混音全链路（契约未变）。
+- **Input**: Task 03–05
 - **Output**: `pytest` 通过
 - **Files involved**:
-  - `tests/test_revision_guard_v68.py` / `tests/test_audit_partial_snapshot_v68.py`（新建或并入既有）
-- **Estimated complexity**: S（1 小时）
+  - `tests/test_script_flat_mapper_v73.py`（新建）
+  - （可选）`tests/test_script_writer_agent_v73.py`
+- **Estimated complexity**: M（2 小时）

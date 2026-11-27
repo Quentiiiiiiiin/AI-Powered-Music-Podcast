@@ -63,7 +63,7 @@
         }
       ],
       "script": {
-        "segment_intro": "这里是该段开场串词",
+        "segment_intro": null,
         "between_tracks": [
           {
             "after_track_index": 0,
