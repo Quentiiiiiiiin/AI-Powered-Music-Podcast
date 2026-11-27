@@ -143,6 +143,8 @@ def merge_plan_state(base: PlanState, patch: Dict[str, Any]) -> PlanState:
     - list：
       - 若 list 内元素为 dict，则按索引进行字段级合并（保留原有字段，追加/覆盖目标字段）
       - 否则直接覆盖
+    - `segments`：patch 变短时**不截断**尾部（revision 常只回部分章节，截断会丢章）
+    - `playlist` 等其它 dict-list：patch 变短时仍截断尾部（避免旧曲残留）
     """
     merged = deepcopy(base)
     _merge_dict_inplace(merged, patch)
@@ -154,16 +156,23 @@ def _merge_dict_inplace(target: Dict[str, Any], patch: Dict[str, Any]) -> None:
         if isinstance(value, dict) and isinstance(target.get(key), dict):
             _merge_dict_inplace(target[key], value)
         elif isinstance(value, list) and isinstance(target.get(key), list):
-            _merge_list_inplace(target[key], value)
+            _merge_list_inplace(target[key], value, list_key=key)
         else:
             target[key] = deepcopy(value)
 
 
-def _merge_list_inplace(target_list: List[Any], patch_list: List[Any]) -> None:
+def _merge_list_inplace(
+    target_list: List[Any],
+    patch_list: List[Any],
+    *,
+    list_key: str | None = None,
+) -> None:
     """
     为多 Agent 回写设计的最小 list merge：
     - target_list 与 patch_list 内元素若均为 dict，则按索引递归合并，避免覆盖掉未被写入的字段。
     - 其它情况：patch_list 直接覆盖。
+    - list_key == \"segments\" 时：禁止因 patch 变短而截断（保留未出现在 patch 中的尾部章节）。
+    - 其它 list（如 playlist）：patch 更短则截断，避免旧尾巴残留。
     """
     if not patch_list:
         # patch 为空：保持原 list（避免无意义覆盖）
@@ -182,9 +191,8 @@ def _merge_list_inplace(target_list: List[Any], patch_list: List[Any]) -> None:
         else:
             target_list.append(deepcopy(patch_item))
 
-    # patch 比 target 更短时，表示上游明确“删除了尾部元素”（常见于 playlist 回修）。
-    # 若不截断会导致旧尾巴残留，出现如 ABCDE -> ACDEE 的重复伪像。
-    if len(patch_list) < len(target_list):
+    # playlist 等：短 patch = 删尾。segments：禁止截断（Planner revision 常只回部分章节）。
+    if list_key != "segments" and len(patch_list) < len(target_list):
         del target_list[len(patch_list) :]
 
 
